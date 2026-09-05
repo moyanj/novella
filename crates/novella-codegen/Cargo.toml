@@ -1,0 +1,9 @@
+[package]
+name = "novella-codegen"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+novella-core.workspace = true
+novella-sema.workspace = true

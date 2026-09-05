@@ -1,0 +1,5 @@
+# Rust / Cargo
+/target
+
+# mdbook 构建输出
+/docs/book

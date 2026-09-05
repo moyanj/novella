@@ -1,0 +1,10 @@
+[book]
+title = "Novella"
+authors = ["moyan"]
+language = "zh"
+
+[build]
+build-dir = "book"
+
+[output.html]
+git-repository-url = ""

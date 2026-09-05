@@ -1,0 +1,12 @@
+[package]
+name = "novella-cli"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+novella-codegen.workspace = true
+novella-core.workspace = true
+novella-lexer.workspace = true
+novella-parser.workspace = true
+novella-sema.workspace = true
