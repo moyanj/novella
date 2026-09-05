@@ -1,7 +1,5 @@
 use crate::error::error_header;
 use clap::Parser;
-use logos::Logos;
-use novella_core::token::TokenKind;
 use std::{fs, process::exit};
 mod cli;
 mod error;
@@ -19,7 +17,7 @@ fn main() {
                 }
             };
             let lex = novella_lexer::lexer(&source_code);
-            for token in &lex {
+            for _token in &lex {
                 //println!("{:?}", token);
             }
             fs::write(output, serde_json::to_string_pretty(&lex).unwrap()).map_err(|e| {

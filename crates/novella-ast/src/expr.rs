@@ -1,8 +1,10 @@
+use serde::{Deserialize, Serialize};
+
 /// 字面量（对应文法 `literal`）。
 ///
 /// 字符串与数字均保留源码原文（含 `f`/`r`/`b` 前缀与进制前缀），
 /// 具体值语义在语义分析阶段解析。
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub enum Literal {
     /// `null`
     Null,
@@ -19,7 +21,7 @@ pub enum Literal {
 /// 目前仅落地了元组表达式与字面量两类节点，用于支撑变量声明的
 /// 元组解构（`let (a, b) = (0, 1);`）；其余运算符、调用、访问等
 /// 表达式节点待后续逐步补充。
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub enum Expression {
     /// 元组表达式：`(0, 1)`
     Tuple(Vec<Expression>),

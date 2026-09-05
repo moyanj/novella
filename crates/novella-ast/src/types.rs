@@ -1,5 +1,7 @@
+use serde::{Deserialize, Serialize};
+
 /// 类型参数：`T` 或 `T: Bound`
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct TypeParameter {
     /// 类型参数名称
     pub name: String,
@@ -11,7 +13,7 @@ pub struct TypeParameter {
 ///
 /// u/i/f8/16/32/64 宽度类型、usize/isize、boolean 均为特殊的基础类型，
 /// 在语义/代码生成阶段直接映射到目标平台的原生类型，而不是普通的类型引用。
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum PredefinedType {
     /// null
     Null,
@@ -56,7 +58,7 @@ pub enum PredefinedType {
 }
 
 /// 对象类型成员：`name: TypeExpr`（对应 `objectTypeMember`）
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ObjectMember {
     /// 成员名称
     pub name: String,
@@ -68,7 +70,7 @@ pub struct ObjectMember {
 ///
 /// 文法的 `parameter` 还允许默认值 `(Assign expression)?`，
 /// 但 Expression AST 尚未实现，故暂不承载默认值，待表达式节点落地后再补充。
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Param {
     /// 参数名称
     pub name: String,
@@ -77,7 +79,7 @@ pub struct Param {
 }
 
 /// 函数类型（对应 `functionType` / `arrowFunctionType`，两者合并）
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct FunctionType {
     /// 泛型参数（`<T>`）
     pub type_parameters: Vec<TypeParameter>,
@@ -88,7 +90,7 @@ pub struct FunctionType {
 }
 
 /// 类型表达式（对应 `typeExpression` / `primaryType`）
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub enum TypeExpr {
     /// 预定义基础类型
     Predefined(PredefinedType),

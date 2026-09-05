@@ -8,7 +8,7 @@ pub struct Span {
     pub end: usize,
 }
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Spanned<T> {
     pub node: T,
     pub span: Span,
