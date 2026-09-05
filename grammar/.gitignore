@@ -1,0 +1,9 @@
+*.tokens
+*.interp
+.antlr/*
+*Lexer.py
+*Parser.py
+*Listener.py
+*Visitor.py
+
+__pycache__/

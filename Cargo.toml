@@ -8,6 +8,7 @@ edition = "2024"
 license = "Apache-2.0"
 
 [workspace.dependencies]
+logos = "0.16.1"
 novella-core = { path = "crates/novella-core", version = "0.1.0" }
 novella-lexer = { path = "crates/novella-lexer", version = "0.1.0" }
 novella-parser = { path = "crates/novella-parser", version = "0.1.0" }
