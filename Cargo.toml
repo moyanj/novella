@@ -9,11 +9,12 @@ license = "Apache-2.0"
 
 [workspace.dependencies]
 logos = "0.16.1"
-novella-core = { path = "crates/novella-core", version = "0.1.0" }
-novella-lexer = { path = "crates/novella-lexer", version = "0.1.0" }
-novella-parser = { path = "crates/novella-parser", version = "0.1.0" }
-novella-sema = { path = "crates/novella-sema", version = "0.1.0" }
-novella-codegen = { path = "crates/novella-codegen", version = "0.1.0" }
+serde = { version = "1.0.229", features = ["derive"] }
+novella-core = { path = "crates/novella-core" }
+novella-lexer = { path = "crates/novella-lexer" }
+novella-parser = { path = "crates/novella-parser" }
+novella-sema = { path = "crates/novella-sema" }
+novella-codegen = { path = "crates/novella-codegen" }
 
 [profile.release]
 lto = true

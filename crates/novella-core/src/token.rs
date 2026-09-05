@@ -1,5 +1,7 @@
 //! 词法单元种类定义。
 
+use serde::{Deserialize, Serialize};
+
 /// 词法单元的种类(不含位置信息)。
 ///
 /// 这是文法「词法面」的纯数据投影,与 `novella-lexer` 内部由 logos 生成的
@@ -7,7 +9,7 @@
 /// parser 等下游阶段只依赖本类型,从而不被 logos 绑定。
 ///
 /// 各变体的 doc 注释标注了它对应的源码字面量,便于转换层逐一对号。
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum TokenKind {
     // ---------- 多字符运算符 ----------
     /// `++`
@@ -228,6 +230,11 @@ pub enum TokenKind {
     // ---------- 标识符 ----------
     /// 标识符,如 `foo`、`_private`、`中文名`
     Identifier,
+
+    // EOF
+    Eof,
+    // 错误
+    Error,
 }
 
 impl std::fmt::Display for TokenKind {
@@ -236,4 +243,18 @@ impl std::fmt::Display for TokenKind {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(f, "{self:?}")
     }
+}
+#[derive(Debug, Clone, Copy, Serialize, Deserialize)]
+pub struct Span {
+    pub start: usize,
+    pub end: usize,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct Token {
+    pub kind: TokenKind, // 词法单元的种类
+    pub span: Span,      // 词法单元的起始位置和结束位置
+    pub slice: String,   // 词法单元的字符串切片
+    pub line: usize,     // 词法单元的行号
+    pub column: usize,   // 词法单元的列号
 }

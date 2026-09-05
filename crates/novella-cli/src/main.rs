@@ -18,22 +18,11 @@ fn main() {
                     exit(1)
                 }
             };
-            let mut lex = novella_lexer::Token::lexer(&source_code);
-            while let Some(token) = lex.next() {
-                match token {
-                    Err(_) => {
-                        error_header(format!(
-                            "Invalid Character '{}' (U+{:04X})",
-                            lex.slice(),
-                            lex.slice().bytes().next().unwrap() as u32
-                        ));
-                    }
-                    Ok(t) => {
-                        println!("{}({})", TokenKind::from(t), lex.slice());
-                    }
-                }
+            let lex = novella_lexer::lexer(&source_code);
+            for token in &lex {
+                //println!("{:?}", token);
             }
-            fs::write(output, source_code).map_err(|e| {
+            fs::write(output, serde_json::to_string_pretty(&lex).unwrap()).map_err(|e| {
                 error_header(format!("Can not write file: {}", e));
                 exit(1)
             });

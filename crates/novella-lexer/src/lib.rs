@@ -1,11 +1,11 @@
-use logos::Logos;
-use novella_core::token::TokenKind;
+use logos::{Lexer, Logos, SpannedIter};
+use novella_core::token::{Span, Token, TokenKind};
 
 #[derive(Logos, Debug, PartialEq, Clone, Copy)]
 #[logos(skip(r#"//[^\r\n]*"#, allow_greedy = true))]
 #[logos(skip r#"[ \t\x0B\x0C\xA0]+"#)]
 #[logos(skip r#"[\r\n\u2028\u2029]"#)]
-pub enum Token {
+pub enum RawToken {
     // ---------- 多字符运算符（优先于单字符） ----------
     #[token("++")]
     PlusPlus,
@@ -247,124 +247,187 @@ pub enum Token {
 ///
 /// 转换是纯种类映射(不携带位置与原文),105 个变体一一对应;
 /// 由 match 的穷尽性保证 logos 侧新增变体时此处编译报错、不会漏转。
-impl From<Token> for TokenKind {
-    fn from(token: Token) -> TokenKind {
+impl From<RawToken> for TokenKind {
+    fn from(token: RawToken) -> TokenKind {
         use TokenKind::*;
         match token {
             // ---------- 多字符运算符 ----------
-            Token::PlusPlus => PlusPlus,
-            Token::MinusMinus => MinusMinus,
-            Token::Power => Power,
-            Token::PowerAssign => PowerAssign,
-            Token::LeftShiftArithmetic => LeftShiftArithmetic,
-            Token::RightShiftArithmetic => RightShiftArithmetic,
-            Token::LeftShiftArithmeticAssign => LeftShiftArithmeticAssign,
-            Token::RightShiftArithmeticAssign => RightShiftArithmeticAssign,
-            Token::Equals => Equals,
-            Token::NotEquals => NotEquals,
-            Token::IdentityEquals => IdentityEquals,
-            Token::IdentityNotEquals => IdentityNotEquals,
-            Token::LessThanEquals => LessThanEquals,
-            Token::GreaterThanEquals => GreaterThanEquals,
-            Token::And => And,
-            Token::Or => Or,
-            Token::NullCoalesce => NullCoalesce,
-            Token::Arrow => Arrow,
-            Token::ReturnArrow => ReturnArrow,
-            Token::MultiplyAssign => MultiplyAssign,
-            Token::DivideAssign => DivideAssign,
-            Token::ModulusAssign => ModulusAssign,
-            Token::PlusAssign => PlusAssign,
-            Token::MinusAssign => MinusAssign,
-            Token::BitAndAssign => BitAndAssign,
-            Token::BitXorAssign => BitXorAssign,
-            Token::BitOrAssign => BitOrAssign,
+            RawToken::PlusPlus => PlusPlus,
+            RawToken::MinusMinus => MinusMinus,
+            RawToken::Power => Power,
+            RawToken::PowerAssign => PowerAssign,
+            RawToken::LeftShiftArithmetic => LeftShiftArithmetic,
+            RawToken::RightShiftArithmetic => RightShiftArithmetic,
+            RawToken::LeftShiftArithmeticAssign => LeftShiftArithmeticAssign,
+            RawToken::RightShiftArithmeticAssign => RightShiftArithmeticAssign,
+            RawToken::Equals => Equals,
+            RawToken::NotEquals => NotEquals,
+            RawToken::IdentityEquals => IdentityEquals,
+            RawToken::IdentityNotEquals => IdentityNotEquals,
+            RawToken::LessThanEquals => LessThanEquals,
+            RawToken::GreaterThanEquals => GreaterThanEquals,
+            RawToken::And => And,
+            RawToken::Or => Or,
+            RawToken::NullCoalesce => NullCoalesce,
+            RawToken::Arrow => Arrow,
+            RawToken::ReturnArrow => ReturnArrow,
+            RawToken::MultiplyAssign => MultiplyAssign,
+            RawToken::DivideAssign => DivideAssign,
+            RawToken::ModulusAssign => ModulusAssign,
+            RawToken::PlusAssign => PlusAssign,
+            RawToken::MinusAssign => MinusAssign,
+            RawToken::BitAndAssign => BitAndAssign,
+            RawToken::BitXorAssign => BitXorAssign,
+            RawToken::BitOrAssign => BitOrAssign,
 
             // ---------- 单字符运算符 / 分隔符 ----------
-            Token::OpenBracket => OpenBracket,
-            Token::CloseBracket => CloseBracket,
-            Token::OpenParen => OpenParen,
-            Token::CloseParen => CloseParen,
-            Token::OpenBrace => OpenBrace,
-            Token::CloseBrace => CloseBrace,
-            Token::SemiColon => SemiColon,
-            Token::Comma => Comma,
-            Token::Assign => Assign,
-            Token::QuestionMark => QuestionMark,
-            Token::Colon => Colon,
-            Token::Dot => Dot,
-            Token::Plus => Plus,
-            Token::Minus => Minus,
-            Token::BitNot => BitNot,
-            Token::Not => Not,
-            Token::Multiply => Multiply,
-            Token::Divide => Divide,
-            Token::Modulus => Modulus,
-            Token::LessThan => LessThan,
-            Token::MoreThan => MoreThan,
-            Token::BitAnd => BitAnd,
-            Token::BitXOr => BitXOr,
-            Token::BitOr => BitOr,
-            Token::At => At,
+            RawToken::OpenBracket => OpenBracket,
+            RawToken::CloseBracket => CloseBracket,
+            RawToken::OpenParen => OpenParen,
+            RawToken::CloseParen => CloseParen,
+            RawToken::OpenBrace => OpenBrace,
+            RawToken::CloseBrace => CloseBrace,
+            RawToken::SemiColon => SemiColon,
+            RawToken::Comma => Comma,
+            RawToken::Assign => Assign,
+            RawToken::QuestionMark => QuestionMark,
+            RawToken::Colon => Colon,
+            RawToken::Dot => Dot,
+            RawToken::Plus => Plus,
+            RawToken::Minus => Minus,
+            RawToken::BitNot => BitNot,
+            RawToken::Not => Not,
+            RawToken::Multiply => Multiply,
+            RawToken::Divide => Divide,
+            RawToken::Modulus => Modulus,
+            RawToken::LessThan => LessThan,
+            RawToken::MoreThan => MoreThan,
+            RawToken::BitAnd => BitAnd,
+            RawToken::BitXOr => BitXOr,
+            RawToken::BitOr => BitOr,
+            RawToken::At => At,
 
             // ---------- 关键字 ----------
-            Token::From => From,
-            Token::Import => Import,
-            Token::Pub => Pub,
-            Token::Pri => Pri,
-            Token::Const => Const,
-            Token::Let => Let,
-            Token::Var => Var,
-            Token::Static => Static,
-            Token::Func => Func,
-            Token::Class => Class,
-            Token::Interface => Interface,
-            Token::New => New,
-            Token::This => This,
-            Token::If => If,
-            Token::Else => Else,
-            Token::Elif => Elif,
-            Token::While => While,
-            Token::For => For,
-            Token::In => In,
-            Token::Break => Break,
-            Token::Continue => Continue,
-            Token::Return => Return,
-            Token::Default => Default,
-            Token::Match => Match,
-            Token::Case => Case,
-            Token::KeyAnd => KeyAnd,
-            Token::KeyOr => KeyOr,
-            Token::KeyNot => KeyNot,
-            Token::Try => Try,
-            Token::Catch => Catch,
-            Token::Finally => Finally,
-            Token::Throw => Throw,
-            Token::With => With,
-            Token::As => As,
-            Token::Type => Type,
-            Token::Is => Is,
-            Token::Async => Async,
-            Token::Await => Await,
-            Token::Stream => Stream,
-            Token::Yield => Yield,
-            Token::Macro => Macro,
-            Token::Extern => Extern,
+            RawToken::From => From,
+            RawToken::Import => Import,
+            RawToken::Pub => Pub,
+            RawToken::Pri => Pri,
+            RawToken::Const => Const,
+            RawToken::Let => Let,
+            RawToken::Var => Var,
+            RawToken::Static => Static,
+            RawToken::Func => Func,
+            RawToken::Class => Class,
+            RawToken::Interface => Interface,
+            RawToken::New => New,
+            RawToken::This => This,
+            RawToken::If => If,
+            RawToken::Else => Else,
+            RawToken::Elif => Elif,
+            RawToken::While => While,
+            RawToken::For => For,
+            RawToken::In => In,
+            RawToken::Break => Break,
+            RawToken::Continue => Continue,
+            RawToken::Return => Return,
+            RawToken::Default => Default,
+            RawToken::Match => Match,
+            RawToken::Case => Case,
+            RawToken::KeyAnd => KeyAnd,
+            RawToken::KeyOr => KeyOr,
+            RawToken::KeyNot => KeyNot,
+            RawToken::Try => Try,
+            RawToken::Catch => Catch,
+            RawToken::Finally => Finally,
+            RawToken::Throw => Throw,
+            RawToken::With => With,
+            RawToken::As => As,
+            RawToken::Type => Type,
+            RawToken::Is => Is,
+            RawToken::Async => Async,
+            RawToken::Await => Await,
+            RawToken::Stream => Stream,
+            RawToken::Yield => Yield,
+            RawToken::Macro => Macro,
+            RawToken::Extern => Extern,
 
             // ---------- 字面量 ----------
-            Token::Null => Null,
-            Token::BooleanLiteral => BooleanLiteral,
-            Token::HexIntegerLiteral => HexIntegerLiteral,
-            Token::OctalIntegerLiteral => OctalIntegerLiteral,
-            Token::BinaryIntegerLiteral => BinaryIntegerLiteral,
-            Token::DecimalLiteral => DecimalLiteral,
-            Token::StringLiteral => StringLiteral,
-            Token::FormatStringLiteral => FormatStringLiteral,
-            Token::RawStringLiteral => RawStringLiteral,
-            Token::ByteStringLiteral => ByteStringLiteral,
+            RawToken::Null => Null,
+            RawToken::BooleanLiteral => BooleanLiteral,
+            RawToken::HexIntegerLiteral => HexIntegerLiteral,
+            RawToken::OctalIntegerLiteral => OctalIntegerLiteral,
+            RawToken::BinaryIntegerLiteral => BinaryIntegerLiteral,
+            RawToken::DecimalLiteral => DecimalLiteral,
+            RawToken::StringLiteral => StringLiteral,
+            RawToken::FormatStringLiteral => FormatStringLiteral,
+            RawToken::RawStringLiteral => RawStringLiteral,
+            RawToken::ByteStringLiteral => ByteStringLiteral,
 
             // ---------- 标识符 ----------
-            Token::Identifier => Identifier,
+            RawToken::Identifier => Identifier,
         }
     }
+}
+
+pub struct TokenError {
+    pub token: Token,
+    pub error: String,
+}
+
+pub struct LexerResult {
+    pub tokens: Vec<Token>,
+    pub errors: Vec<TokenError>,
+}
+
+#[inline]
+fn to_token(input: &str, t: Option<RawToken>, lexer: &Lexer<'_, RawToken>) -> Token {
+    let span = Span {
+        start: lexer.span().start,
+        end: lexer.span().end,
+    };
+    let line = input[0..span.start].lines().count();
+    let column = input[span.start..span.end]
+        .chars()
+        .position(|c| c == '\n')
+        .unwrap_or(span.end);
+    let kind = match t {
+        Some(t) => t.into(),
+        None => TokenKind::Error,
+    };
+    Token {
+        kind,
+        span,
+        slice: lexer.slice().to_string(),
+        line,
+        column,
+    }
+}
+
+pub fn lexer(input: &str) -> Vec<Token> {
+    let mut lexer = RawToken::lexer(input);
+    let mut tokens = vec![];
+    let mut errors = vec![];
+    while let Some(t) = lexer.next() {
+        match t {
+            Ok(token) => {
+                tokens.push(to_token(input, Some(token), &lexer));
+            }
+            Err(_) => errors.push(TokenError {
+                token: to_token(input, None, &lexer),
+                error: format!(
+                    "Invalid Character '{}' (U+{:04X})",
+                    lexer.slice(),
+                    lexer.slice().bytes().next().unwrap() as u32
+                ),
+            }),
+        }
+    }
+    tokens.push(Token {
+        kind: TokenKind::Eof,
+        span: Span { start: 0, end: 0 },
+        slice: "".to_string(),
+        line: 0,
+        column: 0,
+    });
+    tokens
 }
