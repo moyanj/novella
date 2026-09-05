@@ -78,14 +78,7 @@ arrowFunctionType:
 
 typeList: typeExpression (',' typeExpression)*;
 
-predefinedType:
-	StringType
-	| IntType
-	| FloatType
-	| BoolType
-	| VoidType
-	| AnyType
-	| NullLiteral;
+predefinedType: BooleanLiteral | StringLiteral | NullLiteral;
 
 typeReference: identifier typeGeneric?;
 
@@ -361,10 +354,4 @@ identifier:
 	| Macro
 	| Extern
 	| Match
-	| Case
-	| StringType
-	| IntType
-	| FloatType
-	| BoolType
-	| VoidType
-	| AnyType;
+	| Case;

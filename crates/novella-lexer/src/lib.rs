@@ -1,5 +1,8 @@
-use logos::{Lexer, Logos, SpannedIter};
-use novella_core::token::{Span, Token, TokenKind};
+use logos::{Lexer, Logos};
+use novella_core::{
+    Span,
+    token::{Token, TokenKind},
+};
 
 #[derive(Logos, Debug, PartialEq, Clone, Copy)]
 #[logos(skip(r#"//[^\r\n]*"#, allow_greedy = true))]
@@ -127,8 +130,6 @@ pub enum RawToken {
     Const,
     #[token("let")]
     Let,
-    #[token("var")]
-    Var,
     #[token("static")]
     Static,
     #[token("func")]
@@ -314,7 +315,6 @@ impl From<RawToken> for TokenKind {
             RawToken::Pri => Pri,
             RawToken::Const => Const,
             RawToken::Let => Let,
-            RawToken::Var => Var,
             RawToken::Static => Static,
             RawToken::Func => Func,
             RawToken::Class => Class,

@@ -197,6 +197,9 @@ dependencies = [
 [[package]]
 name = "novella-ast"
 version = "0.1.0"
+dependencies = [
+ "novella-core",
+]
 
 [[package]]
 name = "novella-codegen"

@@ -2,6 +2,8 @@
 
 use serde::{Deserialize, Serialize};
 
+use crate::Span;
+
 /// 词法单元的种类(不含位置信息)。
 ///
 /// 这是文法「词法面」的纯数据投影,与 `novella-lexer` 内部由 logos 生成的
@@ -132,8 +134,6 @@ pub enum TokenKind {
     Const,
     /// `let`
     Let,
-    /// `var`
-    Var,
     /// `static`
     Static,
     /// `func`
@@ -243,11 +243,6 @@ impl std::fmt::Display for TokenKind {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(f, "{self:?}")
     }
-}
-#[derive(Debug, Clone, Copy, Serialize, Deserialize)]
-pub struct Span {
-    pub start: usize,
-    pub end: usize,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
