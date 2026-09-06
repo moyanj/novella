@@ -3,6 +3,7 @@ use serde::{Deserialize, Serialize};
 use novella_core::Spanned;
 
 use crate::{
+    decorator::Decorator,
     stmt::{Block, Statement},
     types::{FunctionType, Param, TypeExpr, TypeParameter},
 };
@@ -65,16 +66,23 @@ pub struct TypeAliasItem {
 
 // TODO: 实现接口的AST节点
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-pub struct InterfaceItem {}
+pub struct InterfaceItem {
+    /// 接口装饰器列表（对应文法 `interfaceDeclaration` 的 `decorator*`）
+    pub attributes: Vec<Decorator>,
+}
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub enum ClassMember {
+    /// 字段成员（对应文法 `fieldDeclaration` 的 `decorator*`）
     Field(Param),
+    /// 方法成员：装饰器由复用的 [`FunctionItem`] 承载
     Method(FunctionItem),
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ClassItem {
+    /// 类装饰器列表（对应文法 `classDeclaration` 的 `decorator*`）
+    pub attributes: Vec<Decorator>,
     pub name: String,
     pub type_parameters: Vec<TypeParameter>,
     pub members: Vec<ClassMember>,
@@ -83,6 +91,8 @@ pub struct ClassItem {
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct FunctionItem {
+    /// 函数装饰器列表（对应文法 `functionDeclaration` / `methodDeclaration` 的 `decorator*`）
+    pub attributes: Vec<Decorator>,
     pub name: String,
     pub r#type: FunctionType,
     pub block: Option<Block>,
@@ -98,5 +108,15 @@ pub enum Item {
     Interface(InterfaceItem),
     Class(ClassItem),
     Function(FunctionItem),
+    /// 顶层独立装饰器语句（对应文法 `decoratorStatement` 的 `decorator SemiColon` 形态，如 `@foo;`）
+    Decorator(Decorator),
+    /// 装饰块：装饰器直接修饰一个语句块（对应文法 `decoratorStatement` 的 `decorator block` 形态，
+    /// 如 `@cfg(feature = "limine") { ... }`，语义等价 Rust 的 `#[cfg(...)] { ... }`）
+    DecoratorBlock {
+        /// 装饰器
+        decorator: Decorator,
+        /// 被装饰的语句块
+        block: Block,
+    },
     Statement(Statement),
 }

@@ -30,20 +30,21 @@ fromImport:
 directImport: Import StringLiteral SemiColon;
 
 // ====================== 装饰器 ======================
-decoratorStatement: decorator SemiColon;
+// decoratorStatement 有两种形态：
+//   - decorator SemiColon —— 独立装饰器语句，如 @foo;
+//   - decorator block     —— 装饰块：装饰器直接修饰一个语句块，如 @cfg(feature = "limine") { ... }
+decoratorStatement: decorator (SemiColon | block);
 
+// 语义上等价 Rust 的 #[name(...)]：@name(args) 或 @name 简写形式。
+// 括号内为自由 token 流（任意词法单元，允许嵌套括号），原样保留到 AST 的
+// Decorator.tokens，结构化解析（如 @cfg(target_os = "linux")）延后到语义分析阶段。
 decorator:
 	At identifier (
-		'(' decoratorArgument (',' decoratorArgument)* ')'
+		'(' decoratorToken* ')'
 	)?;
 
-decoratorArgument:
-	(identifier Assign)? (
-		numericLiteral
-		| identifier
-		| StringLiteral
-		| BooleanLiteral
-	);
+// 装饰器括号内的自由 token：匹配任意词法单元（含括号、字面量、标识符等）。
+decoratorToken: .;
 
 // ====================== 类型系统 ======================
 typeAliasDeclaration:

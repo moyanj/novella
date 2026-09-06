@@ -245,7 +245,7 @@ impl std::fmt::Display for TokenKind {
     }
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Token {
     pub kind: TokenKind, // 词法单元的种类
     pub span: Span,      // 词法单元的起始位置和结束位置
