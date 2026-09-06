@@ -4,6 +4,7 @@ use novella_core::Spanned;
 
 use crate::{
     decorator::Decorator,
+    expr::Expression,
     stmt::{Block, Statement},
     types::{FunctionType, Param, TypeExpr, TypeParameter},
 };
@@ -71,12 +72,59 @@ pub struct InterfaceItem {
     pub attributes: Vec<Decorator>,
 }
 
+/// 类成员修饰符：可见性与静态标记（对应文法 `accessModifier? Static?`）
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub struct MemberModifiers {
+    pub scope: Option<Scope>,
+    /// 是否为静态成员（对应文法 `Static?`）
+    pub is_static: bool,
+}
+
+/// 类字段成员（对应文法 `fieldDeclaration`：`decorator* accessModifier? Static? identifier typeAnnotation? (Assign expression)? SemiColon`）
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct FieldMember {
+    /// 字段装饰器列表（对应文法 `fieldDeclaration` 的 `decorator*`）
+    pub attributes: Vec<Decorator>,
+    /// 可见性与静态修饰符
+    pub modifiers: MemberModifiers,
+    /// 字段名
+    pub name: String,
+    /// 类型注解（对应文法 `typeAnnotation?`），None 表示缺省
+    pub ty: Option<TypeExpr>,
+    /// 初始化表达式（对应文法 `(Assign expression)?`），None 表示无初始化
+    pub initializer: Option<Expression>,
+}
+
+/// 类方法成员（对应文法 `methodDeclaration`：`decorator* accessModifier? Static? Func identifier typeParameters? '(' parameterList? ')' typeAnnotation? ReturnArrow? typeExpression? (block | SemiColon)`）
+///
+/// 不复用 [`FunctionItem`]：其 `r#type: FunctionType` 要求必填返回类型，
+/// 无法表达 `func foo() {}` 这类缺省返回注解的形态；且方法独有的
+/// `accessModifier?` / `Static?` 与顶层 `is_extern` 语义并不互通。
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct MethodMember {
+    /// 方法装饰器列表（对应文法 `methodDeclaration` 的 `decorator*`）
+    pub attributes: Vec<Decorator>,
+    /// 可见性与静态修饰符
+    pub modifiers: MemberModifiers,
+    /// 方法名
+    pub name: String,
+    /// 泛型参数列表（对应文法 `typeParameters?`）
+    pub type_parameters: Vec<TypeParameter>,
+    /// 形参列表（对应文法 `parameterList?`）
+    pub params: Vec<Param>,
+    /// 返回类型注解（对应文法 `typeAnnotation? ReturnArrow? typeExpression?`），None 表示缺省
+    pub return_type: Option<TypeExpr>,
+    /// 方法体（对应文法 `block`），None 表示纯声明形态（`SemiColon`）
+    pub block: Option<Block>,
+}
+
+/// 类成员（对应文法 `classMember: methodDeclaration | fieldDeclaration`）
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub enum ClassMember {
-    /// 字段成员（对应文法 `fieldDeclaration` 的 `decorator*`）
-    Field(Param),
-    /// 方法成员：装饰器由复用的 [`FunctionItem`] 承载
-    Method(FunctionItem),
+    /// 字段成员（对应文法 `fieldDeclaration`）
+    Field(FieldMember),
+    /// 方法成员（对应文法 `methodDeclaration`）
+    Method(MethodMember),
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -86,7 +134,8 @@ pub struct ClassItem {
     pub name: String,
     pub type_parameters: Vec<TypeParameter>,
     pub members: Vec<ClassMember>,
-    pub parent: String,
+    pub parent: Vec<TypeExpr>,
+    pub scope: Option<Scope>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -94,10 +143,11 @@ pub struct FunctionItem {
     /// 函数装饰器列表（对应文法 `functionDeclaration` / `methodDeclaration` 的 `decorator*`）
     pub attributes: Vec<Decorator>,
     pub name: String,
-    pub r#type: FunctionType,
+    pub r#type: Option<FunctionType>,
     pub block: Option<Block>,
-    pub scope: Scope,
+    pub scope: Option<Scope>,
     pub is_extern: bool,
+    pub is_async: bool,
 }
 
 /// 顶层 item（对应文法 `statement | importStatement | typeAliasStatement | classDeclaration | functionDeclaration`）
@@ -116,7 +166,7 @@ pub enum Item {
         /// 装饰器
         decorator: Decorator,
         /// 被装饰的语句块
-        block: Block,
+        block: Option<Block>,
     },
     Statement(Statement),
 }

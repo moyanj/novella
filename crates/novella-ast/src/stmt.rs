@@ -43,17 +43,15 @@ pub struct VariableStmt {
     pub r#type: VariableType,
 }
 
-/// if / else if / else 条件分支（对应文法 `ifCondition`）
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-pub struct IfCondition {
-    pub condition: Option<Expression>, // None 表示 else 分支
-    pub block: Block,
+pub enum IfBranch {
+    ElseIf { condition: Expression, block: Block }, // 有条件的
+    Else { block: Block },                          // 无条件的兜底
 }
 
-/// if 语句（对应文法 `ifStatement`，并列承载多个条件分支）
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct IfStmt {
-    pub branchs: Vec<IfCondition>,
+    pub branches: Vec<IfBranch>, // 注意：最后一个必须是 Else，其他必须是 ElseIf
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
