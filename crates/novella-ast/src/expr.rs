@@ -1,6 +1,9 @@
 use serde::{Deserialize, Serialize};
 
+use novella_core::Span;
+
 use crate::{
+    Spanned,
     stmt::Block,
     types::{Param, TypeExpr},
 };
@@ -8,7 +11,8 @@ use crate::{
 /// 字面量（对应文法 `literal`）。
 ///
 /// 字符串与数字均保留源码原文（含 `f`/`r`/`b` 前缀与进制前缀），
-/// 具体值语义在语义分析阶段解析。
+/// 具体值语义在语义分析阶段解析。字面量是纯值不携带位置，
+/// 其源码区间由外层 `Expression::Literal` 的 `span` 承载。
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub enum Literal {
     /// `null`
@@ -120,35 +124,57 @@ pub enum AssignOp {
 ///
 /// `{ a: 1, b }` 中的 `b` 为简写形态：`value` 为 None，
 /// 语义等价于 `b: b`，由语义分析阶段展开。
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Spanned)]
 pub struct PropertyAssignment {
     /// 属性名
     pub name: String,
     /// 属性值表达式；None 表示简写形态 `{foo}`（等价 `foo: foo`）
     pub value: Option<Expression>,
+    /// 属性赋值覆盖的源码区间
+    pub span: Span,
 }
 
 /// lambda 参数形态（对应文法 `lambdaSignature`）
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Spanned)]
 pub enum LambdaParams {
     /// 单参数简写：`x => ...`
-    Single(String),
+    Single {
+        /// 参数名
+        name: String,
+        /// 参数标识符的源码区间
+        span: Span,
+    },
     /// 参数列表：`(a, b) => ...`（对应 `parameterList`）
-    List(Vec<Param>),
+    List {
+        /// 形参列表
+        params: Vec<Param>,
+        /// 括号参数列表的源码区间
+        span: Span,
+    },
 }
 
 /// lambda 函数体（对应文法 `lambdaExpression` 的 `block | expression`）
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Spanned)]
 pub enum LambdaBody {
     /// 表达式体：`=> a + b`
-    Expr(Box<Expression>),
+    Expr {
+        /// 表达式
+        expr: Box<Expression>,
+        /// 表达式体的源码区间
+        span: Span,
+    },
     /// 语句块体：`=> { ... }`
-    Block(Block),
+    Block {
+        /// 语句块
+        block: Block,
+        /// 语句块体的源码区间
+        span: Span,
+    },
 }
 
 /// lambda 表达式（对应文法
 /// `lambdaExpression: Async? lambdaSignature typeAnnotation? Arrow (block | expression)`）
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Spanned)]
 pub struct Lambda {
     /// 是否为异步 lambda（对应文法 `Async?`）
     pub is_async: bool,
@@ -158,40 +184,64 @@ pub struct Lambda {
     pub return_type: Option<TypeExpr>,
     /// 函数体（表达式或语句块）
     pub body: LambdaBody,
+    /// lambda 表达式覆盖的源码区间
+    pub span: Span,
 }
 
 /// match 分支的模式（对应文法 `matchCase` 的 `expression | typeAnnotation`）
 ///
 /// `typeAnnotation` 即 `: TypeExpr` 形态，故 `case : T => ...` 表示按类型匹配。
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Spanned)]
 pub enum MatchPattern {
     /// 表达式模式：`case value => ...`
-    Expr(Box<Expression>),
+    Expr {
+        /// 模式表达式
+        expr: Box<Expression>,
+        /// 模式表达式的源码区间
+        span: Span,
+    },
     /// 类型注解模式：`case : T => ...`
-    Type(TypeExpr),
+    Type {
+        /// 模式类型
+        ty: TypeExpr,
+        /// 类型注解的源码区间
+        span: Span,
+    },
 }
 
 /// match 分支的函数体（对应文法 `matchCase` / `matchDefault` 的 `'=>' expression | block`）
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Spanned)]
 pub enum MatchCaseBody {
     /// 表达式体：`=> value`
-    Expr(Box<Expression>),
+    Expr {
+        /// 表达式
+        expr: Box<Expression>,
+        /// 表达式体的源码区间
+        span: Span,
+    },
     /// 语句块体：`{ ... }`
-    Block(Block),
+    Block {
+        /// 语句块
+        block: Block,
+        /// 语句块体的源码区间
+        span: Span,
+    },
 }
 
 /// match 分支（对应文法 `matchCase`）
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Spanned)]
 pub struct MatchCase {
     /// 匹配模式
     pub pattern: MatchPattern,
     /// 命中后的分支体
     pub body: MatchCaseBody,
+    /// 分支整体（`case ... => ...`）覆盖的源码区间
+    pub span: Span,
 }
 
 /// match 表达式（对应文法
 /// `matchExpression: Match expression '{' matchCase+ matchDefault? '}'`）
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Spanned)]
 pub struct Match {
     /// 被匹配的表达式（`match` 后的 `expression`）
     pub subject: Box<Expression>,
@@ -199,6 +249,8 @@ pub struct Match {
     pub cases: Vec<MatchCase>,
     /// 兜底分支（对应 `matchDefault?`），None 表示没有 `default`
     pub default: Option<MatchCaseBody>,
+    /// match 表达式覆盖的源码区间
+    pub span: Span,
 }
 
 /// 表达式（对应文法 `expression`）。
@@ -206,23 +258,58 @@ pub struct Match {
 /// 节点扁平化设计：一元 / 二元 / 赋值等运算各自成节点，
 /// 递归字段用 `Box` 承载以避免无限大小，运算符以枚举集中定义
 /// （与词法 token 一一对应，供 parser 直接映射）。
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+/// 每个变体携带 `span` 记录表达式覆盖的源码区间（供诊断定位），
+/// 由 `Spanned` 派生统一生成 [`Expression::span`]。
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Spanned)]
 pub enum Expression {
     // —— 原子表达式 ——
     /// 字面量：`42`、`"hello"`、`true`、`null` 等（对应 `LiteralExpr`）
-    Literal(Literal),
+    Literal {
+        /// 字面量值（保留源码原文）
+        value: Literal,
+        /// 字面量的源码区间
+        span: Span,
+    },
     /// 标识符引用：`foo`（对应 `IdentifierExpr`）
-    Identifier(String),
+    Identifier {
+        /// 标识符名
+        name: String,
+        /// 标识符的源码区间
+        span: Span,
+    },
     /// 括号表达式：`(a)`（对应 `ParenExpr`；注意与元组 `(a, b)` 区分）
-    Paren(Box<Expression>),
+    Paren {
+        /// 括号内的表达式
+        expr: Box<Expression>,
+        /// 含括号的源码区间
+        span: Span,
+    },
     /// 元组表达式：`(0, 1)`（对应 `TupleExpr`）
-    Tuple(Vec<Expression>),
+    Tuple {
+        /// 元组元素列表
+        elements: Vec<Expression>,
+        /// 元组的源码区间
+        span: Span,
+    },
     /// 数组字面量：`[1, 2, 3]`（对应 `ArrayLiteralExpr`）
-    ArrayLiteral(Vec<Expression>),
+    ArrayLiteral {
+        /// 数组元素列表
+        elements: Vec<Expression>,
+        /// 数组字面量的源码区间
+        span: Span,
+    },
     /// 对象字面量：`{ a: 1, b }`（对应 `ObjectLiteralExpr`）
-    ObjectLiteral(Vec<PropertyAssignment>),
+    ObjectLiteral {
+        /// 属性赋值列表
+        properties: Vec<PropertyAssignment>,
+        /// 对象字面量的源码区间
+        span: Span,
+    },
     /// this 引用（对应 `ThisExpr`）
-    This,
+    This {
+        /// `this` 的源码区间
+        span: Span,
+    },
 
     // —— 一元运算 ——
     /// 一元运算：`-x`、`!ok`、`i++` 等（对应 `PrefixExpr` / `PostfixExpr`）
@@ -231,9 +318,16 @@ pub enum Expression {
         op: UnaryOp,
         /// 操作数
         operand: Box<Expression>,
+        /// 一元表达式覆盖的源码区间
+        span: Span,
     },
     /// await 表达式：`await p`（对应 `AwaitExpr`）
-    Await(Box<Expression>),
+    Await {
+        /// 被等待的表达式
+        expr: Box<Expression>,
+        /// await 表达式覆盖的源码区间
+        span: Span,
+    },
 
     // —— 二元运算 ——
     /// 二元运算：`a + b`、`x && y` 等（对应各二元运算产生式）
@@ -244,6 +338,8 @@ pub enum Expression {
         left: Box<Expression>,
         /// 右操作数
         right: Box<Expression>,
+        /// 二元表达式覆盖的源码区间
+        span: Span,
     },
     /// 类型判断：`x is string`（对应 `IsExpr`；右操作数是类型表达式而非值表达式）
     Is {
@@ -251,6 +347,8 @@ pub enum Expression {
         operand: Box<Expression>,
         /// 目标类型（对应 `typeExpression`）
         ty: TypeExpr,
+        /// 类型判断表达式覆盖的源码区间
+        span: Span,
     },
 
     // —— 三元与赋值 ——
@@ -262,6 +360,8 @@ pub enum Expression {
         then_expr: Box<Expression>,
         /// 条件为假时的值
         else_expr: Box<Expression>,
+        /// 三元表达式覆盖的源码区间
+        span: Span,
     },
     /// 赋值表达式：`a = 1`、`a += 2` 等（对应 `AssignmentExpr`）
     Assignment {
@@ -271,6 +371,8 @@ pub enum Expression {
         op: AssignOp,
         /// 被赋的值
         value: Box<Expression>,
+        /// 赋值表达式覆盖的源码区间
+        span: Span,
     },
 
     // —— 访问与调用 ——
@@ -280,6 +382,8 @@ pub enum Expression {
         target: Box<Expression>,
         /// 成员名
         name: String,
+        /// 成员访问表达式覆盖的源码区间
+        span: Span,
     },
     /// 索引访问：`arr[0]`（对应 `IndexAccessExpr`）
     IndexAccess {
@@ -287,6 +391,8 @@ pub enum Expression {
         target: Box<Expression>,
         /// 索引表达式
         index: Box<Expression>,
+        /// 索引访问表达式覆盖的源码区间
+        span: Span,
     },
     /// 函数调用：`foo<T>(a, b)`（对应 `CallExpr`，含可选的 `typeGeneric?`）
     Call {
@@ -296,6 +402,8 @@ pub enum Expression {
         type_args: Vec<TypeExpr>,
         /// 实参列表（对应 `argumentList`）
         args: Vec<Expression>,
+        /// 调用表达式覆盖的源码区间
+        span: Span,
     },
     /// 对象构造：`new Foo(1)`（对应 `NewExpr`）
     New {
@@ -303,6 +411,8 @@ pub enum Expression {
         target: Box<Expression>,
         /// 构造实参列表
         args: Vec<Expression>,
+        /// 构造表达式覆盖的源码区间
+        span: Span,
     },
     /// 宏调用：`print!(x)`（对应 `MacroCallExpr`）
     MacroCall {
@@ -310,6 +420,8 @@ pub enum Expression {
         callee: Box<Expression>,
         /// 宏实参列表
         args: Vec<Expression>,
+        /// 宏调用表达式覆盖的源码区间
+        span: Span,
     },
 
     // —— 高级表达式 ——

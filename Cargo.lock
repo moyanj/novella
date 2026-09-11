@@ -199,6 +199,7 @@ name = "novella-ast"
 version = "0.1.0"
 dependencies = [
  "novella-core",
+ "novella-derive",
  "serde",
 ]
 
@@ -218,6 +219,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "novella-derive"
+version = "0.1.0"
+dependencies = [
+ "proc-macro2",
+ "quote",
+ "syn 2.0.119",
+]
+
+[[package]]
 name = "novella-lexer"
 version = "0.1.0"
 dependencies = [
@@ -229,6 +239,7 @@ dependencies = [
 name = "novella-parser"
 version = "0.1.0"
 dependencies = [
+ "novella-ast",
  "novella-core",
  "novella-lexer",
 ]

@@ -12,6 +12,7 @@ novella 语言编译器。Rust workspace（edition 2024，Apache-2.0，7 个 cra
 novella/
 ├── crates/
 │   ├── novella-core/    # 共享基础：Span / Spanned<T> / TokenKind / Token
+│   ├── novella-derive/  # proc-macro：#[derive(Spanned)] 等 AST 派生宏
 │   ├── novella-ast/     # AST 节点定义（expr / stmt / types / program）
 │   ├── novella-lexer/   # 词法器（logos），RawToken → TokenKind 转换
 │   ├── novella-parser/  # 空壳（占位 add()）
@@ -26,8 +27,9 @@ novella/
 依赖链（自上而下单向，禁止反向）：
 
 ```
-core ← ast
-core ← lexer ← parser ← sema ← codegen ← cli
+core ← ast ← parser ← sema ← codegen ← cli
+core ← lexer ← parser
+ast ──(构建期)── novella-derive（proc-macro，展开引用 ::novella_core::Span）
 ```
 
 ## WHERE TO LOOK
@@ -35,7 +37,7 @@ core ← lexer ← parser ← sema ← codegen ← cli
 | 任务 | 位置 | 备注 |
 |------|------|------|
 | 加/改词法单元 | `crates/novella-core/src/token.rs` + `crates/novella-lexer/src/lib.rs` | 双枚举必须同步（见 CONVENTIONS） |
-| 加 AST 节点 | `crates/novella-ast/src/` | 按 `expr/stmt/types/program` 分类，参考文法产生式对照 |
+| 加 AST 节点 | `crates/novella-ast/src/` | 按 `expr/stmt/types/program` 分类，参考文法产生式对照；新节点须携带 `span` 字段并 `#[derive(Spanned)]`（见 CONVENTIONS） |
 | 诊断/错误显示 | `crates/novella-cli/src/error.rs` + `crates/novella-core/src/diagnostic.rs` | 通用诊断结构（各阶段产出）→ `render_diagnostic` rustc 风格渲染 |
 | CLI 子命令 | `crates/novella-cli/src/cli.rs` | clap derive |
 | 语法设计参考 | `grammar/NovellaParser.g4` | 仅参考，未与代码对齐 |
@@ -45,7 +47,8 @@ core ← lexer ← parser ← sema ← codegen ← cli
 
 | 符号 | 位置 | 说明 |
 |------|------|------|
-| `Span`, `Spanned<T>` | `novella-core/src/lib.rs` | 位置区间 / 携带位置的节点外包 |
+| `Span`, `Spanned<T>` | `novella-core/src/lib.rs` | 源码位置区间（字节偏移）/ 通用位置包装（AST 已改为节点内嵌 span，`Spanned` 暂保留备用） |
+| `Spanned`（derive 宏） | `novella-derive/src/lib.rs` | 为携带 `span` 字段的节点生成 `span()` 方法；struct 取字段、enum 具名变体取字段、newtype 变体委托内部节点 |
 | `Diagnostic` / `Severity` / `DiagnosticLocation` | `novella-core/src/diagnostic.rs` | 与阶段无关的通用诊断结构（serde），各阶段产出、CLI 渲染 |
 | `TokenKind`（106 变体） | `novella-core/src/token.rs` | 词法单元种类，纯数据投影，带 `Display`（输出 Debug 文本） |
 | `Token` | `novella-core/src/token.rs` | kind + span + slice + line + column |
@@ -62,6 +65,7 @@ core ← lexer ← parser ← sema ← codegen ← cli
 - **TokenKind ↔ RawToken 双枚举**：`token.rs` 定义稳定公共种类（doc 注释标注对应字面量），`lexer` 的 `RawToken` 是 logos 专属投影，靠 `From` 的 match 穷尽性保证新增变体不漏转（漏了编译报错）。
 - **下游不接触 logos**：parser 等阶段只见 `novella_core::token::Token`。
 - **AST 注释对齐文法**：每个节点 doc 标注 `对应文法 xxx`（以 `grammar/*.g4` 产生式名为准）。
+- **AST 节点全量挂 span**：每个 AST 节点（struct 或 enum 变体）携带 `span: novella_core::Span` 字段，纯值枚举（运算符、`Literal`、`PredefinedType`、`Scope` 等）除外；`span()` 方法由 `#[derive(Spanned)]` 自动生成，字段名必须为 `span`，enum 单字段 newtype 变体自动委托内部节点。
 - **类型全量 serde**：AST / token 均派生 `Serialize, Deserialize`，用于 JSON 输出。
 - **for 循环 init 语义**：文法中 init 段声明不带 `const/let`，统一按 `Let` 承载（见 `ForInit` 注释）。
 - **值语义延后**：AST 字面量保留源码原文（含 `f/r/b`、进制前缀），解析在语义分析阶段。
@@ -98,6 +102,6 @@ cargo run -p novella -- compile <file> -o <out.s>   # lexer → JSON
 - EOF token 的 span 指向输入末尾 `{start:len, end:len}`，line/column 为末尾处行列；行号 1-based、列号 0-based（字节偏移），对齐 ANTLR `getLine()` / `getCharPositionInLine()`。
 - `TokenKind::Error` 保留为非法字符 / 未闭合字符串的占位（`to_token` 的 None 分支），随错误记录进 `errors`。
 - `Scope` 枚举拼写为 `Pubilc`（历史笔误），改名前需同步全部引用与 JSON 输出。
-- `workspace.dependencies` 未登记 `novella-ast` 与 `novella-cli`：前者自带 path 依赖，后者是二进制 crate 无此需要。
+- `workspace.dependencies` 未登记 `novella-cli`（二进制 crate 无此需要）与 `novella-derive`（proc-macro，`novella-ast` 自带 path 依赖）。
 - `[profile.release]` 开启 `lto = true`。
 - release build 是 LTO 全量链接，调试构建慢属预期。

@@ -7,3 +7,4 @@ license.workspace = true
 [dependencies]
 novella-core.workspace = true
 novella-lexer.workspace = true
+novella-ast.workspace = true

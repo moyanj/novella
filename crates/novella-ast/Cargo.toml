@@ -6,4 +6,5 @@ license.workspace = true
 
 [dependencies]
 novella-core.workspace = true
+novella-derive = { path = "../novella-derive" }
 serde.workspace = true

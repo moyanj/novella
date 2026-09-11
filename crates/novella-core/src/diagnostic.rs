@@ -50,6 +50,16 @@ impl Diagnostic {
         }
     }
 
+    /// 构造一个无位置的 warning 诊断。
+    pub fn warning(message: impl Into<String>) -> Self {
+        Diagnostic {
+            severity: Severity::Warning,
+            message: message.into(),
+            location: None,
+            note: None,
+        }
+    }
+
     /// 附加位置信息。
     pub fn with_location(mut self, location: DiagnosticLocation) -> Self {
         self.location = Some(location);
