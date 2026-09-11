@@ -168,5 +168,6 @@ pub enum Item {
         /// 被装饰的语句块
         block: Option<Block>,
     },
-    Statement(Statement),
+    /// 顶层语句（`Box` 承载以控制枚举尺寸，避免 clippy `large-enum-variant`）
+    Statement(Box<Statement>),
 }

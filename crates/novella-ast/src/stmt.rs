@@ -86,10 +86,12 @@ pub struct ForLoopCond {
 }
 
 /// for 循环条件变体：for-in 与 C 风格三段式
+///
+/// 递归字段用 `Box` 承载以控制枚举尺寸（避免 clippy `large-enum-variant`）。
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub enum ForKind {
     ForIn(ForInCond),
-    ForLoop(ForLoopCond),
+    ForLoop(Box<ForLoopCond>),
 }
 
 /// for 语句（对应文法 `forStatement`）

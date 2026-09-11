@@ -1,5 +1,7 @@
 use serde::{Deserialize, Serialize};
 
+use crate::expr::Expression;
+
 /// 类型参数：`T` 或 `T: Bound`
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct TypeParameter {
@@ -66,16 +68,18 @@ pub struct ObjectMember {
     pub ty: TypeExpr,
 }
 
-/// 函数参数：`name` 或 `name: TypeExpr`（对应 `parameter`）
+/// 函数参数：`name`、`name: TypeExpr` 或带默认值（对应 `parameter`）
 ///
-/// 文法的 `parameter` 还允许默认值 `(Assign expression)?`，
-/// 但 Expression AST 尚未实现，故暂不承载默认值，待表达式节点落地后再补充。
+/// 文法的 `parameter: identifier typeAnnotation? (Assign expression)?`：
+/// 默认值表达式在表达式 AST 落地后由本字段承载。
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Param {
     /// 参数名称
     pub name: String,
     /// 参数类型标注，缺失时（无 `: TypeExpr`）为 None
     pub ty: Option<TypeExpr>,
+    /// 参数默认值（对应 `(Assign expression)?`），None 表示无默认值
+    pub default: Option<Expression>,
 }
 
 /// 函数类型（对应 `functionType` / `arrowFunctionType`，两者合并）
