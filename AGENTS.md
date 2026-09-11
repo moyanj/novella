@@ -36,7 +36,7 @@ core ← lexer ← parser ← sema ← codegen ← cli
 |------|------|------|
 | 加/改词法单元 | `crates/novella-core/src/token.rs` + `crates/novella-lexer/src/lib.rs` | 双枚举必须同步（见 CONVENTIONS） |
 | 加 AST 节点 | `crates/novella-ast/src/` | 按 `expr/stmt/types/program` 分类，参考文法产生式对照 |
-| 诊断/错误显示 | `crates/novella-cli/src/error.rs` | 目前仅 `error_header` |
+| 诊断/错误显示 | `crates/novella-cli/src/error.rs` + `crates/novella-core/src/diagnostic.rs` | 通用诊断结构（各阶段产出）→ `render_diagnostic` rustc 风格渲染 |
 | CLI 子命令 | `crates/novella-cli/src/cli.rs` | clap derive |
 | 语法设计参考 | `grammar/NovellaParser.g4` | 仅参考，未与代码对齐 |
 | 占用位 crates | parser / sema / codegen | `pub fn add(u64, u64) -> u64` 待替换 |
@@ -46,10 +46,11 @@ core ← lexer ← parser ← sema ← codegen ← cli
 | 符号 | 位置 | 说明 |
 |------|------|------|
 | `Span`, `Spanned<T>` | `novella-core/src/lib.rs` | 位置区间 / 携带位置的节点外包 |
+| `Diagnostic` / `Severity` / `DiagnosticLocation` | `novella-core/src/diagnostic.rs` | 与阶段无关的通用诊断结构（serde），各阶段产出、CLI 渲染 |
 | `TokenKind`（106 变体） | `novella-core/src/token.rs` | 词法单元种类，纯数据投影，带 `Display`（输出 Debug 文本） |
 | `Token` | `novella-core/src/token.rs` | kind + span + slice + line + column |
 | `RawToken` | `novella-lexer/src/lib.rs` | logos 私有枚举；`From<RawToken> for TokenKind` 穷尽映射 |
-| `lexer(&str) -> Vec<Token>` | `novella-lexer/src/lib.rs` | 入口：产出含 EOF 的 token 流；收集到的错误仅入 `errors` 后丢弃 |
+| `lexer(&str) -> LexerResult` | `novella-lexer/src/lib.rs` | 入口：产出含 EOF 的 token 流与词法错误列表；错误仅入 `errors` |
 | `Expression` / `Literal` | `novella-ast/src/expr.rs` | 仅元组 + 字面量两类节点 |
 | `Statement` / `IfStmt` / `ForStmt` | `novella-ast/src/stmt.rs` | 含 `BindingPattern`（标识符/元组解构递归） |
 | `TypeExpr` / `PredefinedType` | `novella-ast/src/types.rs` | 类型表达式；`Param` 暂不承载默认值 |
@@ -57,7 +58,7 @@ core ← lexer ← parser ← sema ← codegen ← cli
 
 ## CONVENTIONS
 
-- **全程简体中文**：注释、doc、commit、文档均中文。
+- 注释、doc、commit、文档均中文。
 - **TokenKind ↔ RawToken 双枚举**：`token.rs` 定义稳定公共种类（doc 注释标注对应字面量），`lexer` 的 `RawToken` 是 logos 专属投影，靠 `From` 的 match 穷尽性保证新增变体不漏转（漏了编译报错）。
 - **下游不接触 logos**：parser 等阶段只见 `novella_core::token::Token`。
 - **AST 注释对齐文法**：每个节点 doc 标注 `对应文法 xxx`（以 `grammar/*.g4` 产生式名为准）。
@@ -74,6 +75,7 @@ core ← lexer ← parser ← sema ← codegen ← cli
 - ❌ 把 `grammar/.antlr` 生成产物（`.java`/.interp/.tokens）提交——已 gitignore。
 - ❌ 把 `grammar/*.g4` 当作已生效文法——README 明示未对齐，改动前先核对代码现状。
 - ❌ 修改 `Span`/`Token` 字段时不更新 JSON 消费者（cli 输出 `serde_json`）。
+- ❌ 除非明确要求，否则不写测试
 
 ## COMMANDS
 
@@ -90,10 +92,11 @@ cargo run -p novella -- compile <file> -o <out.s>   # lexer → JSON
 
 ## NOTES
 
+- 错误显示为 rustc 风格：`error: <msg>` + `--> 文件:行:列` + 源码行 + caret 指示，由 cli `render_diagnostic` 统一渲染；展示列号 1-based，caret 按字符渲染（多字节字符不错位）。
 - `novella-codegen` 输出默认 `output.s`（CLI 默认值），当前实际写 JSON 文本。
-- lexer 的 `TokenError` / `LexerResult` 已定义但未使用：`lexer()` 只返回 `Vec<Token>`，错误静默丢弃——待诊断设计时接管。
-- EOF token 的 span 固定 `{start:0, end:0}`，line/column 为 0。
-- `TokenKind::Error` 保留为非法字符占位（`to_token` 的 None 分支），但同样被丢弃。
+- lexer 的 `TokenError` / `LexerResult` 已启用：`lexer()` 返回 token 流与错误列表，可恢复错误（非法字符、未闭合字符串）只进 `errors`，不中断后续分析；错误种类结构化（`LexError` 枚举），消息由 `Display` 生成，经 `TokenError::to_diagnostic` 转通用诊断。
+- EOF token 的 span 指向输入末尾 `{start:len, end:len}`，line/column 为末尾处行列；行号 1-based、列号 0-based（字节偏移），对齐 ANTLR `getLine()` / `getCharPositionInLine()`。
+- `TokenKind::Error` 保留为非法字符 / 未闭合字符串的占位（`to_token` 的 None 分支），随错误记录进 `errors`。
 - `Scope` 枚举拼写为 `Pubilc`（历史笔误），改名前需同步全部引用与 JSON 输出。
 - `workspace.dependencies` 未登记 `novella-ast` 与 `novella-cli`：前者自带 path 依赖，后者是二进制 crate 无此需要。
 - `[profile.release]` 开启 `lto = true`。

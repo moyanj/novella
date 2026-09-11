@@ -13,7 +13,7 @@ sourceElements: sourceElement+;
 sourceElement:
 	moduleImport
 	| typeAliasDeclaration
-	| interfaceDeclaration
+	| traitDeclaration
 	| classDeclaration
 	| functionDeclaration
 	| externFunctionDeclaration
@@ -92,13 +92,13 @@ functionType:
 
 typeAnnotation: Colon typeExpression;
 
-// ====================== 接口与类声明 ======================
-interfaceDeclaration:
-	decorator* Interface identifier typeParameters? interfaceBody;
+// ====================== trait 与类声明 ======================
+traitDeclaration:
+	decorator* Trait identifier typeParameters? traitBody;
 
-interfaceBody: '{' interfaceMember* '}';
+traitBody: '{' traitMember* '}';
 
-interfaceMember: methodDeclaration | fieldDeclaration;
+traitMember: methodDeclaration | fieldDeclaration;
 
 classDeclaration:
 	decorator* Pub? Class identifier typeParameters? classHeritage? classBody;
@@ -328,7 +328,7 @@ identifier:
 	| Let
 	| Func
 	| Class
-	| Interface
+	| Trait
 	| New
 	| This
 	| If

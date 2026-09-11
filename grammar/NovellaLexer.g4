@@ -97,7 +97,7 @@ Static: 'static';
 // 函数和类
 Func: 'func';
 Class: 'class';
-Interface: 'interface';
+Trait: 'trait';
 New: 'new';
 This: 'this';
 

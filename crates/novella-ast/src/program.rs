@@ -65,11 +65,17 @@ pub struct TypeAliasItem {
     pub alias: TypeExpr,
 }
 
-// TODO: 实现接口的AST节点
+/// trait 声明（对应文法 `traitDeclaration`：`decorator* Trait identifier typeParameters? traitBody`）
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-pub struct InterfaceItem {
-    /// 接口装饰器列表（对应文法 `interfaceDeclaration` 的 `decorator*`）
+pub struct TraitItem {
+    /// trait 装饰器列表（对应文法 `traitDeclaration` 的 `decorator*`）
     pub attributes: Vec<Decorator>,
+    /// trait 名
+    pub name: String,
+    /// 泛型参数列表（对应文法 `typeParameters?`）
+    pub type_parameters: Vec<TypeParameter>,
+    /// trait 成员列表（对应文法 `traitMember: methodDeclaration | fieldDeclaration`）
+    pub members: Vec<ClassMember>,
 }
 
 /// 类成员修饰符：可见性与静态标记（对应文法 `accessModifier? Static?`）
@@ -155,7 +161,7 @@ pub struct FunctionItem {
 pub enum Item {
     Import(ImportItem),
     TypeAlias(TypeAliasItem),
-    Interface(InterfaceItem),
+    Trait(TraitItem),
     Class(ClassItem),
     Function(FunctionItem),
     /// 顶层独立装饰器语句（对应文法 `decoratorStatement` 的 `decorator SemiColon` 形态，如 `@foo;`）

@@ -43,15 +43,29 @@ pub struct VariableStmt {
     pub r#type: VariableType,
 }
 
+/// if / elif / else 的分支（对应文法 `ifStatement` 的 `If` / `Elif` / `Else` 三种形态）。
+///
+/// 文法中每个分支的 body 都是 `statement`（不限于花括号块），
+/// 因此分支体用 `Box<Statement>` 承载任意语句；
+/// 递归字段用 `Box` 控制枚举尺寸（避免 clippy `large-enum-variant`）。
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub enum IfBranch {
-    ElseIf { condition: Expression, block: Block }, // 有条件的
-    Else { block: Block },                          // 无条件的兜底
+    /// 有条件的分支：`if (cond) stmt` 与 `elif (cond) stmt`
+    ElseIf {
+        condition: Expression,
+        block: Box<Statement>,
+    },
+    /// 无条件的兜底分支：`else stmt`
+    Else { block: Box<Statement> },
 }
 
+/// if 语句（对应文法 `ifStatement`）。
+///
+/// `branches` 按源码顺序承载条件链：第一个通常是 `ElseIf`（即 `if`），
+/// 中间可以有任意个 `ElseIf`（对应 `Elif`），最后一个可以是 `Else`（可省略）。
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct IfStmt {
-    pub branches: Vec<IfBranch>, // 注意：最后一个必须是 Else，其他必须是 ElseIf
+    pub branches: Vec<IfBranch>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -95,9 +109,57 @@ pub enum ForKind {
 }
 
 /// for 语句（对应文法 `forStatement`）
+///
+/// 文法中循环体是 `statement`（不限于花括号块），
+/// 因此用 `Box<Statement>` 承载任意语句（递归字段用 `Box` 控制枚举尺寸）。
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ForStmt {
     pub condition: ForKind,
+    pub block: Box<Statement>,
+}
+
+/// try 的 catch 分支（对应文法 `catchClause`：
+/// `Catch '(' identifier typeAnnotation? ')' block`）
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct CatchClause {
+    /// 捕获的异常变量名（`catch (e)` 中的 `e`）
+    pub name: String,
+    /// 可选的异常类型注解（`catch (e: SomeError)` 中的 `SomeError`）
+    pub ty: Option<TypeExpr>,
+    /// catch 分支体
+    pub block: Block,
+}
+
+/// try 语句（对应文法 `tryStatement`：
+/// `Try block (catchClause+ finallyClause? | finallyClause)`）
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct TryStmt {
+    /// try 块
+    pub block: Block,
+    /// 一个或多个 catch 分支；若无 catch 则必须存在 finally
+    pub catches: Vec<CatchClause>,
+    /// 可选的 finally 块（对应文法 `finallyClause`）
+    pub finally: Option<Block>,
+}
+
+/// with 绑定的可选项（对应文法 `withStatement` 的 `As` 子句）
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct WithBinding {
+    /// 解构绑定目标：标识符或元组解构模式（对应 `identifier | bindingPattern`）
+    pub pattern: BindingPattern,
+    /// 可选的类型注解
+    pub ty: Option<TypeExpr>,
+}
+
+/// with 语句（对应文法 `withStatement`：
+/// `With expression (As (identifier | bindingPattern) typeAnnotation?)? block`）
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct WithStmt {
+    /// 被管理的资源表达式（如文件、锁等）
+    pub expr: Expression,
+    /// 可选的 `As name: Type` 绑定子句
+    pub binding: Option<WithBinding>,
+    /// with 块
     pub block: Block,
 }
 
@@ -111,7 +173,9 @@ pub enum Statement {
     Yield(Option<Expression>),
     Block(Block),
     If(IfStmt),
-    While(Expression, Block),
+    While(Expression, Box<Statement>),
     For(ForStmt),
+    Try(TryStmt),
+    With(WithStmt),
     Expression(Expression),
 }

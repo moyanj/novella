@@ -140,8 +140,8 @@ pub enum TokenKind {
     Func,
     /// `class`
     Class,
-    /// `interface`
-    Interface,
+    /// `trait`
+    Trait,
     /// `new`
     New,
     /// `this`

@@ -1,8 +1,10 @@
 use logos::{Lexer, Logos};
 use novella_core::{
     Span,
+    diagnostic::{Diagnostic, DiagnosticLocation, Severity},
     token::{Token, TokenKind},
 };
+use std::fmt;
 
 #[derive(Logos, Debug, PartialEq, Clone, Copy)]
 #[logos(skip(r#"//[^\r\n]*"#, allow_greedy = true))]
@@ -136,8 +138,8 @@ pub enum RawToken {
     Func,
     #[token("class")]
     Class,
-    #[token("interface")]
-    Interface,
+    #[token("trait")]
+    Trait,
     #[token("new")]
     New,
     #[token("this")]
@@ -318,7 +320,7 @@ impl From<RawToken> for TokenKind {
             RawToken::Static => Static,
             RawToken::Func => Func,
             RawToken::Class => Class,
-            RawToken::Interface => Interface,
+            RawToken::Trait => Trait,
             RawToken::New => New,
             RawToken::This => This,
             RawToken::If => If,
@@ -369,9 +371,52 @@ impl From<RawToken> for TokenKind {
     }
 }
 
+/// 词法错误种类（结构化，消息由 [`Display`] 生成）。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum LexError {
+    /// 非法字符（无法匹配任何词法规则）。
+    InvalidCharacter { ch: char },
+    /// 未闭合的字符串字面量：以 `quote` 开头，缺少闭合引号。
+    UnterminatedString { quote: char },
+}
+
+impl fmt::Display for LexError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            LexError::InvalidCharacter { ch } => {
+                write!(f, "非法字符 '{ch}' (U+{:04X})", u32::from(*ch))
+            }
+            LexError::UnterminatedString { quote } => {
+                write!(f, "未闭合的字符串字面量：以 '{quote}' 开头，缺少闭合引号")
+            }
+        }
+    }
+}
+
+#[derive(Debug)]
 pub struct TokenError {
     pub token: Token,
-    pub error: String,
+    pub error: LexError,
+}
+
+impl TokenError {
+    /// 转换为通用诊断，供 CLI 统一渲染。
+    ///
+    /// 列号沿用 token 的 0-based 字节偏移（与 ANTLR `getCharPositionInLine()` 对齐），
+    /// 渲染层自行转字符列与 1-based 展示。
+    pub fn to_diagnostic(&self, file: Option<&str>) -> Diagnostic {
+        Diagnostic {
+            severity: Severity::Error,
+            message: self.error.to_string(),
+            location: Some(DiagnosticLocation {
+                file: file.map(str::to_owned),
+                line: self.token.line,
+                column: self.token.column,
+                span: Some(self.token.span),
+            }),
+            note: None,
+        }
+    }
 }
 
 pub struct LexerResult {
@@ -379,17 +424,47 @@ pub struct LexerResult {
     pub errors: Vec<TokenError>,
 }
 
+/// 一次性扫描建立的行索引，用于 O(log n) 定位 token 的行列。
+///
+/// 行号按 `\n` 划分（与 `str::lines()` 语义一致：`\r\n` 中 `\r` 归上一行），
+/// 列号是行内字节偏移（0-based）。相比旧的 `input[..start].lines().count()`
+/// 每个 token 全量重扫的 O(n²) 做法，这里只扫描一次输入。
+struct LineIndex {
+    /// 每行起始字节偏移（首行恒为 0），严格递增。
+    starts: Vec<usize>,
+}
+
+impl LineIndex {
+    /// 扫描输入建立行起点表。
+    fn build(input: &str) -> Self {
+        let mut starts = vec![0];
+        for (i, b) in input.bytes().enumerate() {
+            if b == b'\n' {
+                starts.push(i + 1);
+            }
+        }
+        LineIndex { starts }
+    }
+
+    /// 定位偏移量所在的行列位置。
+    ///
+    /// 返回 `(line, column)`：`line` 为 1-based 行号，`column` 为行内字节偏移
+    /// （0-based），语义对齐 ANTLR 的 `getLine()` / `getCharPositionInLine()`。
+    #[inline]
+    fn locate(&self, offset: usize) -> (usize, usize) {
+        // partition_point 依赖 starts 严格递增；starts 恒非空（首行 0），不会下溢
+        let idx = self.starts.partition_point(|&s| s <= offset) - 1;
+        (idx + 1, offset - self.starts[idx])
+    }
+}
+
 #[inline]
-fn to_token(input: &str, t: Option<RawToken>, lexer: &Lexer<'_, RawToken>) -> Token {
+fn to_token(t: Option<RawToken>, lexer: &Lexer<'_, RawToken>, lines: &LineIndex) -> Token {
     let span = Span {
         start: lexer.span().start,
         end: lexer.span().end,
     };
-    let line = input[0..span.start].lines().count();
-    let column = input[span.start..span.end]
-        .chars()
-        .position(|c| c == '\n')
-        .unwrap_or(span.end);
+    let (line, column) = lines.locate(span.start);
     let kind = match t {
         Some(t) => t.into(),
         None => TokenKind::Error,
@@ -403,31 +478,52 @@ fn to_token(input: &str, t: Option<RawToken>, lexer: &Lexer<'_, RawToken>) -> To
     }
 }
 
-pub fn lexer(input: &str) -> Vec<Token> {
+/// 词法分析入口：产出含 EOF 的 token 流与词法错误列表。
+///
+/// - 可恢复错误（非法字符、未闭合字符串）就近记录进 `errors`，不中断分析；
+/// - 错误 token 只进 `errors`，不进 `tokens`（与以往行为一致）；
+/// - EOF token 的 span 指向输入末尾，line/column 为末尾处的行列；
+/// - 行号 1-based、列号 0-based（字节偏移）。
+pub fn lexer(input: &str) -> LexerResult {
+    let lines = LineIndex::build(input);
     let mut lexer = RawToken::lexer(input);
     let mut tokens = vec![];
     let mut errors = vec![];
     while let Some(t) = lexer.next() {
         match t {
             Ok(token) => {
-                tokens.push(to_token(input, Some(token), &lexer));
+                tokens.push(to_token(Some(token), &lexer, &lines));
             }
-            Err(_) => errors.push(TokenError {
-                token: to_token(input, None, &lexer),
-                error: format!(
-                    "Invalid Character '{}' (U+{:04X})",
-                    lexer.slice(),
-                    lexer.slice().bytes().next().unwrap() as u32
-                ),
-            }),
+            Err(_) => {
+                let slice = lexer.slice();
+                // 引号开头说明是字符串正则因缺闭合引号而失败
+                // （`"abc` 在引号处失败；`f"abc` 中前缀 f 先成 Identifier，同样在引号处失败）
+                let error = match slice.chars().next() {
+                    // slice 恒非空（logos 在无法匹配处至少前进一个字符），None 分支仅防御
+                    Some('"' | '\'') => LexError::UnterminatedString {
+                        quote: slice.chars().next().unwrap(),
+                    },
+                    Some(ch) => LexError::InvalidCharacter { ch },
+                    None => LexError::InvalidCharacter { ch: '\0' },
+                };
+                errors.push(TokenError {
+                    token: to_token(None, &lexer, &lines),
+                    error,
+                });
+            }
         }
     }
+    let eof_offset = input.len();
+    let (line, column) = lines.locate(eof_offset);
     tokens.push(Token {
         kind: TokenKind::Eof,
-        span: Span { start: 0, end: 0 },
-        slice: "".to_string(),
-        line: 0,
-        column: 0,
+        span: Span {
+            start: eof_offset,
+            end: eof_offset,
+        },
+        slice: String::new(),
+        line,
+        column,
     });
-    tokens
+    LexerResult { tokens, errors }
 }
