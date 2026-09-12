@@ -186,8 +186,9 @@ impl Parser {
     /// 文法位置约束在此集中校验（对应示例里"`impl` 不能带 `pub`"那类检查）：
     /// - 装饰器只允许修饰 `@foo;` / `@foo { ... }`（文法 `decoratorStatement`）
     ///   与 `func` / `class` / `trait`（文法中仅这三者带 `decorator*`）；
-    /// - 可见性只允许修饰 `class` / `func` / `let` / `const`；
-    ///   `extern` 的 `Pub?` 在 `extern` 之后（文法 `Extern Pub? Func`），不在此处。
+    /// - 可见性统一写在声明关键字之前，只允许修饰 `class` / `func` / `let` / `const`
+    ///   与 `extern`（`pub extern func`，对应文法 `Pub? Extern Func` 的 `Pub?`）；
+    ///   `extern` 之后不允许再出现可见性（`extern pub func` 是错误写法）。
     fn parse_item(&mut self) -> Option<Item> {
         // ① 先看有没有装饰器（属性）
         let attributes = self.parse_decorators();
@@ -212,15 +213,13 @@ impl Parser {
         }
         if scope.is_some() {
             match kind {
-                TokenKind::Class | TokenKind::Func | TokenKind::Let | TokenKind::Const => {}
-                TokenKind::Extern => {
-                    self.error_here(
-                        "`extern` 的可见性修饰符应写在 `extern` 之后（`extern pub func`）",
-                    );
-                    return None;
-                }
+                TokenKind::Class
+                | TokenKind::Func
+                | TokenKind::Let
+                | TokenKind::Const
+                | TokenKind::Extern => {}
                 _ => {
-                    self.error_here("`pub` 后应为 class / func / let / const 声明");
+                    self.error_here("`pub` 后应为 class / func / extern / let / const 声明");
                     return None;
                 }
             }
@@ -259,7 +258,13 @@ impl Parser {
             }
             TokenKind::Extern => {
                 self.advance();
-                self.parse_extern_function()
+                // 可见性必须整体写在 `extern` 之前（`pub extern func`）；
+                // `extern pub func` 属于错误写法，在此拦截
+                if self.check(TokenKind::Pub) {
+                    self.error_here("`extern` 后不应有可见性修饰符，应写作 `pub extern func`");
+                    return None;
+                }
+                self.parse_extern_function(scope)
             }
             // 顶层 `pub let` / `pub const`（文法 `variableStatement: Pub? (Const | Let) ...`），
             // 与兜底分支同样包装成 [`Item::Statement`]
@@ -280,7 +285,7 @@ impl Parser {
     /// `accessModifier: Pub | Pri`，顶层不书写 `pri`，故此处不产出 `Private`。
     /// 是否允许修饰当前 item 由 [`Parser::parse_item`] 校验。
     fn parse_visibility(&mut self) -> Option<Scope> {
-        self.eat(TokenKind::Pub).map(|_| Scope::Pubilc)
+        self.eat(TokenKind::Pub).map(|_| Scope::Public)
     }
 
     // ---------- 各 item 解析（骨架：方法体留给你写） ----------
@@ -337,13 +342,14 @@ impl Parser {
     /// 解析 extern 函数声明（对应文法 `externFunctionDeclaration`）。
     ///
     /// 前置：`extern` 关键字已被 [`Parser::parse_item`] 消费。
-    /// 注意：文法为 `Extern Pub? Func ...`，可见性在 `extern` 之后，
-    /// 与 class / func / let / const 的 `Pub?` 位置不同，由本方法内部处理
-    /// （当前骨架未实现，实现时按文法在 `Func` 前解析 `Pub?`）。
-    /// TODO(自己写)：`Extern Pub? Func identifier typeParameters? '(' parameterList? ')'`
+    /// `scope` 为可见性（对应文法 `Pub? Extern Func ...` 的 `Pub?`），
+    /// 由 [`Parser::parse_item`] 在 `extern` 之前解析并传入；
+    /// `extern` 之后不得再出现可见性修饰符（`extern pub func` 已在
+    /// [`Parser::parse_item`] 拦截报错）。
+    /// TODO(自己写)：`Pub? Extern Func identifier typeParameters? '(' parameterList? ')'`
     /// `typeAnnotation? ReturnArrow? typeExpression? SemiColon`
-    /// → [`FunctionItem`]（`is_extern: true`、`block: None`）。
-    fn parse_extern_function(&mut self) -> Option<Item> {
+    /// → [`FunctionItem`]（`is_extern: true`、`block: None`、`scope` 取自入参）。
+    fn parse_extern_function(&mut self, _scope: Option<Scope>) -> Option<Item> {
         // 骨架：待实现
         None
     }
@@ -495,12 +501,23 @@ impl Parser {
     /// [`Parser::parse_item`] 无法识别为具名 item 起始关键字的 token 均由此兜底。
     /// 起始 token 由本方法的分支自行消费（`let` / `const` 分支交由
     /// [`Parser::parse_variable_declaration`] 消费），游标只前进不回退。
-    /// 骨架：仅实现变量声明分支（`let` / `const`）与块语句，
-    /// 其余形态（return / break / if / while / for ...）待实现。
+    /// 骨架：已实现变量声明分支（`let` / `const`）、`continue` 语句与块语句，
+    /// 其余形态（return / break / throw / yield / if / while / for ...）待实现。
     fn parse_statement(&mut self) -> Option<Statement> {
         match self.peek().map(|t| t.kind) {
             // 块内变量声明不支持可见性修饰符，故传 None（顶层 `pub let` 走 parse_item）
             Some(TokenKind::Let) | Some(TokenKind::Const) => self.parse_variable_declaration(None),
+            // 跳过本次迭代：`continue;`（对应文法 `continueStatement`）
+            Some(TokenKind::Continue) => {
+                let keyword = self.advance()?;
+                let semi = self.expect(TokenKind::SemiColon)?;
+                Some(Statement::Continue {
+                    span: Span {
+                        start: keyword.span.start,
+                        end: semi.span.end,
+                    },
+                })
+            }
             Some(TokenKind::OpenBrace) => self.parse_block().map(Statement::Block),
             _ => {
                 self.error_here("未知语句");

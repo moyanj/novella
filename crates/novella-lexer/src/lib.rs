@@ -252,7 +252,7 @@ pub enum RawToken {
 
 /// 把 logos 生成的 [`Token`] 转换为下游共享的 [`TokenKind`]。
 ///
-/// 转换是纯种类映射(不携带位置与原文),104 个变体一一对应;
+/// 转换是纯种类映射(不携带位置与原文),105 个变体一一对应;
 /// 由 match 的穷尽性保证 logos 侧新增变体时此处编译报错、不会漏转。
 impl From<RawToken> for TokenKind {
     fn from(token: RawToken) -> TokenKind {

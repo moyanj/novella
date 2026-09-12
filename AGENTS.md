@@ -4,7 +4,7 @@
 
 ## OVERVIEW
 
-novella 语言编译器。Rust workspace（edition 2024，Apache-2.0，8 个 crate），ANTLR4 文法作语法参考。当前为早期阶段：**词法分析可用**，AST 部分落地，parser 骨架实现中（已支持装饰器、函数声明、`let`/`const` 变量声明等部分结构），sema/codegen 仍为空壳占位。
+novella 语言编译器。Rust workspace（edition 2024，Apache-2.0，8 个 crate），ANTLR4 文法与代码对齐（词法↔`TokenKind`，语法↔AST）。当前为早期阶段：**词法分析可用**，AST 部分落地，parser 骨架实现中（已支持装饰器、函数声明、`let`/`const` 变量声明、`continue` 语句等部分结构），sema/codegen 仍为空壳占位。
 
 ## STRUCTURE
 
@@ -21,7 +21,7 @@ novella/
 │   ├── novella-cli/     # 二进制（包名 novella）：clap CLI，仅 compile 子命令
 │   └── novella-lsp/     # 语言服务器（lib + 二进制）：薄 LSP，输出词法级语义高亮
 ├── editors/vscode/      # VS Code 扩展（esbuild 打包；启动 novella-lsp，不含语法规则）
-├── grammar/             # ANTLR4 语法参考：NovellaLexer.g4 / NovellaParser.g4
+├── grammar/             # ANTLR4 文法（以代码为基准对齐）：NovellaLexer.g4 / NovellaParser.g4
 ├── Cargo.toml           # workspace（members = crates/*，resolver = 2）
 └── Justfile             # 命令入口
 ```
@@ -43,7 +43,7 @@ ast ──(构建期)── novella-derive（proc-macro，展开引用 ::novella
 | 加 AST 节点 | `crates/novella-ast/src/` | 按 `expr/stmt/types/program` 分类，参考文法产生式对照；新节点须携带 `span` 字段并 `#[derive(Spanned)]`（见 CONVENTIONS） |
 | 诊断/错误显示 | `crates/novella-cli/src/error.rs` + `crates/novella-core/src/diagnostic.rs` | 通用诊断结构（各阶段产出）→ `render_diagnostic` rustc 风格渲染 |
 | CLI 子命令 | `crates/novella-cli/src/cli.rs` | clap derive |
-| 语法设计参考 | `grammar/NovellaParser.g4` | 仅参考，未与代码对齐 |
+46	| 文法（ANTLR4） | `grammar/NovellaLexer.g4` + `grammar/NovellaParser.g4` | 以代码为基准对齐：词法↔`TokenKind`，语法↔AST 节点；改动代码后须同步（见 `grammar/README.md`） |
 | 编辑器语法高亮 | `crates/novella-lsp/src/` + `editors/vscode/` | 薄 LSP：`semantic.rs` 做类别映射与 UTF-16 偏移编码，`protocol.rs` 做报文帧，`server.rs` 做分发 |
 | 调整高亮类别 | `crates/novella-lsp/src/semantic.rs` | `token_type_index` 为穷尽 match；改动映射须同步 `TOKEN_TYPES`（数组顺序即 legend 下标） |
 | 打包 VS Code 扩展 | `editors/vscode/` | `just lsp-pack`；源码 `src/extension.js` 经 esbuild 打入 `dist/`，vsix 自包含无需 node_modules |
@@ -60,9 +60,9 @@ ast ──(构建期)── novella-derive（proc-macro，展开引用 ::novella
 | `Token` | `novella-core/src/token.rs` | kind + span + slice + line + column |
 | `RawToken` | `novella-lexer/src/lib.rs` | logos 私有枚举；`From<RawToken> for TokenKind` 穷尽映射 |
 | `lexer(&str) -> LexerResult` | `novella-lexer/src/lib.rs` | 入口：产出含 EOF 的 token 流与词法错误列表；错误仅入 `errors` |
-| `Expression` / `Literal` | `novella-ast/src/expr.rs` | 仅元组 + 字面量两类节点 |
-| `Statement` / `IfStmt` / `ForStmt` | `novella-ast/src/stmt.rs` | 含 `BindingPattern`（标识符/元组解构递归） |
-| `TypeExpr` / `PredefinedType` | `novella-ast/src/types.rs` | 类型表达式；`Param` 暂不承载默认值 |
+| `Expression` / `Literal` | `novella-ast/src/expr.rs` | 完整表达式节点集（字面量/标识符/括号/元组/数组/对象/this/一元/二元/赋值/成员/索引/调用/构造/宏调用/await/is/三元/lambda/match），运算符由 `UnaryOp`/`BinaryOp`/`AssignOp` 集中定义 |
+| `Statement` / `IfStmt` / `ForStmt` | `novella-ast/src/stmt.rs` | 含 `BindingPattern`（标识符/元组解构递归）、`Continue`；`TryStmt` / `WithStmt` 亦在此 |
+| `TypeExpr` / `PredefinedType` | `novella-ast/src/types.rs` | 类型表达式（Predefined/Reference/Array/Tuple/Function/Union）；`Param` 含 `default` 默认值 |
 | `Program` / `Item` / `Scope` | `novella-ast/src/program.rs` | 顶层 item；`Scope` 注意拼写 `Pubilc` |
 | `token_type_index` / `encode` | `novella-lsp/src/semantic.rs` | `TokenKind` → legend 下标（穷尽 match）/ token 流 → semantic tokens（字节偏移换算为 UTF-16 码元） |
 | `Server::handle` | `novella-lsp/src/server.rs` | JSON-RPC 报文分发：请求必回复、通知不回复 |
@@ -73,7 +73,7 @@ ast ──(构建期)── novella-derive（proc-macro，展开引用 ::novella
 - 注释、doc、commit、文档均中文。
 - **TokenKind ↔ RawToken 双枚举**：`token.rs` 定义稳定公共种类（doc 注释标注对应字面量），`lexer` 的 `RawToken` 是 logos 专属投影，靠 `From` 的 match 穷尽性保证新增变体不漏转（漏了编译报错）。
 - **下游不接触 logos**：parser 等阶段只见 `novella_core::token::Token`。
-- **AST 注释对齐文法**：每个节点 doc 标注 `对应文法 xxx`（以 `grammar/*.g4` 产生式名为准）。
+- **AST 注释对齐文法**：每个节点 doc 标注 `对应文法 xxx`（以 `grammar/*.g4` 产生式名为准）；反之文法只描述 AST 存在的结构，两侧不一致时以代码为准。
 - **AST 节点全量挂 span**：每个 AST 节点（struct 或 enum 变体）携带 `span: novella_core::Span` 字段，纯值枚举（运算符、`Literal`、`PredefinedType`、`Scope` 等）除外；`span()` 方法由 `#[derive(Spanned)]` 自动生成，字段名必须为 `span`，enum 单字段 newtype 变体自动委托内部节点。
 - **类型全量 serde**：AST / token 均派生 `Serialize, Deserialize`，用于 JSON 输出。
 - **for 循环 init 语义**：文法中 init 段声明不带 `const/let`，统一按 `Let` 承载（见 `ForInit` 注释）。
@@ -91,7 +91,7 @@ ast ──(构建期)── novella-derive（proc-macro，展开引用 ::novella
 - ❌ 在 `novella-lsp` 或 VS Code 插件里重复维护词法/关键字规则——高亮必须复用 `novella-lexer`。
 - ❌ 输出 LSP 语义 token 时直接用字节偏移——含中文/emoji 的行会整体错位，必须换算为 UTF-16 码元。
 - ❌ 把 `grammar/.antlr` 生成产物（`.java`/.interp/.tokens）提交——已 gitignore。
-- ❌ 把 `grammar/*.g4` 当作已生效文法——README 明示未对齐，改动前先核对代码现状。
+- ❌ 只改代码不同步 `grammar/*.g4`——文法以代码为基准，`TokenKind` / AST 变更后必须同步；反之也不得凭文法去要求代码。
 - ❌ 修改 `Span`/`Token` 字段时不更新 JSON 消费者（cli 输出 `serde_json`）。
 - ❌ 除非明确要求，否则不写测试
 
@@ -120,7 +120,7 @@ just lsp-pack     # 打包 VS Code 扩展（esbuild 打包 + vsce 产出 vsix）
 - EOF token 的 span 指向输入末尾 `{start:len, end:len}`，line/column 为末尾处行列；行号 1-based、列号 0-based（字节偏移），对齐 ANTLR `getLine()` / `getCharPositionInLine()`。
 - `TokenKind::Error` 保留为非法字符 / 未闭合字符串的占位（`to_token` 的 None 分支），随错误记录进 `errors`。
 - **注释 token 化**：lexer 把 `// ...`（到行尾，不含换行）产出为 `TokenKind::LineComment`（此前由 `logos(skip)` 丢弃），故 CLI 的 JSON 输出 `tokens` 现包含注释 token；CLI 在构造 parser 前过滤注释，JSON 输出仍保留。若将来 parser 需要 doc comment，应改为 parser 内部吞注释并移除该过滤。
-- **块注释未支持**：`/* ... */` 在本项目被刻意砍掉（ANTLR 参考中的 `MultiLineComment` 仅为参考）；`/*` 目前会被切分为 `Divide` + `Multiply`。
+- **块注释未支持**：`/* ... */` 在本项目被刻意砍掉（文法中已无 `MultiLineComment`）；`/*` 目前会被切分为 `Divide` + `Multiply`。
 - LSP 语义 token 的偏移单位为 **UTF-16 码元**（见 CONVENTIONS）；跨行 token 会被按行拆分为多个语义 token——当前词法下（行注释与字面量都不含换行）不会触发，属防御性实现。
 - `FunctionItem.block` 类型为 `Option<Box<Statement>>`：`Box` 用于抑制 `Item` 枚举的尺寸差异（否则触发 clippy `large_enum_variant`）；类方法成员的 `block` 仍为 `Option<Block>`。
 - VS Code 扩展以 esbuild 打包为自包含单文件（`dist/extension.js`），vsix 不携带 `node_modules`；`editors/vscode/pnpm-workspace.yaml` 中 `allowBuilds: esbuild: false` 是**必需**的——允许其 postinstall 会把 `bin/esbuild` 替换成 ELF 原生二进制，导致 pnpm 执行 scripts 时按 JS 解析而报语法错误。

@@ -2,7 +2,9 @@
 
 novella 语言编译器。Rust workspace（edition 2024，Apache-2.0）。
 
-`grammar/` 下为 ANTLR4 文法参考，**尚未与代码对齐**，改动前请先核对代码现状。
+`grammar/` 下为 ANTLR4 文法，**以代码为基准对齐**：词法面与 `TokenKind` / `novella-lexer`
+逐条对应，语法面与 `novella-ast` 的节点定义对应；改代码后须同步文法
+（对齐约定与校验方式见 [grammar/README.md](grammar/README.md)）。
 
 ## 当前状态
 

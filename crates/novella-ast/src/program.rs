@@ -21,7 +21,7 @@ pub struct Program {
 /// 对象可见性
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum Scope {
-    Pubilc,
+    Public,
     Private,
 }
 

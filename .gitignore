@@ -9,5 +9,11 @@
 /editors/vscode/dist
 /editors/vscode/*.vsix
 
+# ANTLR4 生成产物（缺 -o 时 antlr4 会把产物写到文法目录旁）
+/grammar/.antlr
+/grammar/*.java
+/grammar/*.interp
+/grammar/*.tokens
+
 # 编译器输出
 /output.s

@@ -231,6 +231,11 @@ pub enum Statement {
         /// 语句覆盖的源码区间
         span: Span,
     },
+    /// 跳过本次迭代：`continue;`（对应 `continueStatement`）
+    Continue {
+        /// 语句覆盖的源码区间
+        span: Span,
+    },
     /// 抛出异常：`throw expr;`（对应 `throwStatement`）
     Throw {
         /// 被抛出的表达式

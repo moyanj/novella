@@ -1,14 +1,39 @@
 parser grammar NovellaParser;
 
+// =============================================================================
+// Novella 语法文法
+//
+// 对齐基准（唯一事实源）：
+//   - crates/novella-ast/    AST 节点定义：本文件只描述 AST 能承载的结构；
+//                            AST 中已不存在的结构，本文件不再保留
+//   - crates/novella-parser/ 手写递归下降解析器（骨架）：已实现的分支按代码行为描述
+//   - 词法面见 NovellaLexer.g4（与 novella-core 的 `TokenKind` 逐条对齐）
+//
+// 与旧参考文的差异（这些结构在代码中已被砍掉，故同步移除）：
+//   - `typeExpression` 的 `&` 交叉类型：AST 仅 `TypeExpr::Union`（`|`），无交叉类型节点；
+//   - `objectType` / `objectTypeMember`：`TypeExpr` 无对象类型变体（`ObjectMember` 已随之删除）；
+//   - `macroDeclaration`：AST 无宏声明节点，只有调用侧 `Expression::MacroCall`；
+//   - `asyncStatement` / `streamStatement`：`async func ...` 并入 `FunctionItem.is_async`，
+//     异步 lambda 由 `Lambda.is_async` 承载；`stream` 在 AST 中已无任何承载（只剩关键字）；
+//   - 字面量形态的 `predefinedType`（`BooleanLiteral | StringLiteral | NullLiteral`）：
+//     `PredefinedType` 是一组类型名（int / float / u8 / ...），词法层并无这些保留字。
+//
+// 残留未引用的关键字（词法层仍是关键字，见 `TokenKind`，但当前无对应语法结构）：
+//   Stream / Macro。它们保留在词法层是为了不动 `TokenKind` 这个唯一事实源
+//   （`Macro` 只有调用侧 `Expression::MacroCall`）；若后续确认不再支持，
+//   应连同词法与语言服务器的高亮映射一并移除。
+//
+// 行注释在语法层透明：`LineComment` 是正式 token（供高亮等消费），调用方（CLI / LSP）
+// 在喂给 parser 之前过滤掉它，故本文件不引用该 token。
+// =============================================================================
+
 options {
 	tokenVocab = NovellaLexer;
-	superClass = NovellaParserBase;
 }
 
 // ====================== 程序结构 ======================
-program: sourceElements? EOF;
-
-sourceElements: sourceElement+;
+// 空文件合法（对应 `Parser::parse` 的 `while !self.at_eof()` 循环，逐条解析至流尾）
+program: sourceElement* EOF;
 
 sourceElement:
 	moduleImport
@@ -17,104 +42,127 @@ sourceElement:
 	| classDeclaration
 	| functionDeclaration
 	| externFunctionDeclaration
-	| macroDeclaration
 	| decoratorStatement
 	| statement;
 
 // ====================== 模块系统 ======================
+// 对应 `ImportItem`：`ImportKind::Named`（from 形态）与 `ImportKind::Namespace`（import 形态）
 moduleImport: fromImport | directImport;
 
-fromImport:
-	From StringLiteral Import identifier (',' identifier)* SemiColon;
+// 具名导入：`from "mod" import a, b as c;`
+fromImport: From StringLiteral Import importSpecifier (',' importSpecifier)* SemiColon;
 
+// 对应 `ImportSpecifier`：`imported` 为符号名，`as` 后的名字写入 `local`（缺省表示同名）
+importSpecifier: identifier (As identifier)?;
+
+// 命名空间导入：`import "mod";`（整模块绑定，本地别名由语义分析按路径推导）
 directImport: Import StringLiteral SemiColon;
 
 // ====================== 装饰器 ======================
-// decoratorStatement 有两种形态：
-//   - decorator SemiColon —— 独立装饰器语句，如 @foo;
-//   - decorator block     —— 装饰块：装饰器直接修饰一个语句块，如 @cfg(feature = "limine") { ... }
+// decoratorStatement 两种形态，分别对应 `Item::Decorator` 与 `Item::DecoratorBlock`：
+//   - decorator SemiColon —— 独立装饰器语句，如 `@foo;`
+//   - decorator block     —— 装饰块，如 `@cfg(feature = "limine") { ... }`
+//
+// 文法只允许单条装饰器：代码显式报错「装饰器语句 / 装饰块只允许一个装饰器」
+//（`Parser::parse_decorator_statement`），故此处不是 `decorator*`。
 decoratorStatement: decorator (SemiColon | block);
 
-// 语义上等价 Rust 的 #[name(...)]：@name(args) 或 @name 简写形式。
-// 括号内为自由 token 流（任意词法单元，允许嵌套括号），原样保留到 AST 的
-// Decorator.tokens，结构化解析（如 @cfg(target_os = "linux")）延后到语义分析阶段。
-decorator:
-	At identifier (
-		'(' decoratorToken* ')'
-	)?;
+// 装饰器（对应 `Decorator`）：`@name` 或 `@name(...)`。
+//
+// 括号内为**自由 token 流**，原样收集进 `Decorator.tokens`（不含外层括号本身），
+// 结构化解释（如 `@cfg(target_os = "linux")`）延后到语义分析阶段——符合「值语义延后」约定。
+// 名字必须是标识符：代码中 `@` 后不是 `Identifier` 即报「`@` 后应有装饰器名」。
+decorator: At identifier ('(' decoratorArgument* ')')?;
 
-// 装饰器括号内的自由 token：匹配任意词法单元（含括号、字面量、标识符等）。
-decoratorToken: .;
+// 括号内自由 token：允许嵌套括号（与代码的括号配对收集一致，嵌套括号平铺在 tokens 中）。
+// 括号未闭合属致命错误，由解析阶段的诊断报告（代码：`装饰器括号未闭合`）。
+decoratorArgument: '(' decoratorArgument* ')' | ~(OpenParen | CloseParen);
 
 // ====================== 类型系统 ======================
-typeAliasDeclaration:
-	Type identifier typeParameters? Assign typeExpression SemiColon;
+// 类型别名（对应 `TypeAliasItem`）
+typeAliasDeclaration: Type identifier typeParameters? Assign typeExpression SemiColon;
 
+// 泛型参数列表（对应 `TypeParameter`：`T` 或 `T: Bound`）
 typeParameters: '<' typeParameterList '>';
 
 typeParameterList: typeParameter (',' typeParameter)*;
 
 typeParameter: identifier (Colon typeExpression)?;
 
+// 类型表达式（对应 `TypeExpr`）。
+// 联合类型解析时折叠为扁平列表（`TypeExpr::Union.types`），不保留二元嵌套结构。
 typeExpression:
 	arrowFunctionType
 	| primaryType
 	| functionType
-	| typeExpression '&' typeExpression
 	| typeExpression '|' typeExpression;
 
+// 基础类型：只有 `null` 在词法层是独立 token（`Null`）。
+// 其余类型名（boolean / string / int / float / void / u8..u64 / i8..i64 / f8..f64 / usize / isize）
+// 在词法层都是普通 Identifier，故不在此写死集合——其 `PredefinedType` 归类由 parser /
+// 语义分析按名字判定，避免在词法层新增一批保留字而与 `TokenKind` 这一事实源冲突。
+predefinedType: Null;
+
+// 主类型：元组 / 基础类型 / 类型引用 / 数组（对应 `TypeExpr::Tuple` / `Predefined` / `Reference` / `Array`）
 primaryType:
 	'(' typeList? ')'		# TupleTypeCase
 	| predefinedType		# PredefinedTypeCase
 	| typeReference			# ReferenceTypeCase
-	| primaryType '[' ']'	# ArrayTypeCase
-	| objectType			# ObjectTypeCase;
-
-objectType: '{' (objectTypeMember (';' | ',')?)* '}';
-
-objectTypeMember: identifier typeAnnotation;
-
-arrowFunctionType:
-	typeParameters? '(' typeList? ')' ReturnArrow typeExpression;
+	| primaryType '[' ']'	# ArrayTypeCase;
 
 typeList: typeExpression (',' typeExpression)*;
 
-predefinedType: BooleanLiteral | StringLiteral | NullLiteral;
-
+// 类型引用：`Foo` / `Foo<T>`（对应 `TypeExpr::Reference{name, generic_args}`）
 typeReference: identifier typeGeneric?;
 
 typeGeneric: '<' typeArgumentList '>';
 
 typeArgumentList: typeExpression (',' typeExpression)*;
 
-functionType:
-	Func typeParameters? '(' parameterList? ')' ReturnArrow typeExpression;
+// 箭头函数类型：`<T>(int) -> string`（对应 `TypeExpr::Function`）
+arrowFunctionType: typeParameters? '(' typeList? ')' ReturnArrow typeExpression;
 
+// 具名函数类型：`func (a: int) -> int`（与 arrowFunctionType 合并进同一 `FunctionType` 节点）
+functionType: Func typeParameters? '(' parameterList? ')' ReturnArrow typeExpression;
+
+// 类型注解：`name: Type`（对应各处 `typeAnnotation?`）
 typeAnnotation: Colon typeExpression;
 
 // ====================== trait 与类声明 ======================
+// trait 声明（对应 `TraitItem`）：文法无 `Pub?`，代码亦拒绝 `pub trait`
+//（`Parser::parse_item`：`pub` 后只允许 class / func / extern / let / const）
 traitDeclaration:
 	decorator* Trait identifier typeParameters? traitBody;
 
 traitBody: '{' traitMember* '}';
 
+// trait 成员与类成员同构（对应 `TraitItem.members: Vec<ClassMember>`）
 traitMember: methodDeclaration | fieldDeclaration;
 
+// 类声明（对应 `ClassItem`：attributes / name / type_parameters / members / parent / scope）
 classDeclaration:
 	decorator* Pub? Class identifier typeParameters? classHeritage? classBody;
 
+// 继承列表：文法只允许单个父类引用（`ClassItem.parent` 为 `Vec`，按多继承预留）
 classHeritage: '(' typeReference ')';
 
 classBody: '{' classMember* '}';
 
+// 类成员（对应 `ClassMember`）
 classMember: methodDeclaration | fieldDeclaration;
 
 // ====================== 成员声明 ======================
+// 字段成员（对应 `FieldMember`：attributes / modifiers / name / ty / initializer）
 fieldDeclaration:
 	decorator* accessModifier? Static? identifier typeAnnotation? (
 		Assign expression
 	)? SemiColon;
 
+// 方法成员（对应 `MethodMember`：attributes / modifiers / name / type_parameters /
+// params / return_type / block）。
+// 返回类型注解沿用 AST 文档所记的 `typeAnnotation? ReturnArrow? typeExpression?`
+//（解析结果统一落在 `MethodMember.return_type` 一个字段上）；
+// `(block | SemiColon)` 对应 `MethodMember.block` 的 `Some` / `None`。
 methodDeclaration:
 	decorator* accessModifier? Static? Func identifier typeParameters? '(' parameterList? ')'
 		typeAnnotation? ReturnArrow? typeExpression? (
@@ -122,22 +170,27 @@ methodDeclaration:
 		| SemiColon
 	);
 
+// 成员可见性（对应 `MemberModifiers.scope: Option<Scope>`）
 accessModifier: Pub | Pri;
 
-// ====================== 函数与宏声明 ======================
+// ====================== 函数声明 ======================
+// 顶层函数声明（对应 `FunctionItem`：attributes / name / r#type / block / scope /
+// is_extern / is_async）。
+// `Async?` 对应 `FunctionItem.is_async`（此前的 `asyncStatement` 已并入本节点）。
 functionDeclaration:
-	decorator* Pub? Func identifier typeParameters? '(' parameterList? ')' typeAnnotation?
+	decorator* Pub? Async? Func identifier typeParameters? '(' parameterList? ')' typeAnnotation?
 		ReturnArrow? typeExpression? block;
 
 parameterList: parameter (',' parameter)*;
 
+// 形参（对应 `Param`：name / ty / default）
 parameter: identifier typeAnnotation? (Assign expression)?;
 
-macroDeclaration:
-	Macro identifier '!' '(' parameterList? ')' block;
-
+// extern 函数声明（对应 `FunctionItem`：is_extern = true、block = None，以 `;` 结束）。
+// 可见性写在 `extern` 之前（`pub extern func`）：代码中 `extern pub func` 会报
+//「`extern` 后不应有可见性修饰符」。
 externFunctionDeclaration:
-	Extern Pub? Func identifier typeParameters? '(' parameterList? ')' typeAnnotation? ReturnArrow?
+	Pub? Extern Func identifier typeParameters? '(' parameterList? ')' typeAnnotation? ReturnArrow?
 		typeExpression? SemiColon;
 
 // ====================== 语句 ======================
@@ -148,24 +201,26 @@ statement:
 	| continueStatement
 	| throwStatement
 	| yieldStatement
+	| emptyStatement
 	| block
 	| ifStatement
 	| whileStatement
 	| forStatement
 	| tryStatement
 	| withStatement
-	| asyncStatement
-	| streamStatement
 	| expressionStatement;
 
 block: '{' statement* '}';
 
-variableStatement:
-	Pub? (Const | Let) variableDeclarationList SemiColon;
+// 空语句 `;`：不产出 AST 节点（对应 `Parser::parse_item` 的 SemiColon 分支：消费后跳过）
+emptyStatement: SemiColon;
 
-variableDeclarationList:
-	variableDeclaration (',' variableDeclaration)*;
+// 变量声明语句（对应 `VariableStmt`：pattern / ty / value / scope / r#type）
+variableStatement: Pub? (Const | Let) variableDeclarationList SemiColon;
 
+variableDeclarationList: variableDeclaration (',' variableDeclaration)*;
+
+// 绑定目标：标识符或元组解构（对应 `BindingPattern::Ident` / `BindingPattern::Tuple`）
 variableDeclaration: (identifier | bindingPattern) typeAnnotation? (
 		Assign expression
 	)?;
@@ -175,6 +230,8 @@ bindingPattern: '(' identifier (',' identifier)* ')';
 expressionStatement: expression SemiColon;
 
 // ====================== 控制流语句 ======================
+// if / elif / else 链（对应 `IfStmt.branches`：`IfBranch::ElseIf` 与 `IfBranch::Else`）。
+// 每个分支体是 `statement`（不限于花括号块），与 `IfBranch.block: Box<Statement>` 一致。
 ifStatement:
 	If '(' expression ')' statement (
 		Elif '(' expression ')' statement
@@ -182,26 +239,34 @@ ifStatement:
 
 whileStatement: While '(' expression ')' statement;
 
+// for 语句（对应 `ForKind::ForLoop` 与 `ForKind::ForIn`）；
+// 循环体是 `statement`（对应 `ForStmt.block: Box<Statement>`）。
 forStatement:
 	For '(' forInit? SemiColon expression? SemiColon expression? ')' statement	# ForLoop
-	| For '(' identifier In expression ')' statement							# ForInStatement;
+	| For '(' (identifier | bindingPattern) In expression ')' statement			# ForInStatement;
 
+// init 段：声明列表或表达式（对应 `ForInit::Declaration` / `ForInit::Expression`）
 forInit: variableDeclarationList | expression;
 
 // ====================== 错误处理与上下文 ======================
+// try 语句（对应 `TryStmt`：block / catches / finally）；
+// 无 catch 时必须存在 finally，与 `catches` 为空即需 `finally` 的约束一致。
 tryStatement:
 	Try block (catchClause+ finallyClause? | finallyClause);
 
+// catch 子句（对应 `CatchClause`：name / ty / block）
 catchClause: Catch '(' identifier typeAnnotation? ')' block;
 
 finallyClause: Finally block;
 
+// with 语句（对应 `WithStmt`：expr / binding / block）
 withStatement:
 	With expression (
 		As (identifier | bindingPattern) typeAnnotation?
 	)? block;
 
-// ====================== 跳转与异步语句 ======================
+// ====================== 跳转语句 ======================
+// 跳转语句（对应 `Statement::Return` / `Break` / `Continue` / `Throw` / `Yield`）
 returnStatement: Return expression? SemiColon;
 
 breakStatement: Break SemiColon;
@@ -212,13 +277,8 @@ throwStatement: Throw expression SemiColon;
 
 yieldStatement: Yield expression? SemiColon;
 
-asyncStatement:
-	Async Func identifier '(' parameterList? ')' typeAnnotation? ReturnArrow? typeExpression block;
-
-streamStatement:
-	Async? Stream '<' typeExpression '>' identifier '(' parameterList? ')' block;
-
 // ====================== 表达式 ======================
+// 备选顺序即优先级（ANTLR 左递归规则：靠前的备选优先级更高）
 expression:
 	primaryExpression										# PrimaryExpr
 	| tupleExpression										# TupleExpr
@@ -227,7 +287,12 @@ expression:
 	| expression '[' expression ']'							# IndexAccessExpr
 	| expression typeGeneric? '(' argumentList? ')'			# CallExpr
 	| expression '!' '(' argumentList? ')'					# MacroCallExpr
-	| New expression '(' argumentList? ')'					# NewExpr
+	// 对象构造（对应 `Expression::New{target, args}`）：实参由紧随其后的调用表达式承载，
+	// 构建 AST 时把该 `Call` 的 `type_args` / `args` 提到 `New` 上，即可得到
+	// `New{target: 被构造者, args: 构造实参}`。
+	// 旧写法 `New expression '(' argumentList? ')'` 无法解析 `new Foo(1)`：内层
+	// `expression` 会先按 `CallExpr` 吃掉 `(1)`，随后再要求一个 `(` 便解析失败。
+	| New expression										# NewExpr
 	| expression '++'										# PostfixExpr
 	| expression '--'										# PostfixExpr
 	| '+' expression										# PrefixExpr
@@ -265,6 +330,8 @@ expression:
 		| '**='
 	) expression # AssignmentExpr;
 
+// 原子表达式（对应 `Expression::Literal` / `Identifier` / `Paren` / `ArrayLiteral` /
+// `ObjectLiteral` / `This`）
 primaryExpression:
 	literal					# LiteralExpr
 	| identifier			# IdentifierExpr
@@ -273,13 +340,17 @@ primaryExpression:
 	| objectLiteral			# ObjectLiteralExpr
 	| This					# ThisExpr;
 
-tupleExpression: '(' expression (',' expression)* ')';
+// 元组表达式：至少两个元素（对应 `Expression::Tuple`，单元素 `(a)` 是 Paren）
+tupleExpression: '(' expression ',' expression (',' expression)* ','? ')';
 
+// 实参列表（允许尾随逗号，对应 `Call.args` / `New.args` / `MacroCall.args`）
 argumentList: expression (',' expression)* ','?;
 
 // ====================== 字面量和数据结构 ======================
+// 字面量（对应 `Literal`）：字符串的三种前缀形态与数字的四种进制统一落在
+// `Literal::String` / `Literal::Number`，原文保留（值语义延后）
 literal:
-	NullLiteral
+	Null
 	| BooleanLiteral
 	| StringLiteral
 	| FormatStringLiteral
@@ -293,66 +364,43 @@ numericLiteral:
 	| OctalIntegerLiteral
 	| BinaryIntegerLiteral;
 
-arrayLiteral: '[' expression? (',' expression)* ','? ']';
+// 数组字面量（对应 `Expression::ArrayLiteral`）
+arrayLiteral: '[' (expression (',' expression)* ','?)? ']';
 
+// 对象字面量（对应 `Expression::ObjectLiteral`）
 objectLiteral:
 	'{' (propertyAssignment (',' propertyAssignment)* ','?)? '}';
 
+// 属性赋值：`a: 1`，简写 `a`（对应 `PropertyAssignment.value` 为 `None`）
 propertyAssignment: identifier ':' expression | identifier;
 
+// lambda 表达式（对应 `Lambda`：is_async / params / return_type / body）
 lambdaExpression:
 	Async? lambdaSignature typeAnnotation? Arrow (
 		block
 		| expression
 	);
 
+// lambda 参数形态（对应 `LambdaParams::Single` / `LambdaParams::List`）
 lambdaSignature: identifier | '(' parameterList? ')';
 
 // ====================== match 表达式 ======================
+// match 表达式（对应 `Match`：subject / cases / default）
 matchExpression:
 	Match expression '{' matchCase+ matchDefault? '}';
 
+// 分支（对应 `MatchCase`，模式为 `MatchPattern::Expr` 或 `MatchPattern::Type`）
 matchCase:
 	Case (expression | typeAnnotation) ('=>' expression | block);
 
+// 兜底分支（对应 `Match.default: Option<MatchCaseBody>`）
 matchDefault: Default ('=>' expression | block);
 
 // ====================== 标识符 ======================
-identifier:
-	Identifier
-	| From
-	| Import
-	| Pub
-	| Pri
-	| Const
-	| Let
-	| Func
-	| Class
-	| Trait
-	| New
-	| This
-	| If
-	| Else
-	| Elif
-	| While
-	| For
-	| Break
-	| Continue
-	| Return
-	| Default
-	| Try
-	| Catch
-	| Finally
-	| Throw
-	| With
-	| As
-	| Type
-	| Is
-	| Async
-	| Await
-	| Stream
-	| Yield
-	| Macro
-	| Extern
-	| Match
-	| Case;
+// 标识符：代码只接受 `TokenKind::Identifier` 这一种 token——
+// `Parser::except_identifier` 及各调用点（`parse_decorator` / `parse_variable_declaration` /
+// `parse_function`）都要求当前 token 是 Identifier，词法层也没有上下文关键字机制。
+// 因此这里不列出「可作标识符的关键字」集合：关键字当前是硬保留字。
+// 若将来要支持软关键字（如 `obj.type`），需先在 parser 侧放宽这些校验，
+// 再把本规则改成 `Identifier | <候选关键字…>`，并保持与词法层一致。
+identifier: Identifier;

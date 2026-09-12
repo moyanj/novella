@@ -64,17 +64,6 @@ pub enum PredefinedType {
     Isize,
 }
 
-/// 对象类型成员：`name: TypeExpr`（对应 `objectTypeMember`）
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Spanned)]
-pub struct ObjectMember {
-    /// 成员名称
-    pub name: String,
-    /// 成员类型
-    pub ty: TypeExpr,
-    /// 成员声明覆盖的源码区间
-    pub span: Span,
-}
-
 /// 函数参数：`name`、`name: TypeExpr` 或带默认值（对应 `parameter`）
 ///
 /// 文法的 `parameter: identifier typeAnnotation? (Assign expression)?`：
@@ -139,7 +128,7 @@ pub enum TypeExpr {
         /// 源码区间
         span: Span,
     },
-    /// 函数类型：`(a: T) => U` / `fn (a: T) -> U`
+    /// 函数类型：`(T1, T2) -> U`（箭头形式）/ `func (a: int) -> int`（具名形式）
     Function(FunctionType),
     /// 联合类型：`A | B | C`（扁平存储，集合语义）
     Union {
