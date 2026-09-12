@@ -75,9 +75,6 @@ impl Parser {
     // ---------- token 判定与消费 ----------
 
     /// 当前 token 是否为指定 kind（不消费）。
-    ///
-    /// 骨架阶段尚未使用，实现 parse_xxx 时用上后可移除标注。
-    #[allow(dead_code)]
     fn check(&self, kind: TokenKind) -> bool {
         matches!(self.peek(), Some(token) if token.kind == kind)
     }
@@ -91,9 +88,6 @@ impl Parser {
     }
 
     /// 尝试消费指定 kind 的 token；命中则前进并返回该 token，否则返回 None（不移动游标）。
-    ///
-    /// 骨架阶段尚未使用，实现 parse_xxx 时用上后可移除标注。
-    #[allow(dead_code)]
     fn eat(&mut self, kind: TokenKind) -> Option<Token> {
         if self.check(kind) {
             self.advance()
@@ -106,8 +100,6 @@ impl Parser {
     ///
     /// 消息中的 `{kind}` 为 [`TokenKind`] 的 `Display`（变体名），
     /// 需要更友好的措辞时可在此处定制。
-    /// 骨架阶段尚未使用，实现 parse_xxx 时用上后可移除标注。
-    #[allow(dead_code)]
     fn expect(&mut self, kind: TokenKind) -> Option<Token> {
         match self.eat(kind) {
             Some(token) => Some(token),
@@ -138,8 +130,7 @@ impl Parser {
     ///
     /// 适用于已消费 token 后需回指其位置的场景；`token` 须为独立引用
     /// （如 `bump()` 返回的拥有值），不能是借自 `self` 的 `peek()` 结果，
-    /// 否则与 `&mut self` 冲突。当前骨架方法尚未用到，用上后可移除标注。
-    #[allow(dead_code)]
+    /// 否则与 `&mut self` 冲突。
     fn error_at(&mut self, token: &Token, message: impl Into<String>) {
         self.diagnostics.push(
             Diagnostic::error(message).with_location(DiagnosticLocation {
@@ -223,7 +214,9 @@ impl Parser {
             match kind {
                 TokenKind::Class | TokenKind::Func | TokenKind::Let | TokenKind::Const => {}
                 TokenKind::Extern => {
-                    self.error_here("`extern` 的可见性修饰符应写在 `extern` 之后（`extern pub func`）");
+                    self.error_here(
+                        "`extern` 的可见性修饰符应写在 `extern` 之后（`extern pub func`）",
+                    );
                     return None;
                 }
                 _ => {
@@ -268,19 +261,33 @@ impl Parser {
                 self.advance();
                 self.parse_extern_function()
             }
-            // 顶层 `pub let` / `pub const`（文法 `variableStatement: Pub? (Const | Let) ...`）
-            TokenKind::Let | TokenKind::Const => self.parse_variable_declaration(scope),
+            // 顶层 `pub let` / `pub const`（文法 `variableStatement: Pub? (Const | Let) ...`），
+            // 与兜底分支同样包装成 [`Item::Statement`]
+            TokenKind::Let | TokenKind::Const => self
+                .parse_variable_declaration(scope)
+                .map(Box::new)
+                .map(Item::Statement),
             // 其余起始关键字按文法 `sourceElement` 的 `statement` 分支兜底，
             // 对应 [`Item::Statement`]；起始 token 由 parse_statement 自行消费。
             _ => self.parse_statement().map(Box::new).map(Item::Statement),
         }
     }
 
+    /// 解析可见性修饰符（对应文法声明前的 `Pub?`）。
+    ///
+    /// 显式 `pub` 返回 `Some(Scope::Pubilc)`，无修饰符返回 `None`。
+    /// 顶层 item 的 `Pub?` 只需区分"有 / 无"：文法里 `Private` 来自类成员的
+    /// `accessModifier: Pub | Pri`，顶层不书写 `pri`，故此处不产出 `Private`。
+    /// 是否允许修饰当前 item 由 [`Parser::parse_item`] 校验。
+    fn parse_visibility(&mut self) -> Option<Scope> {
+        self.eat(TokenKind::Pub).map(|_| Scope::Pubilc)
+    }
+
     // ---------- 各 item 解析（骨架：方法体留给你写） ----------
 
     /// 解析导入语句（对应文法 `moduleImport`）。
     ///
-    /// 前置：`from` / `import` 起始关键字已被主循环消费。
+    /// 前置：`from` / `import` 起始关键字已被 [`Parser::parse_item`] 消费。
     /// TODO(自己写)：按文法实现
     /// - `fromImport`: `From StringLiteral Import identifier (',' identifier)* SemiColon`
     /// - `directImport`: `Import StringLiteral SemiColon`
@@ -291,7 +298,7 @@ impl Parser {
 
     /// 解析类型别名声明（对应文法 `typeAliasDeclaration`）。
     ///
-    /// 前置：`type` 关键字已被主循环消费。
+    /// 前置：`type` 关键字已被 [`Parser::parse_item`] 消费。
     /// TODO(自己写)：`Type identifier typeParameters? Assign typeExpression SemiColon`
     /// → [`Item::TypeAlias`]。
     fn parse_type_alias(&mut self) -> Option<Item> {
@@ -301,9 +308,11 @@ impl Parser {
 
     /// 解析 trait 声明（对应文法 `traitDeclaration`）。
     ///
-    /// 前置：`trait` 关键字已被消费，游标指向 trait 名。
+    /// 前置：`trait` 关键字已被 [`Parser::parse_item`] 消费，游标指向 trait 名。
     /// `_attributes` 为声明前的装饰器列表（对应文法 `decorator*`），
-    /// 由 [`Parser::parse_decorated`] 传入；无装饰器时为空。
+    /// 由 [`Parser::parse_item`] 传入；无装饰器时为空。
+    /// 文法中 trait 无 `Pub?`，可见性约束由 [`Parser::parse_item`] 校验，
+    /// 故本方法不接收可见性参数。
     /// TODO(自己写)：`decorator* Trait identifier typeParameters? traitBody`
     /// → [`Item::Trait`]；实现时将 `_attributes` 改名为 `attributes` 填入
     /// `TraitItem` 的 `attributes` 字段。
@@ -314,20 +323,23 @@ impl Parser {
 
     /// 解析类声明（对应文法 `classDeclaration`）。
     ///
-    /// 前置：`class` 关键字已被消费，游标指向类名。
+    /// 前置：`class` 关键字已被 [`Parser::parse_item`] 消费，游标指向类名。
     /// `_attributes` 为声明前的装饰器列表（对应文法 `decorator*`），
-    /// 由 [`Parser::parse_decorated`] 传入；无装饰器时为空。
+    /// `_scope` 为可见性（对应文法 `Pub?`），均由 [`Parser::parse_item`] 传入。
     /// TODO(自己写)：`decorator* Pub? Class identifier typeParameters? classHeritage? classBody`
-    /// → [`Item::Class`]；实现时将 `_attributes` 改名为 `attributes` 填入
-    /// `ClassItem` 的 `attributes` 字段，并处理 `Pub?` 修饰。
-    fn parse_class(&mut self, _attributes: Vec<Decorator>) -> Option<Item> {
+    /// → [`Item::Class`]；实现时将 `_attributes` / `_scope` 改名为
+    /// `attributes` / `scope`，分别填入 `ClassItem` 的对应字段。
+    fn parse_class(&mut self, _attributes: Vec<Decorator>, _scope: Option<Scope>) -> Option<Item> {
         // 骨架：待实现
         None
     }
 
     /// 解析 extern 函数声明（对应文法 `externFunctionDeclaration`）。
     ///
-    /// 前置：`extern` 关键字已被主循环消费。
+    /// 前置：`extern` 关键字已被 [`Parser::parse_item`] 消费。
+    /// 注意：文法为 `Extern Pub? Func ...`，可见性在 `extern` 之后，
+    /// 与 class / func / let / const 的 `Pub?` 位置不同，由本方法内部处理
+    /// （当前骨架未实现，实现时按文法在 `Func` 前解析 `Pub?`）。
     /// TODO(自己写)：`Extern Pub? Func identifier typeParameters? '(' parameterList? ')'`
     /// `typeAnnotation? ReturnArrow? typeExpression? SemiColon`
     /// → [`FunctionItem`]（`is_extern: true`、`block: None`）。
@@ -392,7 +404,8 @@ impl Parser {
     /// 解析声明前的装饰器列表（对应文法 `decorator*`）。
     ///
     /// 收集零个或多个 `@name(...)?`，游标停在第一个非 `@` token 处；
-    /// 由 [`Parser::parse_decorated`] 调用，按后续 token 决定装饰器归属。
+    /// 由 [`Parser::parse_item`] 调用，其归属（独立语句 / 装饰块 / 声明前缀）
+    /// 由 [`Parser::parse_item`] 按后续 token 决定。
     fn parse_decorators(&mut self) -> Vec<Decorator> {
         let mut decorators = vec![];
         while self.check(TokenKind::At) {
@@ -405,25 +418,24 @@ impl Parser {
         decorators
     }
 
-    /// 解析装饰器起始的顶层结构（对应文法 `decoratorStatement` 与声明前的 `decorator*`）。
+    /// 解析装饰器独立形态（对应文法 `decoratorStatement: decorator (SemiColon | block)`）。
     ///
-    /// 前置：游标位于 `@`。
-    /// 先收集连续装饰器前缀，再按后续 token 分发：
-    /// - `;`：独立装饰器语句 [`Item::Decorator`]（文法 `decoratorStatement` 仅允许单个装饰器）；
-    /// - `{`：装饰块 [`Item::DecoratorBlock`]（同上）；
-    /// - `func` / `class` / `trait`：作为声明前缀，把装饰器列表交给对应解析
-    ///   （填各声明的 `attributes` 字段）。
-    fn parse_decorated(&mut self) -> Option<Item> {
-        let decorators = self.parse_decorators();
+    /// 前置：游标位于 `;` 或 `{`（尚未消费），`decorators` 为 [`Parser::parse_item`]
+    /// 已收集的非空装饰器列表；装饰器后接 `func` / `class` / `trait` 的声明前缀形态
+    /// 不经本方法，由 [`Parser::parse_item`] 直接交给对应的 `parse_xxx`。
+    ///
+    /// 文法只允许这两种形态各携带单个装饰器，多个装饰器在此报错。
+    fn parse_decorator_statement(&mut self, decorators: Vec<Decorator>) -> Option<Item> {
         let start = decorators.first().map(|d| d.span.start)?;
+        if decorators.len() != 1 {
+            self.error_here("装饰器语句 / 装饰块只允许一个装饰器");
+            return None;
+        }
+        let decorator = decorators.into_iter().next().expect("len == 1 已检查");
         match self.peek().map(|t| t.kind) {
+            // `@foo;`：独立装饰器语句
             Some(TokenKind::SemiColon) => {
-                if decorators.len() != 1 {
-                    self.error_here("独立装饰器语句只允许一个装饰器");
-                    return None;
-                }
                 let semi = self.advance().expect("已确认当前为分号");
-                let decorator = decorators.into_iter().next().expect("len == 1 已检查");
                 Some(Item::Decorator(Decorator {
                     span: Span {
                         start,
@@ -432,12 +444,8 @@ impl Parser {
                     ..decorator
                 }))
             }
-            Some(TokenKind::OpenBrace) => {
-                if decorators.len() != 1 {
-                    self.error_here("装饰块只允许一个装饰器");
-                    return None;
-                }
-                let decorator = decorators.into_iter().next().expect("len == 1 已检查");
+            // `@foo { ... }`：装饰块（调用方已限定当前 token 为 `;` 或 `{`）
+            _ => {
                 let block = self.parse_block()?;
                 let end = block.span.end;
                 Some(Item::DecoratorBlock {
@@ -445,22 +453,6 @@ impl Parser {
                     block: Some(block),
                     span: Span { start, end },
                 })
-            }
-            Some(TokenKind::Func) => {
-                self.advance();
-                self.parse_function(decorators)
-            }
-            Some(TokenKind::Class) => {
-                self.advance();
-                self.parse_class(decorators)
-            }
-            Some(TokenKind::Trait) => {
-                self.advance();
-                self.parse_trait(decorators)
-            }
-            _ => {
-                self.error_here("装饰器后应为 `;`、块 `{...}` 或声明（func / class / trait）");
-                None
             }
         }
     }
@@ -500,12 +492,15 @@ impl Parser {
 
     /// 解析顶层语句（对应文法 `statement`，[`Item::Statement`]）。
     ///
-    /// 主循环无法识别为 item 起始关键字的 token 均由此兜底。
-    /// 骨架：仅实现变量声明分支（`let` / `const`），
-    /// 其余 14 种形态（return / break / if / while / for ...）待实现。
+    /// [`Parser::parse_item`] 无法识别为具名 item 起始关键字的 token 均由此兜底。
+    /// 起始 token 由本方法的分支自行消费（`let` / `const` 分支交由
+    /// [`Parser::parse_variable_declaration`] 消费），游标只前进不回退。
+    /// 骨架：仅实现变量声明分支（`let` / `const`）与块语句，
+    /// 其余形态（return / break / if / while / for ...）待实现。
     fn parse_statement(&mut self) -> Option<Statement> {
         match self.peek().map(|t| t.kind) {
-            Some(TokenKind::Let) | Some(TokenKind::Const) => self.parse_variable_declaration(),
+            // 块内变量声明不支持可见性修饰符，故传 None（顶层 `pub let` 走 parse_item）
+            Some(TokenKind::Let) | Some(TokenKind::Const) => self.parse_variable_declaration(None),
             Some(TokenKind::OpenBrace) => self.parse_block().map(Statement::Block),
             _ => {
                 self.error_here("未知语句");
@@ -519,11 +514,13 @@ impl Parser {
     /// 解析变量声明语句（对应文法 `variableDeclaration`）。
     ///
     /// 前置：游标位于 `let` / `const`（尚未消费）。
-    /// 骨架实现：仅支持单个标识符绑定（元组解构 `(a, b)` 待实现）、
-    /// 无 `pub` 修饰；类型注解与初始化表达式经 `parse_type_expr` /
-    /// `parse_expression` 占位（当前均未实现，返回 None）。
-    /// 支持 [逐声明清单]`BindPattern::Tuple`、回调 `valueDeclarationList`。
-    fn parse_variable_declaration(&mut self) -> Option<Statement> {
+    /// `scope` 为可见性修饰符（对应文法 `variableStatement: Pub? (Const | Let) ...`）：
+    /// 顶层由 [`Parser::parse_item`] 传入解析好的 `Pub?`，块内语句由
+    /// [`Parser::parse_statement`] 传 `None`（块内不支持 `pub`，语义分析阶段可再收紧）。
+    /// 骨架实现：仅支持单个标识符绑定（元组解构 `(a, b)` 待实现）；
+    /// 类型注解与初始化表达式经 `parse_type_expr` / `parse_expression`
+    /// 占位（当前均未实现，返回 None）。
+    fn parse_variable_declaration(&mut self, scope: Option<Scope>) -> Option<Statement> {
         // 消费声明关键字，作为变量声明区间起点
         let keyword = self.advance()?;
         let r#type = if keyword.kind == TokenKind::Const {
@@ -576,8 +573,10 @@ impl Parser {
             },
             ty,
             value,
-            scope: None,
+            scope,
             r#type,
+            // 区间起点取 `let` / `const` 关键字：`pub` 修饰符的位置由调用方持有，
+            // 待 span 完整化（见 parse_function 同类 TODO）时再纳入
             span: Span {
                 start: keyword.span.start,
                 end: semi.span.end,
@@ -610,14 +609,15 @@ impl Parser {
 
     /// 解析函数声明（对应文法 `functionDeclaration`）。
     ///
-    /// 前置：`func` 关键字已被消费，游标指向函数名。
+    /// 前置：`func` 关键字已被 [`Parser::parse_item`] 消费，游标指向函数名。
     /// `attributes` 为声明前的装饰器列表（对应文法 `decorator*`），
-    /// 由 [`Parser::parse_decorated`] 传入；无装饰器时为空。
+    /// `scope` 为可见性（对应文法 `Pub?`），均由 [`Parser::parse_item`] 传入；
+    /// 无修饰时为空 / `None`。
     /// 占位实现：仅读取函数名并构造骨架节点（签名与函数体待补充），
     /// 随后跳过声明剩余部分，避免占位阶段产生误导性错误。
     /// TODO(自己写)：按文法 `decorator* Pub? Func identifier typeParameters? '(' parameterList? ')'`
     /// `typeAnnotation? ReturnArrow? typeExpression? block` 补充完整解析。
-    fn parse_function(&mut self, attributes: Vec<Decorator>) -> Option<Item> {
+    fn parse_function(&mut self, attributes: Vec<Decorator>, scope: Option<Scope>) -> Option<Item> {
         let (name, span) = match self.peek() {
             Some(token) if token.kind == TokenKind::Identifier => (token.slice.clone(), token.span),
             _ => {
@@ -633,7 +633,7 @@ impl Parser {
             name,
             r#type: None,
             block: None,
-            scope: None,
+            scope,
             is_extern: false,
             is_async: false,
             // 占位：完整解析后应覆盖整条函数声明的源码区间
