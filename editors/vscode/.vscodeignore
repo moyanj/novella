@@ -1,0 +1,10 @@
+# 打包时忽略：源码与开发期文件
+# （extension.js 已由 esbuild 打包进 dist/，运行时不再需要 node_modules）
+src/**
+node_modules/**
+pnpm-workspace.yaml
+pnpm-lock.yaml
+*.vsix
+.vscode/**
+.vscode-test/**
+.gitignore

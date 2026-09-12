@@ -182,7 +182,10 @@ pub struct FunctionItem {
     pub attributes: Vec<Decorator>,
     pub name: String,
     pub r#type: Option<FunctionType>,
-    pub block: Option<Block>,
+    /// 函数体（对应文法 `block`），None 表示纯声明形态（`SemiColon`）。
+    /// `Box` 承载以控制 `FunctionItem` 尺寸，避免触发 clippy `large-enum-variant`
+    /// （`Statement` 枚举整体尺寸较大，直接内嵌会让 `Item::Function` 变体膨胀）。
+    pub block: Option<Box<Statement>>,
     pub scope: Option<Scope>,
     pub is_extern: bool,
     pub is_async: bool,

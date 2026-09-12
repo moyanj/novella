@@ -3,3 +3,11 @@
 
 # mdbook 构建输出
 /docs/book
+
+# VS Code 扩展：依赖与构建产物（esbuild 输出，不纳入版本管理）
+/editors/vscode/node_modules
+/editors/vscode/dist
+/editors/vscode/*.vsix
+
+# 编译器输出
+/output.s

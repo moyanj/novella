@@ -40,3 +40,15 @@ book:
 # 本地预览本书（http://localhost:3000）
 book-serve:
     mdbook serve docs
+
+# 构建语言服务器（release，供编辑器连接）
+lsp-build:
+    cargo build --release -p novella-lsp
+
+# 本地运行语言服务器（stdio 通道，启动后等待编辑器连接）
+lsp-run:
+    cargo run -p novella-lsp
+
+# 打包 VS Code 扩展（esbuild 打包 + vsce 产出 vsix）
+lsp-pack:
+    cd editors/vscode && pnpm install && pnpm run package

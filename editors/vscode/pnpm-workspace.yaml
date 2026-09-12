@@ -1,0 +1,9 @@
+# pnpm 构建脚本许可
+#
+# esbuild 禁止运行 postinstall：该脚本会把 bin/esbuild 的 JS 启动器替换为
+# ELF 原生二进制，导致 pnpm 执行 scripts 时按 JS 解析而报语法错误。
+# 保留 JS 启动器即可正常工作（平台二进制由 optionalDependencies 提供）。
+allowBuilds:
+  esbuild: false
+  '@vscode/vsce-sign': false
+  keytar: false

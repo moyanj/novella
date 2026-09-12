@@ -231,6 +231,10 @@ pub enum TokenKind {
     /// 标识符,如 `foo`、`_private`、`中文名`
     Identifier,
 
+    // ---------- 注释 ----------
+    /// 行注释,如 `// 这是一行注释`（不含换行符）
+    LineComment,
+
     // EOF
     Eof,
     // 错误

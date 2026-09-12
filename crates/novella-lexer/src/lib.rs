@@ -7,7 +7,6 @@ use novella_core::{
 use std::fmt;
 
 #[derive(Logos, Debug, PartialEq, Clone, Copy)]
-#[logos(skip(r#"//[^\r\n]*"#, allow_greedy = true))]
 #[logos(skip r#"[ \t\x0B\x0C\xA0]+"#)]
 #[logos(skip r#"[\r\n\u2028\u2029]"#)]
 pub enum RawToken {
@@ -244,6 +243,11 @@ pub enum RawToken {
     // ---------- 标识符 ----------
     #[regex(r#"[_\p{L}$][_\p{L}\d$]*"#)]
     Identifier,
+
+    // ---------- 注释 ----------
+    // 行注释：`//` 到行尾（不含换行符本身，换行仍由 skip 规则吞掉）
+    #[regex(r#"//[^\r\n\u2028\u2029]*"#, allow_greedy = true)]
+    LineComment,
 }
 
 /// 把 logos 生成的 [`Token`] 转换为下游共享的 [`TokenKind`]。
@@ -367,6 +371,9 @@ impl From<RawToken> for TokenKind {
 
             // ---------- 标识符 ----------
             RawToken::Identifier => Identifier,
+
+            // ---------- 注释 ----------
+            RawToken::LineComment => LineComment,
         }
     }
 }

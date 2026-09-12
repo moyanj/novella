@@ -1,0 +1,86 @@
+{
+  "name": "novella-language",
+  "displayName": "Novella Language",
+  "description": "novella 语言的语法高亮：由薄 LSP 服务器提供词法级语义高亮（semantic tokens）",
+  "version": "0.1.0",
+  "publisher": "moyanj",
+  "license": "Apache-2.0",
+  "engines": {
+    "vscode": "^1.75.0"
+  },
+  "categories": [
+    "Programming Languages"
+  ],
+  "main": "./dist/extension.js",
+  "activationEvents": [
+    "onLanguage:novella"
+  ],
+  "contributes": {
+    "languages": [
+      {
+        "id": "novella",
+        "aliases": [
+          "Novella",
+          "novella"
+        ],
+        "extensions": [
+          ".nov",
+          ".nv"
+        ],
+        "configuration": "./language-configuration.json"
+      }
+    ],
+    "semanticTokenScopes": [
+      {
+        "language": "novella",
+        "scopes": {
+          "comment": [
+            "comment.line.double-slash"
+          ],
+          "keyword": [
+            "keyword.control",
+            "keyword.other"
+          ],
+          "number": [
+            "constant.numeric"
+          ],
+          "operator": [
+            "keyword.operator"
+          ],
+          "string": [
+            "string.quoted.double"
+          ]
+        }
+      }
+    ],
+    "configuration": {
+      "title": "Novella",
+      "properties": {
+        "novella.lsp.path": {
+          "type": "string",
+          "default": "novella-lsp",
+          "markdownDescription": "`novella-lsp` 可执行文件路径。默认从 `PATH` 查找；本地开发时可指向 `target/debug/novella-lsp`。"
+        },
+        "novella.lsp.args": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "default": [],
+          "description": "传递给 novella-lsp 的额外启动参数。"
+        }
+      }
+    }
+  },
+  "scripts": {
+    "build": "esbuild src/extension.js --bundle --outfile=dist/extension.js --external:vscode --format=cjs --platform=node --target=node18",
+    "package": "esbuild src/extension.js --bundle --outfile=dist/extension.js --external:vscode --format=cjs --platform=node --target=node18 && vsce package --no-dependencies --allow-missing-repository"
+  },
+  "dependencies": {
+    "vscode-languageclient": "^9.0.1"
+  },
+  "devDependencies": {
+    "@vscode/vsce": "^3.2.1",
+    "esbuild": "^0.25.0"
+  }
+}
