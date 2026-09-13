@@ -206,6 +206,10 @@ impl Parser {
                     | TokenKind::Func
                     | TokenKind::Class
                     | TokenKind::Trait
+                    | TokenKind::Extern
+                    | TokenKind::Pub
+                    | TokenKind::Pri
+                    | TokenKind::Pkg
             )
         {
             self.error_here("装饰器后应为 `;`、块 `{...}` 或声明（func / class / trait）");
@@ -258,12 +262,6 @@ impl Parser {
             }
             TokenKind::Extern => {
                 self.advance();
-                // 可见性必须整体写在 `extern` 之前（`pub extern func`）；
-                // `extern pub func` 属于错误写法，在此拦截
-                if self.check(TokenKind::Pub) {
-                    self.error_here("`extern` 后不应有可见性修饰符，应写作 `pub extern func`");
-                    return None;
-                }
                 self.parse_extern_function(scope)
             }
             // 顶层 `pub let` / `pub const`（文法 `variableStatement: Pub? (Const | Let) ...`），
@@ -285,7 +283,11 @@ impl Parser {
     /// `accessModifier: Pub | Pri`，顶层不书写 `pri`，故此处不产出 `Private`。
     /// 是否允许修饰当前 item 由 [`Parser::parse_item`] 校验。
     fn parse_visibility(&mut self) -> Option<Scope> {
-        self.eat(TokenKind::Pub).map(|_| Scope::Public)
+        if let Some(token) = self.advance() {
+            Scope::from_token(&token.kind)
+        } else {
+            None
+        }
     }
 
     // ---------- 各 item 解析（骨架：方法体留给你写） ----------

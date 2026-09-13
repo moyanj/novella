@@ -123,6 +123,8 @@ pub enum RawToken {
     Pub,
     #[token("pri")]
     Pri,
+    #[token("pkg")]
+    Pkg,
     #[token("const")]
     Const,
     #[token("let")]
@@ -317,6 +319,7 @@ impl From<RawToken> for TokenKind {
             RawToken::Import => Import,
             RawToken::Pub => Pub,
             RawToken::Pri => Pri,
+            RawToken::Pkg => Pkg,
             RawToken::Const => Const,
             RawToken::Let => Let,
             RawToken::Static => Static,

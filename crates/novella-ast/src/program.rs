@@ -1,6 +1,9 @@
 use serde::{Deserialize, Serialize};
 
-use novella_core::Span;
+use novella_core::{
+    Span,
+    token::{Token, TokenKind},
+};
 
 use crate::{
     Spanned,
@@ -23,6 +26,17 @@ pub struct Program {
 pub enum Scope {
     Public,
     Private,
+    Package,
+}
+impl Scope {
+    pub fn from_token(token: &TokenKind) -> Option<Self> {
+        match *token {
+            TokenKind::Pub => Some(Self::Public),
+            TokenKind::Pri => Some(Self::Private),
+            TokenKind::Pkg => Some(Self::Package),
+            _ => None,
+        }
+    }
 }
 
 /// 导入对象（对应文法 `fromImport` 的 `identifier (',' identifier)*` 列表中的单项）

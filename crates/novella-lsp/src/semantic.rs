@@ -45,7 +45,7 @@ pub fn token_type_index(kind: novella_core::token::TokenKind) -> Option<u32> {
         LineComment => COMMENT,
 
         // ---------- 关键字（含 null / 布尔常量） ----------
-        From | Import | Pub | Pri | Const | Let | Static | Weak | Func | Class | Struct | Trait
+        From | Import | Pub | Pri| Pkg | Const | Let | Static | Weak | Func | Class | Struct | Trait
         | New | This | If | Else | Elif | While | For | In | Break | Continue | Return | Default
         | Match | Case | KeyAnd | KeyOr | KeyNot | Try | Catch | Finally | Throw | With | As
         | Type | Is | Async | Await | Yield | Macro | Extern | Unsafe | Null | BooleanLiteral => KEYWORD,

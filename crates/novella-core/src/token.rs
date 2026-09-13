@@ -126,6 +126,8 @@ pub enum TokenKind {
     Pub,
     /// `pri`
     Pri,
+    /// `pkg`
+    Pkg,
     /// `const`
     Const,
     /// `let`
