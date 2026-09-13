@@ -15,10 +15,6 @@ pub enum RawToken {
     PlusPlus,
     #[token("--")]
     MinusMinus,
-    #[token("**")]
-    Power,
-    #[token("**=")]
-    PowerAssign,
     #[token("<<")]
     LeftShiftArithmetic,
     #[token(">>")]
@@ -133,10 +129,14 @@ pub enum RawToken {
     Let,
     #[token("static")]
     Static,
+    #[token("weak")]
+    Weak,
     #[token("func")]
     Func,
     #[token("class")]
     Class,
+    #[token("struct")]
+    Struct,
     #[token("trait")]
     Trait,
     #[token("new")]
@@ -193,14 +193,14 @@ pub enum RawToken {
     Async,
     #[token("await")]
     Await,
-    #[token("stream")]
-    Stream,
     #[token("yield")]
     Yield,
     #[token("macro")]
     Macro,
     #[token("extern")]
     Extern,
+    #[token("unsafe")]
+    Unsafe,
 
     #[token("null")]
     Null,
@@ -261,8 +261,6 @@ impl From<RawToken> for TokenKind {
             // ---------- 多字符运算符 ----------
             RawToken::PlusPlus => PlusPlus,
             RawToken::MinusMinus => MinusMinus,
-            RawToken::Power => Power,
-            RawToken::PowerAssign => PowerAssign,
             RawToken::LeftShiftArithmetic => LeftShiftArithmetic,
             RawToken::RightShiftArithmetic => RightShiftArithmetic,
             RawToken::LeftShiftArithmeticAssign => LeftShiftArithmeticAssign,
@@ -322,8 +320,10 @@ impl From<RawToken> for TokenKind {
             RawToken::Const => Const,
             RawToken::Let => Let,
             RawToken::Static => Static,
+            RawToken::Weak => Weak,
             RawToken::Func => Func,
             RawToken::Class => Class,
+            RawToken::Struct => Struct,
             RawToken::Trait => Trait,
             RawToken::New => New,
             RawToken::This => This,
@@ -352,10 +352,10 @@ impl From<RawToken> for TokenKind {
             RawToken::Is => Is,
             RawToken::Async => Async,
             RawToken::Await => Await,
-            RawToken::Stream => Stream,
             RawToken::Yield => Yield,
             RawToken::Macro => Macro,
             RawToken::Extern => Extern,
+            RawToken::Unsafe => Unsafe,
 
             // ---------- 字面量 ----------
             RawToken::Null => Null,

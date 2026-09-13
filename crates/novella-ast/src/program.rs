@@ -96,12 +96,16 @@ pub struct TraitItem {
     pub span: Span,
 }
 
-/// 类成员修饰符：可见性与静态标记（对应文法 `accessModifier? Static?`）
+/// 类成员修饰符：可见性、静态与弱引用标记（对应文法 `accessModifier? Static? Weak?`）
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct MemberModifiers {
     pub scope: Option<Scope>,
     /// 是否为静态成员（对应文法 `Static?`）
     pub is_static: bool,
+    /// 是否为弱引用字段（对应文法 `Weak?`，仅字段有意义）。
+    /// 赋值不 retain、不参与引用计数；访问过期对象属未定义行为
+    /// （无空安全保证，见 `docs/object-model.md`）。
+    pub is_weak: bool,
 }
 
 /// 类字段成员（对应文法 `fieldDeclaration`：`decorator* accessModifier? Static? identifier typeAnnotation? (Assign expression)? SemiColon`）
@@ -193,6 +197,26 @@ pub struct FunctionItem {
     pub span: Span,
 }
 
+/// struct 声明（对应文法 `structDeclaration`）
+///
+/// 值语义（design.md §4.7）：赋值/传参逐位拷贝；无继承、无构造器
+/// （字段初始化构造 `TypeName{ x: 1 }`，见 `Expression::StructInit`）；
+/// 允许方法，方法内 `this` 为编译器注入的可信指针（字段访问无需 unsafe）；
+/// 不识别 `__` 前缀特殊方法。
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Spanned)]
+pub struct StructItem {
+    /// struct 装饰器列表（对应文法 `structDeclaration` 的 `decorator*`）
+    pub attributes: Vec<Decorator>,
+    pub name: String,
+    pub type_parameters: Vec<TypeParameter>,
+    /// 成员列表（复用 `ClassMember`：Field / Method）
+    pub members: Vec<ClassMember>,
+    /// 可见性（对应文法 `Pub?`）
+    pub scope: Option<Scope>,
+    /// 整条 struct 声明覆盖的源码区间
+    pub span: Span,
+}
+
 /// 顶层 item（对应文法 `statement | importStatement | typeAliasStatement | classDeclaration | functionDeclaration`）。
 ///
 /// 每个变体都携带自身位置，统一经 [`Item::span`] 访问。
@@ -206,6 +230,8 @@ pub enum Item {
     Trait(TraitItem),
     /// 类声明（对应文法 `classDeclaration`）
     Class(ClassItem),
+    /// struct 声明（对应文法 `structDeclaration`）
+    Struct(StructItem),
     /// 函数声明（对应文法 `functionDeclaration` / `externFunctionDeclaration`）
     Function(FunctionItem),
     /// 顶层独立装饰器语句（对应文法 `decoratorStatement` 的 `decorator SemiColon` 形态，如 `@foo;`）

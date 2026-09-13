@@ -18,10 +18,6 @@ pub enum TokenKind {
     PlusPlus,
     /// `--`
     MinusMinus,
-    /// `**`
-    Power,
-    /// `**=`
-    PowerAssign,
     /// `<<`
     LeftShiftArithmetic,
     /// `>>`
@@ -136,10 +132,14 @@ pub enum TokenKind {
     Let,
     /// `static`
     Static,
+    /// `weak`
+    Weak,
     /// `func`
     Func,
     /// `class`
     Class,
+    /// `struct`
+    Struct,
     /// `trait`
     Trait,
     /// `new`
@@ -196,14 +196,14 @@ pub enum TokenKind {
     Async,
     /// `await`
     Await,
-    /// `stream`
-    Stream,
     /// `yield`
     Yield,
     /// `macro`
     Macro,
     /// `extern`
     Extern,
+    /// `unsafe`
+    Unsafe,
 
     // ---------- 字面量 ----------
     /// `null`

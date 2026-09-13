@@ -269,6 +269,17 @@ pub enum Statement {
     Try(TryStmt),
     /// with 语句（对应 `withStatement`）
     With(WithStmt),
+    /// unsafe 语句块（对应 `unsafeStatement`）。
+    ///
+    /// 本语言唯一「unsafe 上下文」入口：解引用、指针算术、指针互转、
+    /// 指针↔整数转换须位于块内（design.md §6.4）；块内仍是普通 `Statement`，
+    /// 语法层不做白名单过滤。
+    Unsafe {
+        /// 块内语句序列（可嵌套 block / 其他语句）
+        block: Box<Block>,
+        /// `unsafe` 关键字到块结束的源码区间
+        span: Span,
+    },
     /// 表达式语句（对应 `expressionStatement`）
     Expression(Expression),
 }

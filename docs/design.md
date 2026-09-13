@@ -1,12 +1,13 @@
 # Novella 语言设计
 
-> 版本：1.1 · 状态：与代码对齐的现行设计（含已确认的待落地变更） ·
-> 基准 commit：69ad1a4（`feat(parser): 整理装饰器与可见性解析骨架`）
+> 版本：2.0 · 状态：与代码对齐的现行设计（含已确认的待落地变更） ·
+> 基准 commit：067edaa（`feat(grammar): 以代码为基准对齐文法并补充文档`）
 >
-> 对齐方式：**代码是事实源**。本文描述语言「应当呈现的样子」，其中
-> 「已实现」指 lexer/AST/parser 当前已落地的部分，「已确认」指设计已定稿、
-> 待按 §10 落地清单实施的变更（内存操作与 struct）。所有改动须同步
-> `grammar/*.g4` 与 LSP 高亮（见 §9）。
+> 本文从**语言视角**描述 novella：语法、语义、类型系统、对象模型、执行模型与
+> 内置设施——即「语言长什么样、程序怎么写、语义怎么解释」；对象模型（class
+> 引用计数、weak、with 协议）见 §7，异常与执行模型见 §9。编译器如何实现这些规则
+> （词法器/解析器/语义检查/代码生成的工程结构）见
+> **[`compiler-design.md`](compiler-design.md)**；两侧以**代码为事实源**对齐。
 
 ---
 
@@ -17,30 +18,26 @@ novella 是一门类 TS/Rust 混合风格、面向系统编程的语言：TS 的
 现代表达语法上；Rust 的血统体现在 `u8..u64/i8..i64/usize/isize` 宽度类型、
 `pub/pri`、`trait`、`unsafe`、`with` 资源管理等。编译产物面向汇编。
 
-- 词法：logos 手写规则，`RawToken` → `TokenKind` 纯投影，105 个正式变体
-  （+ `Eof` / `Error` 合成项）；
-- 语法：手写递归下降解析器（骨架，逐条实现中），错误可恢复；
-- AST：全节点携带 `Span`，`#[derive(Spanned)]` 生成 `span()`；全量 serde，
-  用于 CLI 的 JSON 输出；
-- 语义 / 代码生成：占位（`add()` 桩），设计规则见 §6 / §8。
+**内存分层**（核心定位）：
 
-## 2. 设计原则与约定
+- **安全路径（默认）**：对象 / 集合 / `with` / 资源管理，内存由语言层机制负责
+  （class 引用计数，后续设计），日常代码看不到指针；
+- **底层路径（显式 opt-in）**：`struct`（值类型，手动管理）+ 裸指针 + `unsafe`
+  块，面向内核 / 驱动 / FFI / 寄存器访问。
 
-1. **代码是唯一事实源**：`TokenKind` ↔ 词法、AST ↔ 文法两侧对齐，文法跟随
-   代码；改动代码后必须同步 `grammar/*.g4`（反之亦然，但以代码为准）。
-2. **TokenKind ↔ RawToken 双枚举**：lexer 的 `RawToken` 是 logos 投影，靠
-   `From` 的 match 穷尽性保证不漏转。
-3. **AST 全量挂 span**：除纯值枚举（运算符、`Literal`、`PredefinedType`、
-   `Scope` 等）外，每个节点携带 `span` 字段。
-4. **值语义延后**：字面量保留源码原文（进制前缀、`f/r/b` 前缀），解析在
-   语义分析阶段。
-5. **注释语法层透明**：`LineComment` 是正式 token（供高亮），parser 前过滤。
-6. **错误可恢复**：词法 / 语法错误只进各自的 errors / diagnostics 列表，
-   不中断后续分析。
-7. **安全分层（已确认）**：默认安全；需要直接碰内存时用裸指针，但
-   「穿指针访问」一律要求 `unsafe { }` 上下文（§6）。
-8. **学习曲线平缓（已确认）**：语言面最小、无特事特办；日常代码走
-   安全路径（对象/集合/`with`），底层能力显式 opt-in。
+## 2. 设计原则
+
+1. **值语义延后**：字面量保留源码原文（进制前缀、`f/r/b` 前缀），具体值解析
+   在语义分析阶段。
+2. **注释语法层透明**：`LineComment` 是正式 token（供高亮），parser 前过滤。
+3. **错误可恢复**：词法 / 语法错误只进各自的 errors / diagnostics 列表，
+   不中断后续分析（同一文件尽量一次报全）。
+4. **安全分层（已确认）**：默认安全；直接碰内存需裸指针，且「穿指针访问」
+   一律要求 `unsafe { }` 上下文（§6）。
+5. **学习曲线平缓（已确认）**：语言面最小、无特事特办（无 `**` 拆分之类的
+   特殊规则）；日常代码走安全路径，底层能力显式 opt-in。
+6. **双下划线是保留命名空间**：class 特殊方法用 `__` 前缀，普通方法不得以
+   `__` 开头（§4.6.1）。
 
 ## 3. 词法
 
@@ -48,14 +45,14 @@ novella 是一门类 TS/Rust 混合风格、面向系统编程的语言：TS 的
 
 | 形态 | Token | 说明 |
 |------|-------|------|
-| `// ...`（到行尾） | `LineComment` | 正式 token；CLI 喂 parser 前过滤 |
+| `// ...`（到行尾） | `LineComment` | 正式 token；喂 parser 前过滤 |
 | `/* ... */` | —— | **不支持**：`/*` 被切为 `Divide` + `Multiply` |
 
 ### 3.2 标识符
 
-`[_\p{L}$][_\p{L}\p{Nd}$]*`（`TokenKind::Identifier`）。
-标识符是**硬保留字环境**：关键字不可作标识符；`identifier` 文法规则只接受
-`Identifier` token（无上下文关键字机制，属已知限制，放宽须先动 parser）。
+`[_\p{L}$][_\p{L}\p{Nd}$]*`（`TokenKind::Identifier`），支持中文等 Unicode
+字母。标识符是**硬保留字环境**：关键字不可作标识符（无上下文关键字机制，
+属已知限制）。
 
 ### 3.3 字面量
 
@@ -72,15 +69,15 @@ novella 是一门类 TS/Rust 混合风格、面向系统编程的语言：TS 的
 | 原始字符串 | `r"..."` / `r'...'` | `RawStringLiteral` |
 | 字节字符串 | `b"..."` / `b'...'` | `ByteStringLiteral` |
 
-约定：`1.` 会被切为 `1` + `.`（小数点后必须跟数字）；字符串转义内容不校验，
-非法转义留待语义阶段；下划线仅作数字分隔保留（值语义延后）。
+约定：`1.` 会切为 `1` + `.`（小数点后必须跟数字）；字符串转义内容不校验，
+非法转义留待语义阶段；数字中的下划线仅作分隔符保留（值语义延后）。
 
 ### 3.4 运算符与分隔符
 
 多字符（最长匹配优先，先于单字符）：
 
 ```
-++  --  **  **=  <<  >>  <<=  >>=  ==  !=  ===  !==  <=  >=
+++  --  <<  >>  <<=  >>=  ==  !=  ===  !==  <=  >=
 &&  ||  ??  =>  ->  *=  /=  %=  +=  -=  &=  ^=  |=
 ```
 
@@ -88,48 +85,46 @@ novella 是一门类 TS/Rust 混合风格、面向系统编程的语言：TS 的
 
 > **已确认变更**：删除 `**`（幂）与 `**=`。原因：`**p` 会被词法切为 `Power`，
 > 需 parser 特判拆两层解引用，是「最费解的语法」；删除后 `**p` 天然是两个
-> `*`，幂改为 `pow(...)` 内建（若回归）。同时移除 `BinaryOp::Power`、
-> `AssignOp::PowerAssign` 与相关文法、高亮映射（上表删除后多字符运算符为
-> 23 个）。
+> `*`。幂改为 `pow(...)` 内建（若回归）。删除后多字符运算符为 25 个。
 
 ### 3.5 关键字（硬保留）
 
 | 分组 | 关键字 |
 |------|--------|
 | 模块 | `from` `import` |
-| 修饰与声明 | `pub` `pri` `const` `let` `static` `func` `class` `trait` `new` `this` |
+| 修饰与声明 | `pub` `pri` `const` `let` `static` `func` `class` `struct` `trait` `new` `this` |
 | 控制流 | `if` `else` `elif` `while` `for` `in` `break` `continue` `return` `default` `match` `case` |
 | 逻辑词 | `and` `or` `not` |
 | 错误处理 | `try` `catch` `finally` `throw` |
 | 上下文 | `with` `as` |
 | 类型 | `type` `is` |
-| 异步 | `async` `await` `stream` `yield` |
+| 异步 | `async` `await` `yield` |（`stream` 已确认砍掉，关键字已移除）
 | 宏 | `macro` |
 | 外部 | `extern` |
-| **新增（已确认）** | `unsafe` `struct` |
+| unsafe | `unsafe` |
+| 弱引用 | `weak`（字段修饰） |
 
-> 已知残留：`stream` / `macro` 词法层仍是关键字，但 AST 无对应结构（`Macro`
-> 只有调用侧 `Expression::MacroCall`）；确认不再支持时应连同高亮一并移除。
+> 已知残留：`macro` 词法层仍是关键字，但语言无对应结构（`Macro` 只有
+> 调用侧表达式 `print!(...)`）；stream 已确认砍掉并连同关键字移除。
 
 #### 内置符号（已确认）
 
 语言内置三组符号（非关键字 token，词法层不新增保留字）：
 
-| 内置 | 定位 | 出处 |
-|------|------|------|
-| `@` | 双身份：语句位是编译器指令前缀（`@cfg(...)` 等）；路径位是路径别名「当前 crate 根」（等价 Rust `crate`） | §4.5 / §4.3.1 |
-| `std` | 标准库路径别名（`from "std:xxx" import ...`） | §4.3.1 |
-| `super` | 父级路径别名（`from "super:xxx" import ...`） | §4.3.1 |
+| 内置 | 定位 |
+|------|------|
+| `@` | 双身份：语句位是编译器指令前缀（`@cfg(...)` 等）；路径位是路径别名「当前 crate 根」（等价 Rust `crate`） |
+| `std` | 标准库路径别名（`from "std:xxx" import ...`） |
+| `super` | 父级路径别名（`from "super:xxx" import ...`） |
 
 ### 3.6 词法错误
 
 | 错误 | 触发 | 说明 |
 |------|------|------|
-| `InvalidCharacter { ch }` | 单字符无法匹配任何规则 | 如 `#` |
-| `UnterminatedString { quote }` | 引号开头、缺少闭合引号 | 起始引号 + 最长可消费前缀作一个错误 token |
+| `InvalidCharacter` | 单字符无法匹配任何规则 | 如 `#` |
+| `UnterminatedString` | 引号开头、缺少闭合引号 | 起始引号 + 最长可消费前缀 |
 
-错误 token 只进 `errors` 列表、不进 `tokens`；EOF token 的 span 指向输入末尾，
-行列按末尾处计算（行号 1-based、列号 0-based 字节偏移）。
+错误不进正式 token 流，只进入错误列表；同一文件继续分析其余部分。
 
 ## 4. 语法结构与 AST
 
@@ -138,62 +133,62 @@ novella 是一门类 TS/Rust 混合风格、面向系统编程的语言：TS 的
 ```
 program: sourceElement* EOF;        // 空文件合法
 sourceElement: moduleImport | typeAliasDeclaration | traitDeclaration
-             | classDeclaration | functionDeclaration
+             | classDeclaration | structDeclaration | functionDeclaration
              | externFunctionDeclaration | decoratorStatement | statement;
 ```
 
-AST：`Program { items: Vec<Item>, span }`。顶层解析逐条 `parse_item`，
-语法错误记录后继续。
+AST 根：`Program { items: Vec<Item>, span }`。
 
 ### 4.2 顶层 item（`Item`）
 
-| Item 变体 | 对应文法 | 说明 |
-|-----------|----------|------|
-| `Import(ImportItem)` | `moduleImport` | 具名 / 命名空间导入 |
-| `TypeAlias(TypeAliasItem)` | `typeAliasDeclaration` | `type A<T> = ...;` |
-| `Trait(TraitItem)` | `traitDeclaration` | 无 `pub`；成员同 class |
-| `Class(ClassItem)` | `classDeclaration` | 支持继承、`pub`、装饰器、泛型 |
-| `Function(FunctionItem)` | `functionDeclaration` / `externFunctionDeclaration` | 顶层函数 / extern |
-| `Decorator(Decorator)` | `decoratorStatement`（`@foo;`） | 独立装饰器语句 |
-| `DecoratorBlock { decorator, block }` | `decoratorStatement`（`@foo { }`） | 装饰块 |
-| `Statement(Box<Statement>)` | `statement` | 顶层语句（含 `pub let`） |
+| Item | 对应文法 | 说明 |
+|------|----------|------|
+| `Import` | `moduleImport` | 具名 / 命名空间导入 |
+| `TypeAlias` | `typeAliasDeclaration` | `type A<T> = ...;` |
+| `Trait` | `traitDeclaration` | 无 `pub`；成员同 class |
+| `Class` | `classDeclaration` | 支持继承、`pub`、装饰器、泛型 |
+| `Struct`（**新增**） | `structDeclaration` | 值类型，见 §4.7 |
+| `Function` | `functionDeclaration` / `externFunctionDeclaration` | 顶层函数 / extern |
+| `Decorator` | `decoratorStatement`（`@foo;`） | 独立指令语句 |
+| `DecoratorBlock` | `decoratorStatement`（`@foo { }`） | 指令块 |
+| `Statement` | `statement` | 顶层语句（含 `pub let`） |
 
-顶层可见性：`pub` 只允许修饰 `class` / `func` / `let` / `const` / `extern`
-（`pub extern func`）；`extern` 之后不能再写可见性。装饰器只允许修饰
-`@foo;` / `@foo { }` / `func` / `class` / `trait`。
+顶层可见性：`pub` 只允许修饰 `class` / `struct` / `func` / `let` / `const` /
+`extern`（`pub extern func`）；`extern` 之后不能再写可见性。指令（`@`）只允许
+修饰 `@foo;` / `@foo { }` / `func` / `class` / `struct` / `trait`。
 
 ### 4.3 导入
 
 ```
 fromImport: From StringLiteral Import importSpecifier (',' importSpecifier)* SemiColon;
 directImport: Import StringLiteral SemiColon;
-importSpecifier: identifier (As identifier)?;      // `as` 写 local 名
+importSpecifier: identifier (As identifier)?;      // `as` 写本地名
 ```
 
-AST：`ImportItem { raw_path, prefix, path, kind: ImportKind }`；
-`ImportKind::Named { specifiers }` 与 `ImportKind::Namespace { local_alias }`。
+AST：`ImportItem { raw_path, prefix, path, kind }`；
+`ImportKind::Named { specifiers }`（`from ... import a, b as c`）与
+`ImportKind::Namespace { local_alias }`（`import "mod"`）。
 
 #### 4.3.1 路径别名（`xxx:` 前缀，已确认）
 
-导入路径字面量支持 **`别名:路径`** 形式，`:` 前为路径别名（也即现有
+导入路径字面量支持 **`别名:路径`** 形式，`:` 前为路径别名（即
 `ImportItem.prefix` 字段，`path` 为去除别名的逻辑路径）：
 
 ```
 from "std:exception" import ValueError, ZeroDivisionError;
 ```
 
-- 内置路径别名（语言自带，语义分析阶段解析 `prefix` 时识别）：
+- 内置路径别名（语义分析阶段解析 `prefix` 时识别）：
   - **`@`** —— 当前 crate 根（等价 Rust 的 `crate`），
     `from "@:sub:mod" import ...` 从本 crate 根出发的绝对路径；
   - **`std`** —— 标准库（`"std:exception"` → `std` 库的 `exception` 模块；
     也可写作 `"std"` 直引）；
   - **`super`** —— 当前作用域的父级（类似相对 import 的 `..` 语义，
-    常用于模块内的父命名空间引用；`from "super:xxx" import ...`）。
-- 未知别名：语义分析阶段报「未知路径别名」；不在词法层引入新 token
-  （`@` / `std` / `super` 在 `"..."` 内只是字符串内容，与语句位的 `@` 指令
-  前缀互不影响）；
-- 别名与 `importSpecifier` 的 `as`（本地重命名）互不冲突：`xxx:` 作用于
-  **路径**，`as` 作用于**符号**。
+    `from "super:xxx" import ...`）。
+- 未知别名：语义分析阶段报「未知路径别名」；`@` / `std` / `super` 在
+  `"..."` 内只是字符串内容，与语句位的 `@` 指令前缀互不影响；
+- 与 `importSpecifier` 的 `as`（本地重命名）互不冲突：`xxx:` 作用于**路径**，
+  `as` 作用于**符号**。
 
 ### 4.4 类型别名
 
@@ -203,7 +198,7 @@ typeParameters: '<' typeParameterList '>';
 typeParameter: identifier (Colon typeExpression)?;
 ```
 
-### 4.5 装饰器（编译器指令）
+### 4.5 编译器指令 `@`（attribute 语义）
 
 ```
 decorator: At identifier ('(' decoratorArgument* ')')?;
@@ -215,18 +210,18 @@ decoratorArgument: '(' decoratorArgument* ')' | ~(OpenParen | CloseParen);
 的声明/块（可影响布局、代码生成、检查等），不构造运行时包装。
 
 - 括号内为**自由 token 流**（含嵌套括号，平铺保留），结构化解释延后到语义
-  阶段（如 `@cfg(target_os = "linux")`、`@packed`、`@align(8)`、`@extern("C")`
-  、`@deprecated`），届时按 `name` 查对应指令的处理规则；
+  阶段（如 `@cfg(target_os = "linux")`、`@packed`、`@align(8)`、`@extern("C")`、
+  `@deprecated`），届时按 `name` 查对应指令的处理规则；
 - `@name` 无括号简写等价于空 token 流；
-- 可修饰对象：独立语句 `@foo;`、装饰块 `@foo { }`、`func` / `class` / `trait`
-  （文法仅这三类声明支持 `decorator*`）；
-- 装饰器语句/块只允许单个装饰器；多个装饰器报错。
+- 可修饰对象：独立指令语句 `@foo;`、指令块 `@foo { }`、`func` / `class` /
+  `struct` / `trait` 声明；
+- 指令语句/块只允许单个指令；多个指令报错。
 
 ### 4.6 class / trait
 
 ```
 classDeclaration: decorator* Pub? Class identifier typeParameters? classHeritage? classBody;
-classHeritage: '(' typeReference ')';              // 文法仅单父类，AST 按多继承预留
+classHeritage: '(' typeReference ')';              // 文法仅单父类，语言按多继承预留
 classBody: '{' classMember* '}';
 traitDeclaration: decorator* Trait identifier typeParameters? traitBody;
 classMember: methodDeclaration | fieldDeclaration;
@@ -238,8 +233,16 @@ accessModifier: Pub | Pri;
 
 AST：`ClassItem { attributes, name, type_parameters, members, parent, scope }`；
 `TraitItem { attributes, name, type_parameters, members }`；
-`ClassMember::Field(FieldMember)` / `ClassMember::Method(MethodMember)`；
+`ClassMember::Field` / `ClassMember::Method`；
 `MemberModifiers { scope: Option<Scope>, is_static }`。
+
+语义：
+
+- class 是**引用语义**（引用计数，后续设计）：`new Foo(...)` 构造，赋值/传参
+  共享对象；
+- 字段可有初始化表达式（`x: i32 = 5`）与可见性 / `static` 修饰；
+- 方法可 `pub` / `pri` / `static`，返回类型注解 `: T` 与 `-> T` 等价，纯声明
+  形态（`;` 结尾）为抽象方法。
 
 #### 4.6.1 类的特殊方法（已确认）
 
@@ -247,15 +250,13 @@ AST：`ClassItem { attributes, name, type_parameters, members, parent, scope }`�
 `__destroy`、`__str` 等（写 `__init__` 风格亦可，语义一致）；由编译器在
 特定时机自动调用，用户不直接调用。
 
-- 词法无需改动：`__xxx` 本就匹配 `Identifier` 规则（`_` 可为首字符）；
-  `__` 前缀的识别在语义阶段按名字判定；
-- 作用范围：**仅 class**（以及 trait 声明的方法签名）；**struct 不支持特殊
-  方法**——struct 方法名不得带 `__` 前缀（见 §4.7）；
-- 特殊方法的可用清单（`__init` / `__destroy` / `__str` …）与调用时机
-  （构造、析构、字符串化、`with` 协议等）由语义阶段按需定义并登记入
-  design.md，此处只固定命名约定；
-- 双下划线同时是**保留命名空间**：普通方法不得以 `__` 开头，防止与未来
-  特殊方法撞名。
+- 词法零改动：`__xxx` 本就匹配 `Identifier`（`_` 可为首字符）；`__` 前缀的
+  识别在语义阶段按名字判定；
+- 作用范围：**仅 class**（及 trait 声明的方法签名）；**struct 不支持特殊
+  方法**——struct 方法名不得带 `__` 前缀（§4.7）；
+- 可用清单（`__init` / `__destroy` / `__str` …）与调用时机（构造、析构、
+  字符串化、`with` 协议等）由语义阶段按需定义并登记，此处只固定命名约定；
+- 双下划线同时是**保留命名空间**：普通方法不得以 `__` 开头，防止撞名。
 
 ### 4.7 struct（值类型，已确认新增）
 
@@ -265,20 +266,18 @@ structBody: '{' structMember* '}';
 structMember: methodDeclaration | fieldDeclaration;   // 复用 class 成员文法
 ```
 
-AST：新增 `Item::Struct(StructItem)`，
-`StructItem { attributes, name, type_parameters, members: Vec<ClassMember>, span }`。
+AST：`StructItem { attributes, name, type_parameters, members: Vec<ClassMember>, span }`。
 
-语义定位（与 class 的分工见 §8.2）：
+语义定位（与 class 的分工见 §8）：
 
 - **值语义**：赋值 / 传参 / 返回均为逐位拷贝（含 class 引用字段的「指针拷贝」，
   见 §8.3）；
 - **无继承**：struct 不可有 `parent`，不可被继承；
-- **无构造器**：用字段初始化构造 `TypeName{ x: 1, y: 2 }`（见 §5.4）；
-- **方法可选**：允许方法，方法内 `this` 为**编译器注入的可信指针**，
-  字段访问无需 unsafe（见 §8.4）；
-- **无特殊方法**：struct 不识别 `__` 前缀方法（保留命名空间仅限 class，
-  见 §4.6.1）——struct 方法名不得以 `__` 开头；
-- **`==` / `!=` 不适用于 struct 值**（见 §8.5），指针比较不受影响；
+- **无构造器**：用字段初始化构造 `TypeName{ x: 1, y: 2 }`（§5.4）；
+- **方法可选**：允许方法，方法内 `this` 为**编译器注入的可信指针**，字段访问
+  无需 unsafe（§8.4）；
+- **无特殊方法**：struct 不识别 `__` 前缀方法（保留命名空间仅限 class）；
+- **`==` / `!=` 不适用于 struct 值**（§8.5），指针比较不受影响；
 - **布局**：按字段声明顺序 + 自然对齐（C/FFI 兼容），无虚表、无隐藏字段。
 
 ### 4.8 函数
@@ -293,10 +292,13 @@ parameter: identifier typeAnnotation? (Assign expression)?;    // 形参默认�
 ```
 
 AST：`FunctionItem { attributes, name, r#type, block, scope, is_extern, is_async }`；
-`FunctionType { type_parameters, params, return_type }`；
-`Param { name, ty, default }`。返回类型注解 `: T` 与 `-> T` 两种写法等价。
+`FunctionType { type_parameters, params, return_type }`；`Param { name, ty, default }`。
 
-> 已确认：`FunctionItem.is_unsafe` 字段预留（`unsafe fn` 本期不做）。
+- 返回类型注解 `: T` 与 `-> T` 两种写法等价；
+- `extern func`（无函数体，`;` 结尾）声明外部函数，用于 FFI；
+- `async func` 为异步函数（`FunctionItem.is_async`）；
+- `unsafe fn` 本期不做；`FunctionItem.is_unsafe` 字段为预留项，待 `unsafe fn`
+  落地时一并加入（当前 AST 尚未含该字段）。
 
 #### 4.8.1 程序入口 `main`（已确认）
 
@@ -304,7 +306,7 @@ AST：`FunctionItem { attributes, name, r#type, block, scope, is_extern, is_asyn
   （理论形态上入口可缺省——如仅作为库被其他程序导入时，语义分析阶段按
   「是否产出可执行目标」判定；默认编译为可执行文件时报「缺少 main」）。
 - `main` 是**硬性入口约定**，非保留字：`main` 仍是普通 `Identifier`，靠名字
-  与「顶层 + 无参 + 无泛型」形态识别，不必新增关键字 token；
+  与「顶层 + 无参 + 无泛型」形态识别；
 - 入口判定：顶层函数，函数名 `main`，无参数；返回类型可为 `void` / `int`
   （退出码，语义阶段定），其余形态报错。
 
@@ -317,21 +319,18 @@ statement: variableStatement | returnStatement | breakStatement | continueStatem
          | unsafeStatement | expressionStatement;
 ```
 
-| Statement 变体 | 文法 | 说明 |
-|----------------|------|------|
-| `Variable(VariableStmt)` | `Pub? (Const|Let) variableDeclarationList SemiColon` | 支持元组解构 `let (a, b)` |
-| `Return` / `Break` / `Continue` / `Throw` / `Yield` | 对应跳转语句 | `yield` 值可缺省 |
-| `Block(Block)` | `block: '{' statement* '}'` | 花括号块 |
-| `If(IfStmt)` | `if/elif/else` 链 | 分支体为任意 `statement` |
-| `While` | `while (expr) stmt` | |
-| `For(ForStmt)` | `for (init?; cond?; upd?)` / `for (x in expr)` | init 段声明不带 `const/let`，一律按 `Let` 语义 |
-| `Try(TryStmt)` | `try { } catch (e: T) { } finally { }` | 无 catch 必须有 finally |
-| `With(WithStmt)` | `with expr (as name: T)? { }` | 资源管理 |
-| **`Unsafe(UnsafeStmt)`（新增）** | `unsafe { }` | 唯一 unsafe 上下文入口 |
-| `Expression(Expression)` | `expressionStatement` | 表达式语句 |
-
-`UnsafeStmt { block: Box<Block>, span }`：块内仍是普通 `Statement`，语法层不
-白名单过滤；「哪些操作要求 unsafe」由语义层按 §6.4 判定。
+| 语句 | 文法 | 说明 |
+|------|------|------|
+| 变量声明 | `Pub? (Const|Let) variableDeclarationList SemiColon` | 支持元组解构 `let (a, b)` |
+| 跳转 | `return` / `break` / `continue` / `throw` / `yield` | `yield` 值可缺省 |
+| 块 | `block: '{' statement* '}'` | 花括号块 |
+| if | `if/elif/else` 链 | 分支体为任意 `statement` |
+| while | `while (expr) stmt` | |
+| for | `for (init?; cond?; upd?)` / `for (x in expr)` | init 段声明不带 `const/let`，一律按 `let` 语义 |
+| try | `try { } catch (e: T) { } finally { }` | 无 catch 必须有 finally |
+| with | `with expr (as name: T)? { }` | 资源管理 |
+| **unsafe（新增）** | `unsafe { }` | 唯一 unsafe 上下文入口（§6） |
+| 表达式语句 | `expression ;` | |
 
 ### 4.10 表达式与优先级
 
@@ -366,35 +365,36 @@ statement: variableStatement | returnStatement | breakStatement | continueStatem
 > 低于算术、高于关系比较，与 TS 观感一致：
 > `p + 1 as u32` ⇒ `(p + 1) as u32`；`p as usize + 1` ⇒ `(p as usize) + 1`；
 > `*p as u8` ⇒ `(*p) as u8`（一元高于 `as`）。
-> 需要整体转换时通常不必加括号；`(a + b) as u8` 也可显式写。
 
-### 4.11 表达式节点
+### 4.11 表达式节点与运算符
 
 `Expression` 变体：`Literal` `Identifier` `Paren` `Tuple` `ArrayLiteral`
 `ObjectLiteral` `This` `Unary` `Await` `Binary` `Is` `Ternary` `Assignment`
-`MemberAccess` `IndexAccess` `Call` `New` `MacroCall` `Match(Match)`
-`Lambda(Lambda)` **`Cast`（新增）**。
+`MemberAccess` `IndexAccess` `Call` `New` `MacroCall` `Match` `Lambda`
+**`Cast`（新增）** 及 **struct 构造**（§5.4）。
 
 运算符枚举：
+
 - `UnaryOp`：`Plus` `Minus` `Not` `BitNot` `PostIncrement` `PostDecrement`
-  **`AddressOf` `DerefPointer`（新增）**；
-- `BinaryOp`：`Power`（**删除**）`Multiply` `Divide` `Modulus` `Plus` `Minus`
+  `AddressOf` `DerefPointer`（新增）；
+- `BinaryOp`：`Multiply` `Divide` `Modulus` `Plus` `Minus`
   `LeftShift` `RightShift` `LessThan` `GreaterThan` `LessThanEquals`
   `GreaterThanEquals` `Equals` `NotEquals` `IdentityEquals` `IdentityNotEquals`
   `BitAnd` `BitXor` `BitOr` `LogicalAnd` `LogicalOr` `NullCoalesce`；
 - `AssignOp`：`Assign` `PlusAssign` `MinusAssign` `MultiplyAssign` `DivideAssign`
   `ModulusAssign` `BitAndAssign` `BitOrAssign` `BitXorAssign` `LeftShiftAssign`
-  `RightShiftAssign` `PowerAssign`（**删除**）。
+  `RightShiftAssign`。
 
-### 4.12 字面量 AST 与 lambda / match 结构
+### 4.12 字面量 AST 与 lambda / match / 对象
 
 - `Literal`：`Null` / `Boolean(bool)` / `String(String)`（保留原文） /
   `Number(String)`（保留原文与进制前缀）；
-- `Lambda { is_async, params: LambdaParams, return_type, body: LambdaBody }`；
-  `LambdaParams::Single` / `LambdaParams::List`；`LambdaBody::Expr` / `Block`；
+- `Lambda { is_async, params, return_type, body }`；
+  `LambdaParams::Single` / `List`；`LambdaBody::Expr` / `Block`；
 - `Match { subject, cases, default }`；`MatchPattern::Expr` / `Type`（`case : T`）；
   `MatchCaseBody::Expr` / `Block`；
-- `PropertyAssignment { name, value: Option<Expression> }`：`{ a: 1, b }` 简写。
+- `PropertyAssignment { name, value: Option<Expression> }`：`{ a: 1, b }` 简写
+  （`b` 等价 `b: b`，语义分析阶段展开）。
 
 ## 5. 类型系统
 
@@ -402,25 +402,30 @@ statement: variableStatement | returnStatement | breakStatement | continueStatem
 
 | 变体 | 形态 | 说明 |
 |------|------|------|
-| `Predefined { ty }` | `int` / `float` / `boolean` / `string` / `void` / `u8..u64` / `i8..i64` / `f8..f64` / `usize` / `isize` / `null` | 类型名在词法层是普通 `Identifier`，由 parser/语义按名字归类 |
-| `Reference { name, generic_args }` | `Foo` / `Foo<T>` | 类型引用 |
-| `Array { element }` | `T[]` | 数组类型 |
-| `Tuple { elements }` | `(T1, T2)` | 元组类型 |
-| `Function(FunctionType)` | `<T>(a: int) -> int` / `func (a) -> T` | 两种写法合并 |
-| `Union { types }` | `A | B | C` | 扁平存储 |
-| **`Pointer { element }`（新增）** | `T*`（可嵌套 `T**`，允许 `void*`） | 指针类型 |
+| `Predefined` | `int` / `float` / `boolean` / `string` / `void` / `u8..u64` / `i8..i64` / `f8..f64` / `usize` / `isize` / `null` | 类型名在词法层是普通 `Identifier`，由语义按名字归类 |
+| `Reference` | `Foo` / `Foo<T>` | 类型引用（class / struct / 别名） |
+| `Array` | `T[]` | 数组类型 |
+| `Tuple` | `(T1, T2)` | 元组类型 |
+| `Function` | `<T>(a: int) -> int` / `func (a) -> T` | 两种写法合并 |
+| `Union` | `A \| B \| C` | 扁平存储，集合语义 |
+| **`Pointer`（新增）** | `T*`（可嵌套 `T**`，允许 `void*`） | 指针类型（§5.3） |
 
-`TypeParameter { name, bound }`；`typeAnnotation: Colon typeExpression`。
+`TypeParameter { name, bound }`（`T` 或 `T: Bound`）；`typeAnnotation: Colon typeExpression`。
 
 ### 5.2 预定义类型（`PredefinedType`）
 
 `Null` `Boolean` `String` `Int` `Float` `Void` `U8` `U16` `U32` `U64` `I8`
 `I16` `I32` `I64` `F8` `F16` `F32` `F64` `Usize` `Isize`。
 
+宽度整数 / 浮点类型直接映射目标平台原生类型；`usize` / `isize` 为指针宽度。
+
 ### 5.3 指针类型（已确认新增）
 
-- 后缀形态 `T*`，可连写 `u8**` ≡ `Pointer(Pointer(u8))`（右结合）；
+- 后缀形态 `T*`，可连写 `u8**` ≡ `Pointer(Pointer(u8))`（右结合，最右 `*` 在
+  最外层）；
 - 可在 `primaryType` 级别组合：`(A | B)*`、`(i32, i32)*`；
+- 优先级：类型位 `*` 只出现在类型表达式**末端**，低于 `|` 联合
+  （`A | B*` 即 `A | Pointer(B)`）；「指向联合的指针」写 `(A | B)*`；
 - `void*` 合法：可隐式赋给任意 `T*`，对 `void*` 解引用报错、参与算术报错；
 - 指针宽度 = `usize`（平台决定，语义阶段定型）；
 - 文法：`primaryType: ... | primaryType '*';`（`'*'` 即 `Multiply` token）。
@@ -434,8 +439,8 @@ structInit: identifier objectLiteral;   // 如 Point{ x: 1, y: 2 }
 - 复用 `objectLiteral` 的字段赋值形态（`PropertyAssignment`）；
 - 语义：每个字段必须可初始化——显式给出，或字段声明带 `initializer` 时取默认值；
 - 无位置参数构造（`Point(1, 2)` 不支持，避免与函数调用混淆）；
-- AST：`Expression::StructInit { name, properties, span }`（或并入现有
-  表达式家族，落地时定具体变体名）。
+- AST：`Expression::StructInit { name, properties, span }`（或并入现有表达式
+  家族，落地时定具体变体名）。
 
 ## 6. 内存操作与 unsafe（已确认新增）
 
@@ -453,7 +458,7 @@ unsafe {
 }
 ```
 
-### 6.2 操作符
+### 6.2 操作符与 unsafe 属性
 
 | 操作 | 语法 | 复用 token | unsafe? |
 |------|------|-----------|---------|
@@ -474,6 +479,9 @@ unsafe {
 | `void*` | unsafe | unsafe | 允许 | 拒绝 |
 | 其他 | 整数形态允许 | 拒绝 | 拒绝 | 按类型系统 |
 
+布尔 ↔ 整数等「非指针」算法转换不受 unsafe 约束；凡涉及指针两侧任一方向的
+转换均须 unsafe 上下文。
+
 ### 6.4 unsafe 上下文（一条线规则）
 
 「**穿过指针访问内存**」即需 unsafe：
@@ -485,9 +493,11 @@ unsafe {
 - `unsafe { }` 可嵌套；块内允许普通语句；本期不提供 `unsafe fn` 与
   `unsafe` 表达式形态；
 - 悬垂指针 / 越界 / NULL 解引用：unsafe 语义下不做静态证明（未定义行为），
-  生命周期检查归属后续引用系统。
+  生命周期检查归属后续引用系统；
+- **唯一例外**：struct 方法内的 `this` 是编译器注入的可信指针，`this.x`
+  访问无需 unsafe（§8.4）。
 
-### 6.5 语义规则摘要（供 `novella-sema` 实现）
+### 6.5 语义规则摘要（供语义分析实现）
 
 | # | 规则 |
 |---|------|
@@ -496,22 +506,153 @@ unsafe {
 | S3 | `p[i]`：p 为 `T*` ⇒ `T`。unsafe。 |
 | S4 | 指针算术：unsafe；`p1-p2` ⇒ `isize`；非法组合（指针+指针等）报错。 |
 | S5 | 指针相关 `as`：unsafe；纯数值转换不受限。 |
-| S6 | `p.m`：p 为 `T*` 自动解引用；读、写均 unsafe（struct 方法内 `this` 除外，§8.4）。 |
+| S6 | `p.m`：p 为 `T*` 自动解引用；读、写均 unsafe（struct 方法内 `this` 除外）。 |
 | S7 | `p==q` / `p==null`：安全；异种指针比较报错。 |
 | S8 | `void*`：隐式赋任意 `T*`；解引用 / 算术报错。 |
 | S9 | `null`：类型 `void*`，隐式转任意 `T*`；未初始化指针解引用报错。 |
 | S10 | 指针不隐式转整数或其他指针（必须 `as`）。 |
 
-## 7. 错误处理与诊断
+## 7. 对象模型与内存管理
 
-- 词法：`LexError::InvalidCharacter` / `UnterminatedString`，经
-  `TokenError::to_diagnostic` 转通用诊断，只进 `errors`；
-- 语法：parser 的 `error_here` / `error_at` 收集进 `diagnostics`，不中断；
-- 通用结构：`Diagnostic { severity, message, location, note }`（serde），
-  CLI `render_diagnostic` 按 rustc 风格渲染（`error: ...` + `--> 文件:行:列`
-  + 源码行 + caret，列号 1-based 展示、caret 按字符不错位）；
-- 阶段衔接：lexer → parser →（sema/codegen）→ CLI 输出 JSON
-  （tokens + program + diagnostics）。
+### 7.1 定位回顾
+
+| | class | struct |
+|---|-------|--------|
+| 语义 | **引用语义（ARC，本篇）** | 值语义（逐位拷贝，已定） |
+| 分配 | 堆：对象头 + 字段区 | 栈 / 内嵌 / 手动 |
+| 构造 | `new Foo(...)` → `__init` | `Foo{ x: 1 }` 字段初始化 |
+| 析构 | 引用归零 → `__destroy` | 无（POD） |
+| 隐藏状态 | 引用计数头部（运行时） | 无 |
+
+### 7.2 对象布局
+
+```
+class 对象（堆）：
+┌────────────┬──────────────────────────┐
+│ refcount   │ 字段区（按声明顺序+对齐）  │
+│ (usize)    │                          │
+└────────────┴──────────────────────────┘
+       │
+       └─ 引用（句柄）在语言层是「不透明引用」，不是裸指针；
+          `&obj` 才显式取出 T*（指向字段区起始），且须保持对象存活
+```
+
+- 对象头对语言层透明：用户看不到 refcount，`as` 不能把引用当整数；
+- class 引用默认可空：`null` 可赋给任意 class 引用；解引用前须判空。
+
+### 7.3 引用计数规则（ARC）
+
+**守恒原则：每次产生引用拷贝必须 retain（+1），每次引用失效必须 release（-1）；
+归零时析构并释放。**
+
+自动 retain/release 的时机：
+
+| 场景 | 动作 |
+|------|------|
+| `new Foo(...)` 赋给变量 | 计数 1（转移，无 retain） |
+| 引用赋值 `b = a` | retain(a) → release(旧 b) |
+| 传入函数 / 方法 | retain（调用约定：调用方负责） |
+| 存入字段 / 数组元素 | retain |
+| 从函数返回引用 | 转移所有权（调用方接收，无 retain/release 对） |
+| 局部变量离开作用域 / 被覆盖 | release |
+| `weak` 字段赋值 | 不 retain（§7.4） |
+
+编译优化（后端）：转移场景（`new` 直接赋、返回值、`if` 分支内唯一引用）可
+省略 retain/release 对，语义层只保证**引用守恒**，不规定具体计数次数。
+
+#### 7.3.1 示例
+
+```novella
+class Node {
+    value: i64;
+    child: Node;                 // 默认强引用
+    weak parent: Node;           // 弱引用（§7.4）
+    func __init(v: i64) {
+        this.value = v;
+    }
+    func __destroy() {           // 归零时调用（资源清理）
+        // 关闭句柄等
+    }
+}
+
+func build() -> Node {
+    let root = new Node(1);      // root: count=1（转移）
+    let child = new Node(2);     // child: count=1
+    root.child = child;          // child: count=2（retain）
+    child.parent = root;         // weak：不 retain
+    return root;                 // 转移所有权
+}                                // child 离开作用域: count=1（仍被 root 持有）
+```
+
+### 7.4 循环引用与弱引用
+
+ARC 缺陷：`root.child = child; child.parent = root;`（全强）形成环，永不归零。
+对策：**弱引用 `weak`**。
+
+- 语法：**仅字段**支持 `weak` 修饰（与 `static` 同位，文法
+  `fieldDeclaration: decorator* accessModifier? Static? Weak? identifier ...`），
+  局部变量不做；
+- 语义：`weak` 字段赋值不 retain；对象可能已被释放；
+- **无空安全保证**（已确认）：`weak` 字段不提供判空/解引用的静态保证——
+  读取过期对象属**未定义行为**，与裸指针的手动管理哲学一致；
+  不使用「临时强引用」等运行时兜底；
+- 只读语义：`weak` 字段不可写原对象的非安全操作（与普通字段同规则）。
+
+```novella
+class Tree {
+    children: Tree[];            // 强（数组元素 retain）
+    weak parent: Tree;           // 弱：打破父子环
+    func __init() { this.children = []; }
+}
+```
+
+### 7.5 `with` 资源管理协议
+
+`with expr { }`（文法已定）调用对象的特殊方法管理生命周期：
+
+| 时机 | 调用 |
+|------|------|
+| 进入块 | `expr.__enter()`（若定义） |
+| 正常 / 异常离开 | `expr.__exit()`（若定义，恒调用） |
+| 引用归零（含 with 结束） | `__destroy()` |
+
+- `with` **不改变所有权**：它只是协议调度；对象是否释放仍由引用计数决定；
+- `__enter` / `__exit` 是已定的 `__` 前缀特殊方法族（见 §4.6.1）；
+- 典型用法（文件、锁、内存映射）：
+
+```novella
+with openFile("data.txt") as f: File {
+    let line = f.readline();     // 块内使用
+}                                // 离开：__exit() 被调用；引用归零则 __destroy()
+```
+
+### 7.6 与指针 / unsafe 的边界
+
+| 操作 | 规则 |
+|------|------|
+| `&obj`（class 引用取址） | 得 `T*`，指向对象字段区起始；**安全操作**，但持有裸指针期间对象存活由调用方保证 |
+| `*p` 解引用 / `p.m` / `p[i]` | 沿用 unsafe 一条线规则（§6） |
+| `new` 返回 | 引用，**不可隐式转** `T*`，须 `&obj` |
+| `as` | class 引用不可与整数/指针互转（引用是运行时句柄） |
+| 裸指针持有 class 对象 | 悬垂风险属 unsafe 语义（未定义行为） |
+
+内存泄漏 / 生命周期不在静态层证明（归属后续引用/借用设计）。
+
+### 7.7 数组与容器
+
+- `T[]`（class 元素）= 引用数组：元素 retain/release，数组本身由语言管理；
+- `T[]`（struct / 标量元素）= 连续内存（已定）；
+- `std` 容器（List / Map）基于以上语义实现（标准库文档待补，当前搁置）。
+
+### 7.8 待确认决策点
+
+1. `weak` 语法：已定案为**字段修饰符**（与 `static` 同位），已入文法与词法；
+2. ~~弱引用读取是否做「临时强引用」保证~~ —— **不做**（无空安全保证，访问
+   过期对象未定义）；
+3. `with` 的 `__enter` 返回值是否绑定到 `as` 名（本稿：`as` 绑定原始 expr，
+   `__enter` 返回值仅作初始化，绑定规则待定）；
+4. 是否提供 `@arc` / 配置项切到 tracing GC（本稿：不做，ARC 唯一）。
+
 
 ## 8. struct 与 class 的分工
 
@@ -523,6 +664,7 @@ unsafe {
 | 分配 | 堆 / 计数管理 | 栈 / 手动（配合指针） |
 | 构造 | `new Foo(...)` | `Foo{ x: 1 }` |
 | 继承 | 有（单父类，按多继承预留） | 无 |
+| 特殊方法 | 有（`__` 前缀） | 无 |
 | 内存角色 | 日常对象 | 底层数据载体、FFI、寄存器/驱动 |
 
 ### 8.2 值语义
@@ -538,66 +680,169 @@ struct 内允许 class 引用字段，拷贝时**按位复制句柄**（不深�
 ### 8.4 struct 方法与可信 `this`
 
 - struct 允许方法（复用 `methodDeclaration` 文法与 `MethodMember` AST）；
-- 方法内 `this` 是**编译器注入的可信指针**（指向调用时实际对象），
-  因此方法体内 `this.x` 访问**无需 unsafe**——这是对 §6.4 统一规则的
-  唯一例外，其正当性在于 this 由编译器保证有效性，非用户拼装；
+- 方法内 `this` 是**编译器注入的可信指针**（指向调用时实际对象），因此
+  `this.x` 访问**无需 unsafe**——这是对 §6.4 统一规则的唯一例外，其正当性
+  在于 this 由编译器保证有效性，非用户拼装；
 - 方法调用形态：值上调用（`a.norm()`）自动取址；指针上调用（`p.norm()`）
   沿用穿指针规则（调用点本身在 unsafe 内）。
 
 ### 8.5 struct 的 `==`
 
-`a == b`（struct 值）**非法**（编译错误，提示用逐字段比较或后续 `eq`
-内置）；指针比较 `pa == pb`、`pa == null` 不受影响（§6.2）。
+`a == b`（struct 值）**非法**（编译错误，提示用逐字段比较或后续 `eq` 内置）；
+指针比较 `pa == pb`、`pa == null` 不受影响（§6.2）。
 
-## 9. 词法/文法/高亮同步约定
+## 9. 异常与执行模型
 
-- `TokenKind` ↔ `RawToken` ↔ `NovellaLexer.g4` 三处同步（新增/删除变体）；
-- AST ↔ `NovellaParser.g4`：只描述 AST 承载的结构，文法不保留 AST 没有的
-  结构；两侧不一致以代码为准；
-- LSP：`token_type_index` 是穷尽 match，关键字/运算符新增须同步
-  `semantic.rs`（`TOKEN_TYPES` legend 顺序即下标）；新关键字 → `KEYWORD`；
-- 删除 token 属**破坏性 JSON 变更**：旧 token JSON 含 `"Power"` 无法反序列化，
-  当前产物为开发期快照，无长期格式承诺，直接替换即可。
+### 9.1 异常处理
 
-## 10. 落地清单（已确认变更，按序实施）
+#### 9.1.1 抛出
 
-| 步 | 文件 | 改动 |
-|----|------|------|
-| 1 | `crates/novella-core/src/token.rs` | 删 `Power`/`PowerAssign`；增 `Unsafe`、`Struct` |
-| 2 | `crates/novella-lexer/src/lib.rs` | 删 2 规则+映射；增 `unsafe`、`struct` 规则+映射 |
-| 3 | `crates/novella-ast/src/types.rs` | 增 `TypeExpr::Pointer` |
-| 4 | `crates/novella-ast/src/expr.rs` | 增 `UnaryOp::AddressOf`/`DerefPointer`、`Expression::Cast`（及 struct 构造节点）；删 `BinaryOp::Power`、`AssignOp::PowerAssign` |
-| 5 | `crates/novella-ast/src/stmt.rs` | 增 `Statement::Unsafe` |
-| 6 | `crates/novella-ast/src/program.rs` | 增 `Item::Struct`、`StructItem` |
-| 7 | `grammar/NovellaLexer.g4` | 删 `Power`/`PowerAssign`；增 `Unsafe`、`Struct` |
-| 8 | `grammar/NovellaParser.g4` | 删幂行；增指针后缀、`as`、`unsafeStatement`、`structDeclaration`、struct 构造 |
-| 9 | `crates/novella-parser/src/lib.rs` | 类型后缀、前缀取址/解引用、`as` 分支、unsafe 语句、struct 声明与构造 |
-| 10 | `crates/novella-lsp/src/semantic.rs` | 删 2 映射；增 `Unsafe`、`Struct` 映射 |
-| 11 | `novella-sema`（下一阶段） | §6.5 / §8 规则实现 |
-| 12 | `grammar/README.md` 等 | 同步更新（含 `Power` 移除说明） |
+- `throw expr;`：expr 类型必须是 **class 引用**（`Exception` 或子类，
+  `std:exception` 提供，见 §9.1.4）；抛 struct/标量报错；
+- throw 对异常对象**retain 一次**并随传播路径持有，catch 消费后 release；
+- 允许 `throw;`（重抛当前异常，仅 catch 块内合法）。
 
-依赖：1→2→（lexer 依赖 core）；3/4/5/6 相互独立；7 依赖 1；8 依赖 3/4/5/6；
-9 依赖 2/3/4/5/6；10 依赖 1；11 依赖 9。
+#### 9.1.2 捕获
 
-## 11. 已知限制与待定项
+```
+tryStatement: Try block (catchClause+ finallyClause? | finallyClause);
+catchClause: Catch '(' identifier typeAnnotation? ')' block;
+```
 
-- 标识符为硬保留字环境（无软关键字），`obj.type` 这类写法当前不可解析；
-- for-init 段声明不带 `const/let`，统一按 `Let` 语义；
-- `stream` / `macro` 关键字无对应结构（`Macro` 仅有调用侧）；
-- `Scope` 枚举拼写为 `Pubilc`（历史笔误，改名需同步全部引用与 JSON 输出）；
-- 标识符为硬保留字环境（无软关键字），`obj.type` 这类写法当前不可解析；
-- for-init 段声明不带 `const/let`，统一按 `Let` 语义；
-- `stream` / `macro` 关键字无对应结构（`Macro` 仅有调用侧）；
-- `Scope` 枚举拼写为 `Pubilc`（历史笔误，改名需同步全部引用与 JSON 输出）；
-- `FunctionItem.block` 为 `Option<Box<Statement>>`（尺寸优化）；
-- 特殊方法**清单待定**：`__init` / `__destroy` / `__str` / `__enter` /
-  `__exit`（with 协议）等由语义阶段登记（命名约定已定：`__` 开头即可，见 §4.6.1）；
-- 路径别名解析（`std` / `super`）与 `main` 入口判定在语义阶段落地；
-- `==` 对 struct 的逐字段比较、`unsafe fn`、`unsafe` 表达式、`volatile`、
-  `sizeof/offsetof`、`alloc/free`、slice 视图、函数指针类型、引用/借用与
-  生命周期均为后续候选。
+- 多个 catch 按**声明顺序**匹配，第一个类型相符（含子类）的生效；
+- `catch (e)`（无类型注解）等价 `catch (e: Exception)`——捕获一切；
+- 类型不匹配的异常继续向上传播；无 try 包裹的异常到达 `main` 之外 =>
+  运行时终止（打印异常消息 + 栈回溯，终止语义由 codegen 定义）。
 
-## 12. 快速上手（完整示例）
+#### 9.1.3 finally
+
+- 无论正常 / 异常 / return / break / continue 离开 try，finally 恒执行；
+- finally 内的 throw / return 覆盖外层控制流（与主流语言一致）；
+- `catch` 与 `finally` 可共存，`try-finally`（无 catch）合法。
+
+```novella
+func div(a: i64, b: i64) -> i64 {
+    if (b == 0) throw new ZeroDivisionError("division by zero");
+    return a / b;
+}
+
+func demo() {
+    try {
+        let x = div(10, 0);
+    } catch (e: ZeroDivisionError) {
+        println(e.message);
+    } catch (e: Exception) {
+        println("other: " + e.message);
+    } finally {
+        cleanup();               // 恒执行
+    }
+}
+```
+
+#### 9.1.4 错误对象模型
+
+`std:exception` 提供：
+
+```
+class Exception {
+    message: string;
+    func __init(message: string) { this.message = message; }
+}
+class ValueError (Exception) { ... }      // 继承（见 §4.6）
+class ZeroDivisionError (Exception) { ... }
+```
+
+用户可定义自己的 Exception 子类（继承 + `__init`）。
+
+### 9.2 求值顺序与控制流语义
+
+- 表达式求值：二元运算按**左操作数先于右操作数**求值；`&&` / `||` 短路
+  （右侧可能不求值）；`??` 短路；`?.`（若未来引入）短路；
+- 赋值：先求 RHS，再求 LHS 目标（`a[i] = f()` 中 `f()` 先于 `a[i]` 定位）；
+- 函数 / 方法实参：**从左到右**求值；
+- 返回值：`return expr;` 先求 expr；`return;` 返回默认值（void）。
+
+### 9.3 async / await 执行模型
+
+#### 9.3.1 定义
+
+```
+async func foo() -> T { ... await p ... }
+await expr;         // 仅 async 上下文
+```
+
+- `async func` 编译为**状态机**（async 函数不立即分配线程）；await 使状态机
+  挂起并把控制权交还调度器；
+- 调度模型：**单线程协作式（v1）**——事件循环 / 任务队列，无抢占；
+  （多线程 / 并行模型列为后续，见 §9.6）；
+- await 期间：被捕获的变量按引用计数保持存活（闭包 retain），无泄漏。
+
+#### 9.3.2 语义约束
+
+- `await` 只能出现在 async 函数（或异步 lambda）体；
+- async 函数返回值可以是 `T` 或 `void`：调用方 `await f()` 得到 `T`；
+  不 await 时得到 `Future<T>`（句柄，可存储 / 传递）；
+- async 块内可嵌套 await；同步代码不可 await（报错）。
+
+```novella
+async func fetch(url: string) -> Response {
+    let resp = await http_get(url);      // 挂起、交还控制权
+    return resp;
+}
+
+async func main_async() {
+    let fut = fetch("https://x");        // Future<Response>，不阻塞
+    let r = await fut;                   // 挂起直至完成
+}
+```
+
+> `v1` 是否提供顶层 `await`（直接在 `main` 内 await）见 §9.6；
+> 上例用 `async func main_async` 演示将其包在 async 上下文中的写法。
+
+### 9.4 stream 已砍 / yield 保留
+
+**`stream` 已确认砍掉**（2026 决策）：`stream func` 生成器不再支持；
+`Stream` 关键字已从词法层移除（`TokenKind` / lexer / grammar / LSP 同步删除）。
+
+- `yield` 关键字**保留**，`yieldStatement`（`yield expr?;`）仍在语法层；
+- 在没有 `stream` 生成器的情况下，`yield` 的完整语义**待定**：候选方向为
+  协程 / 可恢复函数（后续评审），v1 先仅保留语法形态、由语义阶段按
+  「未支持」报错或按未来协程设计实现；
+- 示例（暂不可用，仅存档）：
+
+```
+stream func fib(n: i64) { ... }   // 已砍，不再支持
+```
+
+### 9.5 与对象模型 / unsafe 交互
+
+- 异常路径必须**保持引用守恒**（unwind 沿途释放引用）——语义层规则与
+  ARC 一致，codegen 负责栈展开时按作用域 release；
+- async 挂起期间对象存活由引用计数保证（闭包捕获）；
+- unsafe 代码内 throw/await：throw 允许（异常对象正常计数）；await 在 unsafe
+  块内可允许（不改变内存语义）；unwind 后的裸指针视为悬垂（未定义）——
+  `声明：抛异常/await 挂起期间跨作用域持有裸指针是未定义行为`。
+
+### 9.6 待确认决策点
+
+1. 调度模型：单线程协作（本稿）vs 线程池并行（后续扩展是否预留接口）；
+2. 顶层 await：`func main()` 是否可 `await`（本稿倾向允许，内部包一层
+   async 状态机）；
+3. 异常实现的运行时选型：栈展开表（unwind）vs 方案式（返回值）；v1 需要
+   unwind，成本在 codegen；
+4. `yield` 的空值语义与 `Option` 的关系（本稿先不引入 `Option`，用
+   `?`+`null` 约定，后续评审）。
+
+## 10. 错误处理语义
+
+- 错误分两类：词法错误（非法字符、未闭合字符串）与语法错误（token 序列不
+  符合文法）；均**可恢复**——记录后继续分析同一文件其余部分；
+- 语义错误（类型不符、unsafe 违规、未知路径别名、缺少 `main` 等）由语义
+  分析阶段产出；
+- 诊断渲染为 rustc 风格（`error: ...` + `--> 文件:行:列` + 源码行 + caret，
+  列号 1-based 展示、caret 按字符不错位）——渲染细节属编译器设计。
+
+## 11. 快速上手（完整示例）
 
 ```novella
 // 路径导入（std 内置路径别名）

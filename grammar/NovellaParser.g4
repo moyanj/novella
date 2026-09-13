@@ -40,6 +40,7 @@ sourceElement:
 	| typeAliasDeclaration
 	| traitDeclaration
 	| classDeclaration
+	| structDeclaration
 	| functionDeclaration
 	| externFunctionDeclaration
 	| decoratorStatement
@@ -103,12 +104,16 @@ typeExpression:
 // 语义分析按名字判定，避免在词法层新增一批保留字而与 `TokenKind` 这一事实源冲突。
 predefinedType: Null;
 
-// 主类型：元组 / 基础类型 / 类型引用 / 数组（对应 `TypeExpr::Tuple` / `Predefined` / `Reference` / `Array`）
+// 主类型：元组 / 基础类型 / 类型引用 / 数组 / 指针（对应 `TypeExpr::Tuple` /
+// `Predefined` / `Reference` / `Array` / `Pointer`）。
+// 指针后缀 `'*'` 复用 `Multiply` token（类型位后缀用法，与表达式前缀解引用
+// 区分）；`u8**` 词法即 `u8` + `*` + `*`，parser 直接循环套两层，无 `**` 特例。
 primaryType:
 	'(' typeList? ')'		# TupleTypeCase
 	| predefinedType		# PredefinedTypeCase
 	| typeReference			# ReferenceTypeCase
-	| primaryType '[' ']'	# ArrayTypeCase;
+	| primaryType '[' ']'	# ArrayTypeCase
+	| primaryType '*'		# PointerTypeCase;
 
 typeList: typeExpression (',' typeExpression)*;
 
@@ -151,10 +156,21 @@ classBody: '{' classMember* '}';
 // 类成员（对应 `ClassMember`）
 classMember: methodDeclaration | fieldDeclaration;
 
+// ====================== struct 声明 ======================
+// struct 声明（对应 `StructItem`：attributes / name / type_parameters / members）。
+// 值语义：无继承（无 classHeritage）、无构造器（字段初始化构造，见 structInit）；
+// 成员文法复用 class 成员（methodDeclaration | fieldDeclaration）。
+structDeclaration:
+	decorator* Pub? Struct identifier typeParameters? structBody;
+
+structBody: '{' classMember* '}';
+
 // ====================== 成员声明 ======================
-// 字段成员（对应 `FieldMember`：attributes / modifiers / name / ty / initializer）
+// 字段成员（对应 `FieldMember`：attributes / modifiers / name / ty / initializer）。
+// `Weak?` 弱引用修饰（仅 class / struct 字段，对应 object-model 的 weak 语法）：
+// 赋值不 retain、不参与引用计数，访问过期对象属未定义行为（无空安全保证）。
 fieldDeclaration:
-	decorator* accessModifier? Static? identifier typeAnnotation? (
+	decorator* accessModifier? Static? Weak? identifier typeAnnotation? (
 		Assign expression
 	)? SemiColon;
 
@@ -208,6 +224,7 @@ statement:
 	| forStatement
 	| tryStatement
 	| withStatement
+	| unsafeStatement
 	| expressionStatement;
 
 block: '{' statement* '}';
@@ -265,6 +282,11 @@ withStatement:
 		As (identifier | bindingPattern) typeAnnotation?
 	)? block;
 
+// unsafe 语句（对应 `Statement::Unsafe`：block / span）。
+// 唯一「unsafe 上下文」入口；块内仍为普通语句，哪些操作要求 unsafe 由
+// 语义分析按 design.md §6.4「一条线」规则判定，语法层不做白名单过滤。
+unsafeStatement: Unsafe block;
+
 // ====================== 跳转语句 ======================
 // 跳转语句（对应 `Statement::Return` / `Break` / `Continue` / `Throw` / `Yield`）
 returnStatement: Return expression? SemiColon;
@@ -299,11 +321,16 @@ expression:
 	| '-' expression										# PrefixExpr
 	| ('!' | KeyNot) expression								# PrefixExpr
 	| '~' expression										# PrefixExpr
+	// 取址 `&x`（复用 BitAnd 的表达式前缀位，安全操作）
+	| '&' expression										# PrefixExpr
+	// 解引用 `*p`（复用 Multiply 的表达式前缀位，unsafe 操作）
+	| '*' expression										# PrefixExpr
 	| Await expression										# AwaitExpr
 	| expression Is typeExpression							# IsExpr
-	| expression Power expression							# PowerExpr
 	| expression ('*' | '/' | '%') expression				# MultiplicativeExpr
 	| expression ('+' | '-') expression						# AdditiveExpr
+	// 类型转换 `expr as Type`（复用 As 关键字；低绑式，位于加减之后）
+	| expression As typeExpression							# CastExpr
 	| expression ('<<' | '>>') expression					# ShiftExpr
 	| expression ('<' | '>' | '<=' | '>=') expression		# RelationalExpr
 	| expression ('==' | '!=' | '===' | '!==') expression	# EqualityExpr
@@ -327,13 +354,15 @@ expression:
 		| '^='
 		| '<<='
 		| '>>='
-		| '**='
 	) expression # AssignmentExpr;
 
 // 原子表达式（对应 `Expression::Literal` / `Identifier` / `Paren` / `ArrayLiteral` /
-// `ObjectLiteral` / `This`）
+// `ObjectLiteral` / `This` / `StructInit`）
+// 首选 `identifier objectLiteral`（struct 字段初始化构造 `Point{ x: 1 }`，
+// 置于 identifier 之前、靠更长备选分流；语义层负责名字→类型绑定）。
 primaryExpression:
 	literal					# LiteralExpr
+	| identifier objectLiteral	# StructInitExpr
 	| identifier			# IdentifierExpr
 	| '(' expression ')'	# ParenExpr
 	| arrayLiteral			# ArrayLiteralExpr

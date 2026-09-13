@@ -30,8 +30,6 @@ channels {
 // ====================== 多字符运算符（必须先于同前缀的单字符） ======================
 PlusPlus: '++';
 MinusMinus: '--';
-Power: '**';
-PowerAssign: '**=';
 LeftShiftArithmetic: '<<';
 RightShiftArithmetic: '>>';
 LeftShiftArithmeticAssign: '<<=';
@@ -97,10 +95,12 @@ Pri: 'pri';
 Const: 'const';
 Let: 'let';
 Static: 'static';
+Weak: 'weak';
 
 // 函数与类
 Func: 'func';
 Class: 'class';
+Struct: 'struct';
 Trait: 'trait';
 New: 'new';
 This: 'this';
@@ -140,7 +140,6 @@ Is: 'is';
 // 异步编程
 Async: 'async';
 Await: 'await';
-Stream: 'stream';
 Yield: 'yield';
 
 // 宏系统
@@ -148,6 +147,9 @@ Macro: 'macro';
 
 // 外部函数
 Extern: 'extern';
+
+// 不安全上下文
+Unsafe: 'unsafe';
 
 // ====================== 字面量 ======================
 Null: 'null';

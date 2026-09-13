@@ -45,10 +45,10 @@ pub fn token_type_index(kind: novella_core::token::TokenKind) -> Option<u32> {
         LineComment => COMMENT,
 
         // ---------- 关键字（含 null / 布尔常量） ----------
-        From | Import | Pub | Pri | Const | Let | Static | Func | Class | Trait | New | This
-        | If | Else | Elif | While | For | In | Break | Continue | Return | Default | Match
-        | Case | KeyAnd | KeyOr | KeyNot | Try | Catch | Finally | Throw | With | As | Type
-        | Is | Async | Await | Stream | Yield | Macro | Extern | Null | BooleanLiteral => KEYWORD,
+        From | Import | Pub | Pri | Const | Let | Static | Weak | Func | Class | Struct | Trait
+        | New | This | If | Else | Elif | While | For | In | Break | Continue | Return | Default
+        | Match | Case | KeyAnd | KeyOr | KeyNot | Try | Catch | Finally | Throw | With | As
+        | Type | Is | Async | Await | Yield | Macro | Extern | Unsafe | Null | BooleanLiteral => KEYWORD,
 
         // ---------- 数字字面量 ----------
         HexIntegerLiteral | OctalIntegerLiteral | BinaryIntegerLiteral | DecimalLiteral => NUMBER,
@@ -58,7 +58,7 @@ pub fn token_type_index(kind: novella_core::token::TokenKind) -> Option<u32> {
 
         // ---------- 运算符 ----------
         // 多字符运算符
-        PlusPlus | MinusMinus | Power | PowerAssign | LeftShiftArithmetic | RightShiftArithmetic
+        PlusPlus | MinusMinus | LeftShiftArithmetic | RightShiftArithmetic
         | LeftShiftArithmeticAssign | RightShiftArithmeticAssign | Equals | NotEquals
         | IdentityEquals | IdentityNotEquals | LessThanEquals | GreaterThanEquals | And | Or
         | NullCoalesce | Arrow | ReturnArrow | MultiplyAssign | DivideAssign | ModulusAssign

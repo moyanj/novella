@@ -121,6 +121,17 @@ pub enum TypeExpr {
         /// 源码区间
         span: Span,
     },
+    /// 指针类型：`T*`（对应文法的 `primaryType '*'` 后缀形态）。
+    ///
+    /// 可嵌套 `T**`，也允许 `void*`（元素为 `Predefined::Void`）；
+    /// `null` 可隐式赋给任意指针类型。指针与 `usize` 同宽（语义阶段定型）；
+    /// 解引用 / 指针算术 / 指针互转均须位于 unsafe 上下文（design.md §6）。
+    Pointer {
+        /// 被指向的类型（可为任意类型表达式，包括指针 / 数组 / 联合）
+        element: Box<TypeExpr>,
+        /// 源码区间
+        span: Span,
+    },
     /// 元组类型：`(T1, T2)`
     Tuple {
         /// 元素类型列表

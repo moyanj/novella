@@ -40,13 +40,17 @@ pub enum UnaryOp {
     PostIncrement,
     /// 后缀自减：`--`（对应 `PostfixExpr`）
     PostDecrement,
+    /// 取地址：`&x`（对应文法 `'&' expression` 前缀备选，复用 `BitAnd`）。
+    /// 只允许对左值（变量 / 字段 / 数组元素 / 解引用结果）取址；安全操作。
+    AddressOf,
+    /// 解引用：`*x`（对应文法 `'*' expression` 前缀备选，复用 `Multiply`）。
+    /// 必须位于 unsafe 上下文；`**x` 词法即两个 `*`，无拆分特例。
+    DerefPointer,
 }
 
 /// 二元运算符（对应文法各二元运算产生式）
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum BinaryOp {
-    /// 幂运算：`**`（对应 `PowerExpr`）
-    Power,
     /// 乘法：`*`（对应 `MultiplicativeExpr`）
     Multiply,
     /// 除法：`/`（对应 `MultiplicativeExpr`）
@@ -116,8 +120,6 @@ pub enum AssignOp {
     LeftShiftAssign,
     /// 右移后赋值：`>>=`
     RightShiftAssign,
-    /// 幂后赋值：`**=`
-    PowerAssign,
 }
 
 /// 对象字面量的属性赋值（对应文法 `propertyAssignment`）
@@ -348,6 +350,30 @@ pub enum Expression {
         /// 目标类型（对应 `typeExpression`）
         ty: TypeExpr,
         /// 类型判断表达式覆盖的源码区间
+        span: Span,
+    },
+    /// 类型转换：`expr as Type`（对应 `CastExpr`，复用 `As` token）。
+    ///
+    /// 指针相关转换（指针↔整数、指针↔指针）须位于 unsafe 上下文，
+    /// 纯数值转换不受限（design.md §6.3）。
+    Cast {
+        /// 被转换的表达式
+        expr: Box<Expression>,
+        /// 目标类型
+        ty: TypeExpr,
+        /// 转换表达式覆盖的源码区间
+        span: Span,
+    },
+    /// struct 字段初始化构造：`Point{ x: 1, y: 2 }`（对应 `StructInitExpr`）。
+    ///
+    /// 复用 `objectLiteral` 的字段赋值形态；每个字段须可初始化（显式给出或
+    /// 取字段声明 `initializer` 默认值）；无位置参数构造（design.md §5.4）。
+    StructInit {
+        /// 被构造的 struct 类型名
+        name: String,
+        /// 字段初始化列表
+        properties: Vec<PropertyAssignment>,
+        /// 构造表达式覆盖的源码区间
         span: Span,
     },
 
