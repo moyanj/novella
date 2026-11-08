@@ -4,7 +4,7 @@ lexer grammar NovellaLexer;
 // Novella 词法文法
 //
 // 对齐基准（唯一事实源）：
-//   - crates/novella-core/src/token.rs    `TokenKind` 的 105 个词法变体（+ Eof / Error 合成项）
+//   - crates/novella-core/src/token.rs    `TokenKind` 的 107 个词法变体（+ Eof / Error 合成项）
 //   - crates/novella-lexer/src/lib.rs     logos 的 `RawToken` 规则与正则
 //
 // 规则约定：
@@ -92,6 +92,7 @@ Import: 'import';
 // 访问修饰符与变量声明
 Pub: 'pub';
 Pri: 'pri';
+Pkg: 'pkg';
 Const: 'const';
 Let: 'let';
 Static: 'static';

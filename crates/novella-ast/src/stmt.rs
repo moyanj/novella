@@ -217,8 +217,26 @@ pub struct WithStmt {
 /// 则直接取用，否则由变体自身的 `span` 字段承载，统一经 [`Statement::span`] 访问。
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Spanned)]
 pub enum Statement {
-    /// 变量声明语句（对应 `variableStatement`）
+    /// 单条变量声明语句（对应 `variableStatement` 的单声明形态）
     Variable(VariableStmt),
+    /// 多条变量声明语句：`let a, b;`（对应 `variableStatement` 的声明列表形态）。
+    ///
+    /// 多条声明属于同一作用域，按序求值；拆成独立节点而非包一层 `Block`，
+    /// 避免引入不存在的嵌套作用域（审计 C-06）。
+    VariableList {
+        /// 声明列表（至少两条；单条声明走 [`Statement::Variable`]）
+        declarations: Vec<VariableStmt>,
+        /// 整条声明语句覆盖的源码区间
+        span: Span,
+    },
+    /// 空语句：`;`（对应 `emptyStatement`）。
+    ///
+    /// 语句位（块内 / 循环体等）的孤分号产出该节点，供 sema / 工具链
+    /// 区分「空语句」与「语句缺失」（审计 C-02）；顶层 `;` 仍不产出节点。
+    Empty {
+        /// 分号覆盖的源码区间
+        span: Span,
+    },
     /// 返回语句：`return expr?;`（对应 `returnStatement`）
     Return {
         /// 返回值，None 表示裸 `return`

@@ -6,7 +6,10 @@ parser grammar NovellaParser;
 // 对齐基准（唯一事实源）：
 //   - crates/novella-ast/    AST 节点定义：本文件只描述 AST 能承载的结构；
 //                            AST 中已不存在的结构，本文件不再保留
-//   - crates/novella-parser/ 手写递归下降解析器（骨架）：已实现的分支按代码行为描述
+//   - crates/novella-parser/ 手写递归下降解析器：本文件按代码行为描述；
+//                            上下文敏感之处（`from "m" import ...` 的 `import`、
+//                            `with expr as binding` 的 `as`）由
+//                            parser 侧的 token 预处理与上下文标记消歧，文法本身保持 LL(1) 外观
 //   - 词法面见 NovellaLexer.g4（与 novella-core 的 `TokenKind` 逐条对齐）
 //
 // 与旧参考文的差异（这些结构在代码中已被砍掉，故同步移除）：
@@ -100,8 +103,9 @@ typeExpression:
 
 // 基础类型：只有 `null` 在词法层是独立 token（`Null`）。
 // 其余类型名（boolean / string / int / float / void / u8..u64 / i8..i64 / f8..f64 / usize / isize）
-// 在词法层都是普通 Identifier，故不在此写死集合——其 `PredefinedType` 归类由 parser /
-// 语义分析按名字判定，避免在词法层新增一批保留字而与 `TokenKind` 这一事实源冲突。
+// 在词法层都是普通 Identifier，故不在此写死集合——也不在 parser 归类：parser 一律产出
+// `TypeExpr::Reference`，由语义分析按名字归入 `PredefinedType`，避免在词法层或语法层
+// 各维护一份类型名表而与 `TokenKind` 这一事实源冲突。
 predefinedType: Null;
 
 // 主类型：元组 / 基础类型 / 类型引用 / 数组 / 指针（对应 `TypeExpr::Tuple` /
@@ -134,10 +138,9 @@ functionType: Func typeParameters? '(' parameterList? ')' ReturnArrow typeExpres
 typeAnnotation: Colon typeExpression;
 
 // ====================== trait 与类声明 ======================
-// trait 声明（对应 `TraitItem`）：文法无 `Pub?`，代码亦拒绝 `pub trait`
-//（`Parser::parse_item`：`pub` 后只允许 class / func / extern / let / const）
+// trait 声明（对应 `TraitItem`：attributes / name / type_parameters / members / scope）
 traitDeclaration:
-	decorator* Trait identifier typeParameters? traitBody;
+	decorator* (Pub | Pri | Pkg)? Trait identifier typeParameters? traitBody;
 
 traitBody: '{' traitMember* '}';
 
@@ -146,7 +149,7 @@ traitMember: methodDeclaration | fieldDeclaration;
 
 // 类声明（对应 `ClassItem`：attributes / name / type_parameters / members / parent / scope）
 classDeclaration:
-	decorator* Pub? Class identifier typeParameters? classHeritage? classBody;
+	decorator* (Pub | Pri | Pkg)? Class identifier typeParameters? classHeritage? classBody;
 
 // 继承列表：文法只允许单个父类引用（`ClassItem.parent` 为 `Vec`，按多继承预留）
 classHeritage: '(' typeReference ')';
@@ -157,11 +160,12 @@ classBody: '{' classMember* '}';
 classMember: methodDeclaration | fieldDeclaration;
 
 // ====================== struct 声明 ======================
-// struct 声明（对应 `StructItem`：attributes / name / type_parameters / members）。
-// 值语义：无继承（无 classHeritage）、无构造器（字段初始化构造，见 structInit）；
-// 成员文法复用 class 成员（methodDeclaration | fieldDeclaration）。
+// struct 声明（对应 `StructItem`：attributes / name / type_parameters / heritage /
+// members / scope）。值语义：无构造器（字段初始化构造，见 structInit）；
+// 继承子句按 classHeritage 语法解析后保留在 `StructItem.heritage`——struct 是否
+// 允许继承由语义分析判定（parser 只保留信息）；成员文法复用 class 成员。
 structDeclaration:
-	decorator* Pub? Struct identifier typeParameters? structBody;
+	decorator* (Pub | Pri | Pkg)? Struct identifier typeParameters? classHeritage? structBody;
 
 structBody: '{' classMember* '}';
 
@@ -187,14 +191,14 @@ methodDeclaration:
 	);
 
 // 成员可见性（对应 `MemberModifiers.scope: Option<Scope>`）
-accessModifier: Pub | Pri;
+accessModifier: Pub | Pri | Pkg;
 
 // ====================== 函数声明 ======================
 // 顶层函数声明（对应 `FunctionItem`：attributes / name / r#type / block / scope /
 // is_extern / is_async）。
 // `Async?` 对应 `FunctionItem.is_async`（此前的 `asyncStatement` 已并入本节点）。
 functionDeclaration:
-	decorator* Pub? Async? Func identifier typeParameters? '(' parameterList? ')' typeAnnotation?
+	decorator* (Pub | Pri | Pkg)? Async? Func identifier typeParameters? '(' parameterList? ')' typeAnnotation?
 		ReturnArrow? typeExpression? block;
 
 parameterList: parameter (',' parameter)*;
@@ -204,9 +208,10 @@ parameter: identifier typeAnnotation? (Assign expression)?;
 
 // extern 函数声明（对应 `FunctionItem`：is_extern = true、block = None，以 `;` 结束）。
 // 可见性写在 `extern` 之前（`pub extern func`）：代码中 `extern pub func` 会报
-//「`extern` 后不应有可见性修饰符」。
+//「`extern` 后不应有可见性修饰符」。装饰器（如 `@link("c")`）保留在
+// `FunctionItem.attributes`，语义由语义分析解释。
 externFunctionDeclaration:
-	Pub? Extern Func identifier typeParameters? '(' parameterList? ')' typeAnnotation? ReturnArrow?
+	decorator* (Pub | Pri | Pkg)? Extern Func identifier typeParameters? '(' parameterList? ')' typeAnnotation? ReturnArrow?
 		typeExpression? SemiColon;
 
 // ====================== 语句 ======================
@@ -229,11 +234,14 @@ statement:
 
 block: '{' statement* '}';
 
-// 空语句 `;`：不产出 AST 节点（对应 `Parser::parse_item` 的 SemiColon 分支：消费后跳过）
+// 空语句 `;`：语句位产出 `Statement::Empty`（供 sema 区分空语句与语句缺失）；
+// 顶层 item 位的孤分号由 `Parser::parse_item` 消费后跳过，不产出节点
 emptyStatement: SemiColon;
 
-// 变量声明语句（对应 `VariableStmt`：pattern / ty / value / scope / r#type）
-variableStatement: Pub? (Const | Let) variableDeclarationList SemiColon;
+// 变量声明语句（对应 `VariableStmt`：pattern / ty / value / scope / r#type）。
+// 单绑定产出 `Statement::Variable`；多绑定产出 `Statement::VariableList`
+//（同一作用域按序求值，不包 Block）
+variableStatement: (Pub | Pri | Pkg)? (Const | Let) variableDeclarationList SemiColon;
 
 variableDeclarationList: variableDeclaration (',' variableDeclaration)*;
 
@@ -309,9 +317,11 @@ expression:
 	| expression '[' expression ']'							# IndexAccessExpr
 	| expression typeGeneric? '(' argumentList? ')'			# CallExpr
 	| expression '!' '(' argumentList? ')'					# MacroCallExpr
-	// 对象构造（对应 `Expression::New{target, args}`）：实参由紧随其后的调用表达式承载，
-	// 构建 AST 时把该 `Call` 的 `type_args` / `args` 提到 `New` 上，即可得到
-	// `New{target: 被构造者, args: 构造实参}`。
+	// 对象构造（对应 `Expression::New{target, type_args, args}`）：`new` 之后是整条
+	// 后缀表达式；若其顶层是调用表达式，构建 AST 时把该 `Call` 的 `type_args` /
+	// `args` 提到 `New` 上、`callee` 作为 `target`（`new Vec<int>(1)` 的泛型实参
+	// 因此保留在 `New.type_args`）；否则整条表达式即 `target`、实参为空
+	//（如 `new getFoo()()`：`target` 是 `getFoo()` 调用本身）。
 	// 旧写法 `New expression '(' argumentList? ')'` 无法解析 `new Foo(1)`：内层
 	// `expression` 会先按 `CallExpr` 吃掉 `(1)`，随后再要求一个 `(` 便解析失败。
 	| New expression										# NewExpr
@@ -403,7 +413,9 @@ objectLiteral:
 // 属性赋值：`a: 1`，简写 `a`（对应 `PropertyAssignment.value` 为 `None`）
 propertyAssignment: identifier ':' expression | identifier;
 
-// lambda 表达式（对应 `Lambda`：is_async / params / return_type / body）
+// lambda 表达式（对应 `Lambda`：is_async / params / return_type / body）。
+// 单参数简写 `x: T => body` 中的 `: T` 是 **lambda 返回注解**（typeAnnotation?，
+// 落 `Lambda.return_type`），不是参数类型注解；参数注解须用 `(x: T) => body` 形态
 lambdaExpression:
 	Async? lambdaSignature typeAnnotation? Arrow (
 		block

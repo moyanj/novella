@@ -1,0 +1,323 @@
+// ============================================================================
+// novella 语法完全展示（syntax showcase）
+//
+// 本文件用 novella 语言本身编写，目标是对词法与语法做「全覆盖」示例：
+//   - 词法面：行注释、Unicode 标识符、普通/格式化/原始/字节字符串、四种进制数字、
+//             全部单字符与多字符运算符、关键字（含 and / or / not 拼写关键字）；
+//   - 语法面：模块导入、装饰器、类型系统（别名/泛型/联合/元组/数组/指针/函数类型）、
+//             trait / class / struct 及其成员修饰符（pub / pri / static / weak）、
+//             函数与 extern 函数、全部语句（变量/跳转/if/while/for/try/with/unsafe）、
+//             全部表达式（字面量/结构/访问/一元/二元/赋值/lambda/match/类型测试与转换）。
+//
+// 对齐基准（唯一事实源）：
+//   - 语法：grammar/NovellaParser.g4（各节标题标注对应产生式名）
+//   - 词法：grammar/NovellaLexer.g4（与 novella-core 的 TokenKind 逐条对齐）
+//   - AST：crates/novella-ast（本文件不超出其可承载结构）
+//
+// 校验方式：`novella compile examples/novella-syntax-demo.nov -o out.json`
+// 应输出零词法诊断、零语法诊断，且 program.items 覆盖各顶层结构；JSON 中的
+// tokens 字段保留行注释 token（parser 输入前已在 CLI 层过滤）。
+// ======================================================================
+
+// ============ 第 0 节  注释与标识符（词法层） ============
+// 行注释：`//` 到行尾，不含换行（TokenKind::LineComment，正式 token 供高亮消费）
+// 块注释 `/* ... */` 刻意不支持：`/` `*` 会被切分为 Divide + Multiply 两个 token
+// 标识符：首位取 `_` / Unicode 字母 / `$`，其后可加 Unicode 数字；关键字一律硬保留
+let 蓝鲸_变量 = 1;      // Unicode 标识符合法
+let $dollarvar = 2;    // `$` 开头也合法
+let _private = 3;      // 下划线开头不限
+// 特殊关键字（词法层存在，本文件不引入其语法结构，故仅在注释中声明）：
+//   - pkg：第三可见性（包级），token.rs / lexer 已有，grammar 未显式记录；
+//   - macro：无对应语法结构（仅表达式侧的宏调用 `f!(...)`，见第 11 节），
+//     token.rs 保留它是为了不动 TokenKind 这一唯一事实源
+
+// ============ 第 1 节  模块系统 ============
+// moduleImport: fromImport | directImport
+// 具名导入：from "mod" import a, b as c;
+from "novella.std" import println, print as log;
+// 命名空间导入：import "mod";
+import "novella.math";
+
+// ============ 第 2 节  装饰器 ============
+// decoratorStatement：`@name;`（独立装饰器语句）与 `@name(...) { ... }`（装饰块）
+// 括号内为自由 token 流，结构化解释延后到语义分析阶段
+@marker;
+@cfg(target_os = "linux", feature = "demo") {
+    println("满载运行");
+}
+// 声明前缀形态：装饰器可叠加（decorator*），分发到 func / class / trait
+@deprecated
+@info(author = "蓝汐")
+func legacyApi() {}
+
+// ============ 第 3 节  类型系统 ============
+// typeAliasDeclaration：type 名 泛型? = typeExpression ;
+// 基础类型：int / float / boolean / string / void / null / u8..u64 / i8..i64 / f8..f64 / usize / isize
+type Seed = usize;
+// 数组类型（后缀 []，可多层）
+type Matrix = int[][];
+// 元组类型
+type Coord = (int, int);
+// 联合类型（| 折叠为扁平 Union 列表）
+type MaybeInt = int | null;
+// 函数类型：具名（func ... -> ...）与箭头（<T>(..) -> ..）两种形态
+type Handler = func (payload: string) -> void;
+type UnaryFn = <T>(T) -> T;
+// 指针类型（后缀 *，可叠加）
+type RawPtr = int*;
+type DoublePtr = int**;
+// 泛型参数：T 或 T: Bound（约束也是类型表达式）
+type Bounded<T: Serializable> = Array<T>;
+// 类型引用（可带泛型实参）
+type VecInt = Vec<int>;
+// 泛型实参可继续嵌套类型表达式
+type Nested = Vec<Vec<int>>;
+
+// ============ 第 4 节  trait 声明 ============
+// traitDeclaration：decorator* trait 名 泛型? { 成员* }（trait 无 pub）
+trait Drawable {
+    // 方法成员（methodDeclaration，可用 pub / pri / static 修饰）
+    pub func draw(x: int, y: int) -> void;
+    // 字段成员（fieldDeclaration，可带修饰与初始化）
+    pri static layer: int = 0;
+    // 无返回注解的字段
+    pub weak fill: color;
+}
+// trait 泛型
+trait Comparator<T> {
+    func cmp(a: T, b: T) -> int;
+}
+
+// ============ 第 5 节  类声明 ============
+// classDeclaration：decorator* pub? class 名 泛型? (父类)? { 成员* }
+class Shape(Drawable) {
+    // 字段：修饰符 pub / pri / static / weak 任意组合
+    pub name: string = "shape";
+    pri static count: int = 0;
+    weak owner: Shape;          // 弱引用：赋值不 retain、不参与引用计数
+    // 方法：pub / pri / static + func + 泛型 + 参数默认值 + 返回注解（: T 或 -> T）
+    pub static func create(name: string) -> Shape {
+        return new Shape(name);
+    }
+    pub func scale(factor: float): Shape {   // 返回注解用冒号形态
+        return this;
+    }
+    // 无返回类型、无修饰的方法
+    func moveTo(x: int, y: int) {
+        this.x = x;
+        this.y = y;
+    }
+    // 抽象/占位方法：以 `;` 结束（block 为 None）
+    func serialize(): string;
+}
+// 泛型类
+class Box<T> {
+    pub value: T;
+    func get() -> T { return this.value; }
+}
+
+// ============ 第 6 节  struct 声明 ============
+// structDeclaration：decorator* pub? struct 名 泛型? { 成员* }
+// 值语义：无继承、无构造器（字段初始化构造，见 structInit 表达式）
+pub struct Point {
+    pub x: int;
+    pub y: int;
+    func dist() -> float { return 0.0; }
+}
+
+// ============ 第 7 节  顶层变量 ============
+// variableStatement：pub? (const | let) 声明列表 ;
+pub let globalCounter: int = 0;   // pub 修饰常量 / 变量均可
+const PI: float = 3.14159;
+let 未初始化: string;             // 允许无初始值
+
+// ============ 第 8 节  函数声明 ============
+// functionDeclaration：decorator* pub? async? func 名 泛型? (参数列表?) 返回注解 函数体
+// 返回注解三种形态：无注解 / `: T` / `-> T`（皆允许，落在一个 return_type 字段）
+pub func add(a: int, b: int) -> int { return a + b; }
+async func fetch(url: string) -> string { return "data"; }    // async 并入 is_async
+func generic<T>(value: T) -> T { return value; }
+func withDefaults(a: int, b: string = "default", c: float = 0.5) -> void { return; } // 参数默认值
+// 函数体必须为块（`{}`），extern 用分号（见下节）
+
+// ============ 第 9 节  extern 函数声明 ============
+// externFunctionDeclaration：pub? extern func 名 泛型 (参数) 返回类型 ;
+pub extern func puts(s: string) -> void;
+extern func malloc(size: int) -> void*;                         // 指针返回
+
+// ============ 第 10 节  语句（在 main 中逐条示范） ============
+pub func main(): int {
+    // --- 变量声明：单绑定 / 多绑定 / 元组解构（bindingPattern）---
+    let x: int = 10;
+    const tag: string = "v1";
+    let a, b, c: int, d: float;          // 多变量：各声明项可独立带注解
+    let (first, second) = (1, "two");   // 元组解构
+    let multi = 1, other = "two";
+    let typed = 1;                       // 类型推断（可省略注解）
+
+    // --- 空语句 `;`（不产出 AST 节点）---
+    ;
+
+    // --- if / elif / else ---
+    if (x > 0) {
+        a = 1;
+    } elif (x == 0) {
+        a = 2;
+    } else {
+        a = 3;
+    }
+    // 分支体可以是单条语句（不限于花括号块）
+    if (x > 10) x = 0; else x = 1;
+
+    // --- while ---
+    while (x < 100) { x = x + 1; }
+
+    // --- for (ForLoop)：init 段即变量声明列表（多段无 let）或表达式，均以 `;` 分隔 ---
+    for (i = 0, j = 10; i < j; i = i + 1) {
+        continue;                        // continue 语句（跳过本次迭代）
+    }
+    // --- for-in（ForInStatement）---
+    const list = [1, 2, 3];
+    for (item in list) {
+        break;                           // break 语句
+    }
+    for ((k, v) in pairs) {              // 元组解构迭代器
+        println("{k} => {v}");
+    }
+
+    // --- try / catch / finally ---
+    try {
+        risky();
+    } catch (e: Error) {                 // 异常捕获（catch 可多个）
+        log(e);
+    } catch (other: unknown) {
+        log("unknown");
+    } finally {
+        cleanup();                       // finally 可选（有 catch 时不必须）
+    }
+
+    // --- with 语句（参数上下文管理；文法为无括号表头）---
+    with open("data.txt") as file {
+        readAll(file);
+    }
+    with sysCtx {                        // 无绑定形态
+        execute();
+    }
+
+    // --- unsafe 语句：唯一 unsafe 上下文入口 ---
+    unsafe {
+        *rawPtr = 42;
+    }
+
+    // --- 跳转语句 ---
+    if (x == 0) { return; }              // return（可带表达式）
+    if (x < 0) { throw new Error("negative"); }   // throw 必带表达式
+    yield;                                // yield（可带表达式）
+    yield value;
+
+    // --- 表达式语句 / 块 ---
+    println("hello");                      // 表达式语句
+    {                                      // 块语句
+        let inner = 1;
+    }
+
+    // --- 函数调用是 `expressionStatement`，此处统一展示 ---
+    tick();
+    return;
+}
+
+// ============ 第 11 节  表达式（含字面量 / 结构 / 运算 / lambda / match） ============
+pub func exprs() -> int {
+    // --- 字面量（literal）---
+    let n = null;
+    let t = true;
+    let f = false;
+    let s1 = "双引号";
+    let s2 = '单引号';
+    let s3 = f"格式化 {name}";            // f 前缀
+    let s4 = r"原始 \n 字符串";           // r 前缀
+    let s5 = b"bytes";                    // b 前缀
+    let d1 = 42;                 // 十进制
+    let d2 = 3.14;               // 小数
+    let d3 = .5;                 // 省略整数部分的小数（需后接数字）
+    let d4 = 1e10;               // 科学记数法
+    let d5 = 1.5e-3;
+    let d6 = 1_000_000;          // 下划线分隔（值语义延后）
+    let h = 0xdead_beef;         // 十六进制 0x / 0X
+    let o = 0o755;               // 八进制 0o / 0O
+    let bin = 0b1010_0101;       // 二进制 0b / 0B
+
+    // —— 结构（tuple / array / object / struct init）——
+    let tuple = (1, "two", 3.0);      // 元组表达式（≥2 元素，允许尾随逗号）
+    let pair = (1, 2,) ;
+    let arr = [1, 2, 3];              // 数组（可空、可尾随逗号）
+    let empty = [];
+    let obj = { name: "nv", year: 2026, extra };  // 对象：键: 值 / 简写（只有键）
+    let p = new Point(1, 2);          // 对象构造（new）
+    let q = Point{ x: 10, y: 20 };    // struct 字段初始化构造（标识符 + 对象字面量）
+    let me = this;                    // this
+
+    // —— 不含运算符的访问 / 调用 / 类型 ——
+    let m1 = obj.name;                // 成员访问（MemberAccess）
+    let e1 = arr[0];                  // 索引访问（IndexAccess）
+    let m2 = add(1, 2);               // 调用（Call）
+    let m3 = f!(x);                   // 宏调用（macroCall）
+    let m4 = new Widget(1);           // new 的目标实参由后续调用表达式承载
+
+    // —— 一元运算 ——
+    let p1 = +a;                      // 单元加
+    let p2 = -a;                      // 单元减
+    let n1 = !t;                      // 逻辑非（!）
+    let n2 = not t;                   // 逻辑非（关键字 not）
+    let n3 = ~t;                          // 按位非
+    let addr = &v;                    // 取址（安全操作）
+    let deref = *ptr;                 // 解引用（unsafe 操作，见第 10 节）
+    let a2 = await fetch(u);          // await（需 async 上下文）
+    i++;                              // 后置自增（Postfix）
+    j--;                              // 后置自减（Postfix）
+
+    // —— 二元运算（按优先级）——
+    let r0 = a * b / c % d;           // 乘除模
+    let r1 = a + b - c;               // 加减
+    let r2 = a << 2 >> 1;             // 移位
+    let r3 = a < b, r3b = c > d, r3c = e <= f, r3d = g >= h;  // 关系配对 + 多变量声明
+    let r4 = a == b, r4b = a != b;          // 相等 == !=
+    let r5 = a === b, r5b = a !== b;        // 恒等 === !==
+    let r6 = a & b ^ c | d;           // 位与 / 异或 / 或
+    let r7 = a && b || c;             // 逻辑与（and）或（or）
+    let r8 = a and b or c;            // 关键字逻辑运算符
+    let r9 = a ?? b;                  // 空合并
+    let r10 = cond ? x : y;           // 三目条件
+    let r11 = x is Shape;             // is 类型测试
+    let r12 = x as int;               // as 类型转换（低于加减）
+
+    // —— 链式访问：点 / 下标 / 调用可自由组合 ——
+    let chain = factory.make()[0].name;
+
+    // —— lambda（箭头统一用 `=>`，体可为表达式或块）——
+    let inc = x => x + 1;                              // 单参数（省略括号）
+    let add = (a, b) => a + b;                        // 多参数
+    let typed = (s: string): string => s;             // 参数注解 + 返回注解（`=>` 前 `: T`）
+    let body = (x) => { println(x); return x; };     // 语句体（块）lambda
+    let al = async (x) => x;                         // 异步 lambda
+
+    // —— match 表达式（每个 case 的体可以是表达式或 block）——
+    let kind = match code {
+        // 每个 case 间无需分隔符：表达式 / 块结束后直接跟下一个 `case` 关键字
+        case 200 => "ok"
+        case 404 => "not found"
+        case 500 {
+            log("warn");
+            "server error";
+        }
+        case : Throws => "thrown"    // 类型匹配（typeAnnotation 形态）
+        default => "unknown"
+    };
+
+    // —— 赋值与复合赋值运算符 ——
+    a = 1;            // 基本赋值
+    a += 2;  a -= 2;  a *= 2;  a /= 2;  a %= 2;
+    a &= 2;   a |= 2;  a ^= 2;  a <<= 2;  a >>= 2;
+
+    return a;
+}

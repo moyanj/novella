@@ -1,9 +1,6 @@
 use serde::{Deserialize, Serialize};
 
-use novella_core::{
-    Span,
-    token::{Token, TokenKind},
-};
+use novella_core::{Span, token::TokenKind};
 
 use crate::{
     Spanned,
@@ -95,7 +92,8 @@ pub struct TypeAliasItem {
     pub span: Span,
 }
 
-/// trait 声明（对应文法 `traitDeclaration`：`decorator* Trait identifier typeParameters? traitBody`）
+/// trait 声明（对应文法
+/// `traitDeclaration: decorator* (Pub | Pri | Pkg)? Trait identifier typeParameters? traitBody`）
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Spanned)]
 pub struct TraitItem {
     /// trait 装饰器列表（对应文法 `traitDeclaration` 的 `decorator*`）
@@ -106,7 +104,9 @@ pub struct TraitItem {
     pub type_parameters: Vec<TypeParameter>,
     /// trait 成员列表（对应文法 `traitMember: methodDeclaration | fieldDeclaration`）
     pub members: Vec<ClassMember>,
-    /// 整条 trait 声明覆盖的源码区间
+    /// 可见性（对应文法 `(Pub | Pri | Pkg)?`），None 表示缺省
+    pub scope: Option<Scope>,
+    /// 整条 trait 声明覆盖的源码区间（含装饰器与可见性修饰符）
     pub span: Span,
 }
 
@@ -225,9 +225,14 @@ pub struct StructItem {
     pub type_parameters: Vec<TypeParameter>,
     /// 成员列表（复用 `ClassMember`：Field / Method）
     pub members: Vec<ClassMember>,
+    /// 继承信息（`struct S(A) {}` 的 `(A)`；对应文法 `structDeclaration` 的 `classHeritage?`）。
+    ///
+    /// design.md 中 struct 无继承语义：parser 只负责**保留**该信息（避免静默丢失），
+    /// 是否拒绝由语义分析判定。
+    pub heritage: Vec<TypeExpr>,
     /// 可见性（对应文法 `Pub?`）
     pub scope: Option<Scope>,
-    /// 整条 struct 声明覆盖的源码区间
+    /// 整条 struct 声明覆盖的源码区间（含装饰器与可见性修饰符）
     pub span: Span,
 }
 

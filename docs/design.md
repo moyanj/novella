@@ -145,7 +145,7 @@ AST 根：`Program { items: Vec<Item>, span }`。
 |------|----------|------|
 | `Import` | `moduleImport` | 具名 / 命名空间导入 |
 | `TypeAlias` | `typeAliasDeclaration` | `type A<T> = ...;` |
-| `Trait` | `traitDeclaration` | 无 `pub`；成员同 class |
+| `Trait` | `traitDeclaration` | 支持可见性与装饰器；成员同 class |
 | `Class` | `classDeclaration` | 支持继承、`pub`、装饰器、泛型 |
 | `Struct`（**新增**） | `structDeclaration` | 值类型，见 §4.7 |
 | `Function` | `functionDeclaration` / `externFunctionDeclaration` | 顶层函数 / extern |
@@ -153,9 +153,10 @@ AST 根：`Program { items: Vec<Item>, span }`。
 | `DecoratorBlock` | `decoratorStatement`（`@foo { }`） | 指令块 |
 | `Statement` | `statement` | 顶层语句（含 `pub let`） |
 
-顶层可见性：`pub` 只允许修饰 `class` / `struct` / `func` / `let` / `const` /
-`extern`（`pub extern func`）；`extern` 之后不能再写可见性。指令（`@`）只允许
-修饰 `@foo;` / `@foo { }` / `func` / `class` / `struct` / `trait`。
+顶层可见性：`pub` 只允许修饰 `class` / `struct` / `trait` / `func` / `let` /
+`const` / `extern`（`pub extern func`）；`extern` 之后不能再写可见性。指令
+（`@`）只允许修饰 `@foo;` / `@foo { }` / `func` / `class` / `struct` /
+`trait` 声明与 class/struct 成员（含字段）。
 
 ### 4.3 导入
 
@@ -214,7 +215,8 @@ decoratorArgument: '(' decoratorArgument* ')' | ~(OpenParen | CloseParen);
   `@deprecated`），届时按 `name` 查对应指令的处理规则；
 - `@name` 无括号简写等价于空 token 流；
 - 可修饰对象：独立指令语句 `@foo;`、指令块 `@foo { }`、`func` / `class` /
-  `struct` / `trait` 声明；
+  `struct` / `trait` 声明与 class/struct 成员（方法与**字段**；字段指令
+  保留在 `FieldMember.attributes`，语义由语义分析解释）；
 - 指令语句/块只允许单个指令；多个指令报错。
 
 ### 4.6 class / trait
@@ -223,18 +225,24 @@ decoratorArgument: '(' decoratorArgument* ')' | ~(OpenParen | CloseParen);
 classDeclaration: decorator* Pub? Class identifier typeParameters? classHeritage? classBody;
 classHeritage: '(' typeReference ')';              // 文法仅单父类，语言按多继承预留
 classBody: '{' classMember* '}';
-traitDeclaration: decorator* Trait identifier typeParameters? traitBody;
+traitDeclaration: decorator* (Pub|Pri|Pkg)? Trait identifier typeParameters? traitBody;
 classMember: methodDeclaration | fieldDeclaration;
-fieldDeclaration: decorator* accessModifier? Static? identifier typeAnnotation? (Assign expression)? SemiColon;
+fieldDeclaration: decorator* accessModifier? Static? Weak? identifier typeAnnotation? (Assign expression)? SemiColon;
 methodDeclaration: decorator* accessModifier? Static? Func identifier typeParameters?
     '(' parameterList? ')' typeAnnotation? ReturnArrow? typeExpression? (block | SemiColon);
 accessModifier: Pub | Pri;
 ```
 
 AST：`ClassItem { attributes, name, type_parameters, members, parent, scope }`；
-`TraitItem { attributes, name, type_parameters, members }`；
+`TraitItem { attributes, name, type_parameters, members, scope }`；
 `ClassMember::Field` / `ClassMember::Method`；
-`MemberModifiers { scope: Option<Scope>, is_static }`。
+`MemberModifiers { scope: Option<Scope>, is_static, is_weak }`。
+
+- 方法**必须**以 `func` 开头：传统省略形态（`constructor(...)` /
+  裸 `name(...)`）不受支持，parser 对之报「方法声明须以 `func` 开头」；
+  构造函数语义由特殊方法 `__init`（§4.6.1）承载；
+- `weak` 只允许修饰**字段**（成员修饰）；`weak` 修饰方法由 parser 直接报
+  「`weak` 不能修饰方法」。
 
 语义：
 
@@ -261,18 +269,20 @@ AST：`ClassItem { attributes, name, type_parameters, members, parent, scope }`�
 ### 4.7 struct（值类型，已确认新增）
 
 ```
-structDeclaration: decorator* Pub? Struct identifier typeParameters? structBody;
+structDeclaration: decorator* (Pub|Pri|Pkg)? Struct identifier typeParameters? classHeritage? structBody;
 structBody: '{' structMember* '}';
 structMember: methodDeclaration | fieldDeclaration;   // 复用 class 成员文法
 ```
 
-AST：`StructItem { attributes, name, type_parameters, members: Vec<ClassMember>, span }`。
+AST：`StructItem { attributes, name, type_parameters, heritage, members: Vec<ClassMember>, scope, span }`。
 
 语义定位（与 class 的分工见 §8）：
 
 - **值语义**：赋值 / 传参 / 返回均为逐位拷贝（含 class 引用字段的「指针拷贝」，
   见 §8.3）；
-- **无继承**：struct 不可有 `parent`，不可被继承；
+- **无继承**：struct 不可有 `parent`，不可被继承——parser 仍按 classHeritage
+  语法解析并把结果保留在 `StructItem.heritage`（AST 信息完整），
+  「struct 继承不合法」由语义分析判定；
 - **无构造器**：用字段初始化构造 `TypeName{ x: 1, y: 2 }`（§5.4）；
 - **方法可选**：允许方法，方法内 `this` 为**编译器注入的可信指针**，字段访问
   无需 unsafe（§8.4）；
@@ -285,7 +295,7 @@ AST：`StructItem { attributes, name, type_parameters, members: Vec<ClassMember>
 ```
 functionDeclaration: decorator* Pub? Async? Func identifier typeParameters?
     '(' parameterList? ')' typeAnnotation? ReturnArrow? typeExpression? block;
-externFunctionDeclaration: Pub? Extern Func identifier typeParameters?
+externFunctionDeclaration: decorator* Pub? Extern Func identifier typeParameters?
     '(' parameterList? ')' typeAnnotation? ReturnArrow? typeExpression? SemiColon;
 parameterList: parameter (',' parameter)*;
 parameter: identifier typeAnnotation? (Assign expression)?;    // 形参默认值
@@ -321,14 +331,14 @@ statement: variableStatement | returnStatement | breakStatement | continueStatem
 
 | 语句 | 文法 | 说明 |
 |------|------|------|
-| 变量声明 | `Pub? (Const|Let) variableDeclarationList SemiColon` | 支持元组解构 `let (a, b)` |
+| 变量声明 | `Pub? (Const|Let) variableDeclarationList SemiColon` | 支持元组解构 `let (a, b)`；单绑定产 `Statement::Variable`，多绑定产 `Statement::VariableList`（同作用域按序求值，不包 Block） |
 | 跳转 | `return` / `break` / `continue` / `throw` / `yield` | `yield` 值可缺省 |
 | 块 | `block: '{' statement* '}'` | 花括号块 |
 | if | `if/elif/else` 链 | 分支体为任意 `statement` |
 | while | `while (expr) stmt` | |
 | for | `for (init?; cond?; upd?)` / `for (x in expr)` | init 段声明不带 `const/let`，一律按 `let` 语义 |
 | try | `try { } catch (e: T) { } finally { }` | 无 catch 必须有 finally |
-| with | `with expr (as name: T)? { }` | 资源管理 |
+| with | `with expr (as name\|pattern (: T)?)? { }` | 资源管理；表头**不带括号**（旧 `with (expr) { }` 形态已废弃，parser 会提示）；`as` 后跟单标识符或元组解构模式（嵌套括号内 / 实参内的 `as` 仍是类型转换） |
 | **unsafe（新增）** | `unsafe { }` | 唯一 unsafe 上下文入口（§6） |
 | 表达式语句 | `expression ;` | |
 
@@ -340,7 +350,7 @@ statement: variableStatement | returnStatement | breakStatement | continueStatem
 | 优先级 | 文法备选 | AST |
 |--------|----------|-----|
 | 原子 | `literal` / `identifier` / `(expr)` / 数组 / 对象 / `this` | `Literal` / `Identifier` / `Paren` / `ArrayLiteral` / `ObjectLiteral` / `This` |
-| 元组 | `(a, b, ...)`（≥2 元素） | `Tuple` |
+| 元组 | `(a, b, ...)`（≥2 元素；`()` 与单元素 `(a,)` 均非法——`()` 报「空元组不是合法表达式」、`(a,)` 报「单元素元组不受支持」） | `Tuple` |
 | match | `match x { case ... }` | `Match` |
 | 后缀 | `.` 成员 / `[ ]` 索引 / 调用 / `!()` 宏调用 / `new` 构造 / `++` `--` | `MemberAccess` / `IndexAccess` / `Call` / `MacroCall` / `New` / `Unary(PostInc/Dec)` |
 | 前缀 | `+ - ~ ! not` **`& *`（新增）** / `await` | `Unary` / `Await` |
@@ -358,7 +368,7 @@ statement: variableStatement | returnStatement | breakStatement | continueStatem
 | 逻辑或 | `\|\|` / `or` | `Binary` |
 | 空值合并 | `??` | `Binary` |
 | 三元 | `? :` | `Ternary` |
-| lambda | `x => ...` / `(a, b) => ...` | `Lambda` |
+| lambda | `x => ...` / `(a, b) => ...`（含 `x: T => ...`，其中 `: T` 是返回注解） | `Lambda` |
 | 赋值 | `=` 与全部复合赋值 | `Assignment` |
 
 > **`as` 的优先级**（已确认：低绑式）：位于「加减」之后、「移位」之前——
@@ -405,8 +415,8 @@ statement: variableStatement | returnStatement | breakStatement | continueStatem
 | `Predefined` | `int` / `float` / `boolean` / `string` / `void` / `u8..u64` / `i8..i64` / `f8..f64` / `usize` / `isize` / `null` | 类型名在词法层是普通 `Identifier`，由语义按名字归类 |
 | `Reference` | `Foo` / `Foo<T>` | 类型引用（class / struct / 别名） |
 | `Array` | `T[]` | 数组类型 |
-| `Tuple` | `(T1, T2)` | 元组类型 |
-| `Function` | `<T>(a: int) -> int` / `func (a) -> T` | 两种写法合并 |
+| `Tuple` | `(T1, T2)` | 元组类型（≥2 元素；`()` / `(T,)` 非法；括号分组 `(T)` 即 `T` 本身） |
+| `Function` | `<T>(a: int) -> int` / `func (a) -> T` | 两种写法合并；类型位箭头**唯一为 `->`**，类型位写 `=>` 报错（`=>` 专属 lambda） |
 | `Union` | `A \| B \| C` | 扁平存储，集合语义 |
 | **`Pointer`（新增）** | `T*`（可嵌套 `T**`，允许 `void*`） | 指针类型（§5.3） |
 

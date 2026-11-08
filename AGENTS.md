@@ -4,7 +4,7 @@
 
 ## OVERVIEW
 
-novella 语言编译器。Rust workspace（edition 2024，Apache-2.0，8 个 crate），ANTLR4 文法与代码对齐（词法↔`TokenKind`，语法↔AST）。当前为早期阶段：**词法分析可用**，AST 部分落地，parser 骨架实现中（已支持装饰器、函数声明、`let`/`const` 变量声明、`continue` 语句等部分结构），sema/codegen 仍为空壳占位。
+novella 语言编译器。Rust workspace（edition 2024，Apache-2.0，8 个 crate），ANTLR4 文法与代码对齐（词法↔`TokenKind`，语法↔AST）。当前为早期阶段：**词法分析与语法分析均可用**（文法全部产生式均可产出 AST，`examples/novella-syntax-demo.nov` 零诊断），AST 全量落地，sema/codegen 仍为空壳占位。
 
 ## STRUCTURE
 
@@ -15,7 +15,7 @@ novella/
 │   ├── novella-derive/  # proc-macro：#[derive(Spanned)] 等 AST 派生宏
 │   ├── novella-ast/     # AST 节点定义（expr / stmt / types / program）
 │   ├── novella-lexer/   # 词法器（logos），RawToken → TokenKind 转换
-│   ├── novella-parser/  # 手写递归下降解析器（骨架，逐条语句实现中）
+│   ├── novella-parser/  # 手写递归下降解析器（含 token 预处理与上下文消歧）
 │   ├── novella-sema/    # 空壳（占位 add()）
 │   ├── novella-codegen/ # 空壳（占位 add()）
 │   ├── novella-cli/     # 二进制（包名 novella）：clap CLI，仅 compile 子命令
@@ -40,6 +40,7 @@ ast ──(构建期)── novella-derive（proc-macro，展开引用 ::novella
 | 任务 | 位置 | 备注 |
 |------|------|------|
 | 加/改词法单元 | `crates/novella-core/src/token.rs` + `crates/novella-lexer/src/lib.rs` | 双枚举必须同步（见 CONVENTIONS） |
+| 加/改语法结构 | `crates/novella-parser/src/`（lib/stmt/expression/types）+ `grammar/NovellaParser.g4` | 分层：`lib.rs` 顶层 item、`stmt.rs` 语句、`expression.rs` 表达式优先级、`types.rs` 类型 |
 | 加 AST 节点 | `crates/novella-ast/src/` | 按 `expr/stmt/types/program` 分类，参考文法产生式对照；新节点须携带 `span` 字段并 `#[derive(Spanned)]`（见 CONVENTIONS） |
 | 诊断/错误显示 | `crates/novella-cli/src/error.rs` + `crates/novella-core/src/diagnostic.rs` | 通用诊断结构（各阶段产出）→ `render_diagnostic` rustc 风格渲染 |
 | CLI 子命令 | `crates/novella-cli/src/cli.rs` | clap derive |
@@ -63,7 +64,12 @@ ast ──(构建期)── novella-derive（proc-macro，展开引用 ::novella
 | `Expression` / `Literal` | `novella-ast/src/expr.rs` | 完整表达式节点集（字面量/标识符/括号/元组/数组/对象/this/一元/二元/赋值/成员/索引/调用/构造/宏调用/await/is/三元/lambda/match），运算符由 `UnaryOp`/`BinaryOp`/`AssignOp` 集中定义 |
 | `Statement` / `IfStmt` / `ForStmt` | `novella-ast/src/stmt.rs` | 含 `BindingPattern`（标识符/元组解构递归）、`Continue`；`TryStmt` / `WithStmt` 亦在此 |
 | `TypeExpr` / `PredefinedType` | `novella-ast/src/types.rs` | 类型表达式（Predefined/Reference/Array/Tuple/Function/Union）；`Param` 含 `default` 默认值 |
-| `Program` / `Item` / `Scope` | `novella-ast/src/program.rs` | 顶层 item；`Scope` 注意拼写 `Pubilc` |
+| `Program` / `Item` / `Scope` | `novella-ast/src/program.rs` | 顶层 item；`Scope` = `Public` / `Private` / `Package`（`from_token` 认 `Pub` / `Pri` / `Pkg`） |
+| `Parser::parse` / `Parser::parse_item` | `novella-parser/src/lib.rs` | 入口：出 `ParseResult { program, diagnostics, aborted }`；顶层按行同步恢复 |
+| `preprocess` | `novella-parser/src/preprocess.rs` | 喂给语法分析前的 token 重写：`from "m" import` 的 `import` 降级为标识符（类型位箭头唯一为 `->`，类型位遇 `=>` 由类型解析就近报错，不再做 token 改判） |
+| `parse_expression` 优先级链 | `novella-parser/src/expression.rs` | 赋值→三目→`??`→`or`→`and`→位或→异或→与→相等→关系→移位→`as`→加减→乘除→`is`→一元→后缀→primary |
+| `parse_statement` / `parse_block` | `novella-parser/src/stmt.rs` | 语句族；块是恢复点，失败调 `recover_to_statement_boundary` |
+| `parse_type_expr` | `novella-parser/src/types.rs` | 联合 / 元组 / 数组 / 指针 / 函数 / 箭头函数类型；类型名一律 `Reference`（`Predefined` 留给 sema） |
 | `token_type_index` / `encode` | `novella-lsp/src/semantic.rs` | `TokenKind` → legend 下标（穷尽 match）/ token 流 → semantic tokens（字节偏移换算为 UTF-16 码元） |
 | `Server::handle` | `novella-lsp/src/server.rs` | JSON-RPC 报文分发：请求必回复、通知不回复 |
 | `read_message` / `write_message` | `novella-lsp/src/protocol.rs` | stdio 上的 `Content-Length` 报文帧编解码 |
@@ -78,7 +84,7 @@ ast ──(构建期)── novella-derive（proc-macro，展开引用 ::novella
 - **类型全量 serde**：AST / token 均派生 `Serialize, Deserialize`，用于 JSON 输出。
 - **for 循环 init 语义**：文法中 init 段声明不带 `const/let`，统一按 `Let` 承载（见 `ForInit` 注释）。
 - **值语义延后**：AST 字面量保留源码原文（含 `f/r/b`、进制前缀），解析在语义分析阶段。
-- **空壳 crate 用占位**：sema / codegen 目前允许 `add()` 占位（parser 已进入实现阶段，不再用占位）。
+- **空壳 crate 用占位**：sema / codegen 目前允许 `add()` 占位（parser 已完整实现，含义不明确的结构一律报诊断而非静默兜底）。
 - **注释在语法层透明**：`LineComment` 是正式 token（供高亮等消费），CLI 在喂给 parser 前过滤；parser 不感知注释。
 - **LSP 偏移一律 UTF-16**：novella 内部用字节偏移，LSP 语义 token 要求 UTF-16 码元；换算集中在 `novella-lsp/src/semantic.rs`，新增 LSP 能力时须复用该换算而不要另写一套。
 - **高亮规则不重复维护**：编辑器的染色类别映射以 `TokenKind` 为唯一来源，禁止在插件侧另写词法/关键字表。
@@ -125,6 +131,8 @@ just lsp-pack     # 打包 VS Code 扩展（esbuild 打包 + vsce 产出 vsix）
 - `FunctionItem.block` 类型为 `Option<Box<Statement>>`：`Box` 用于抑制 `Item` 枚举的尺寸差异（否则触发 clippy `large_enum_variant`）；类方法成员的 `block` 仍为 `Option<Block>`。
 - VS Code 扩展以 esbuild 打包为自包含单文件（`dist/extension.js`），vsix 不携带 `node_modules`；`editors/vscode/pnpm-workspace.yaml` 中 `allowBuilds: esbuild: false` 是**必需**的——允许其 postinstall 会把 `bin/esbuild` 替换成 ELF 原生二进制，导致 pnpm 执行 scripts 时按 JS 解析而报语法错误。
 - `novella-lsp` 与 `novella-cli` 同为二进制 crate，未登记进 `workspace.dependencies`。
-- `Scope` 枚举拼写为 `Pubilc`（历史笔误），改名前需同步全部引用与 JSON 输出。
+- `Scope` 枚举已按 `Public` / `Private` / `Package` 拼写，token 侧仍是 `Pub` / `Pri` / `Pkg`，转换只在 `Scope::from_token` 一处。
+- **parser 递归防护**：`MAX_NESTING` / `MAX_EXPRESSION_NESTING` 均为 128（debug 构建下每层括号约耗数十 KB 栈，主线程 8 MiB 栈约 140 层即溢出）。`enter_nesting` 只报一次诊断，真正的阻断由 `nesting_exceeded()` 在**所有递归入口**（`parse_expression` / `parse_assignment` / `parse_ternary` / `parse_unary` / `parse_primary` / `parse_type_expr` / `parse_block`）返回 `None` 完成——这些函数一律拆成「守卫包装 + 实体」两层，保证 `?` 提前返回也会执行 `leave_nesting`；`checkpoint()/rollback()` 保存/恢复 `depth_reported`，避免推测分支消耗掉唯一一次深度诊断。块超限时 `skip_balanced_block` 只数括号不递归，保证线性终止。
+- **语法歧义的消解位置**：`with expr as binding` 的 `as` 靠 `with_stack` + `with_shield` + `looks_like_with_binding()` 判定（表头裸位绑定优先，嵌套括号/实参内仍是 cast；with 表头为无括号形态，旧 `with (expr)` 写法报迁移诊断），不走全局猜测；`match subject {` 的 `{` 靠 `in_match_subject` 禁止被 StructInit 抢走；match 分支体靠 `inside_match` 让表达式解析在 `case` / `default` / `}` 处自然停下。新增同类歧义应复用这些上下文标记，不要在 `parse_primary` 里堆特判。
 - `[profile.release]` 开启 `lto = true`。
 - release build 是 LTO 全量链接，调试构建慢属预期。

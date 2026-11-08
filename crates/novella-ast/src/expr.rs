@@ -431,10 +431,16 @@ pub enum Expression {
         /// 调用表达式覆盖的源码区间
         span: Span,
     },
-    /// 对象构造：`new Foo(1)`（对应 `NewExpr`）
+    /// 对象构造：`new Foo(1)`（对应 `NewExpr`）。
+    ///
+    /// 构造目标是 `new` 之后的整条后缀表达式（标识符链 / 括号 / 调用）；
+    /// 若该表达式整体是一次调用，则其 callee 作为 `target`、`type_args` / `args`
+    /// 提升为构造实参（文法 `NewExpr` 注释的约定），否则实参为空。
     New {
         /// 被构造的目标表达式
         target: Box<Expression>,
+        /// 泛型实参列表（`new Foo<int>(1)` 的 `<int>`），无泛型时为空
+        type_args: Vec<TypeExpr>,
         /// 构造实参列表
         args: Vec<Expression>,
         /// 构造表达式覆盖的源码区间
