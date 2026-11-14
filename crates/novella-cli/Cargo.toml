@@ -14,4 +14,4 @@ novella-codegen.workspace = true
 novella-core.workspace = true
 novella-lexer.workspace = true
 novella-parser.workspace = true
-novella-sema.workspace = true
+novella-sema = { version = "0.1.0", path = "../novella-sema" }

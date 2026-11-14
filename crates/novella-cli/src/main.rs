@@ -63,11 +63,45 @@ fn main() {
                 eprintln!("检测到 {} 个语法错误", parse_result.diagnostics.len());
             }
 
+            // ---------- 语义分析 ----------
+            // sema 独立重走 lexer→parser 逐模块加载导入闭包；此处只渲染语义诊断
+            // （词法 / 语法诊断已由上方渲染，避免重复）。
+            let sema_result = novella_sema::analyze(std::path::Path::new(&file));
+            let mut sema_error_count = 0usize;
+            for diag in &sema_result.diagnostics {
+                eprintln!("{}", render_diagnostic(diag, None));
+                sema_error_count += 1;
+            }
+            for module in &sema_result.modules {
+                // 渲染需要对应模块的源码，从磁盘重读（失败则退化为无源码渲染）
+                let module_source = fs::read_to_string(&module.path).ok();
+                for diag in module.semantic_diagnostics() {
+                    eprintln!("{}", render_diagnostic(diag, module_source.as_deref()));
+                    if diag.severity == novella_core::diagnostic::Severity::Error {
+                        sema_error_count += 1;
+                    }
+                }
+            }
+            if sema_error_count > 0 {
+                eprintln!("检测到 {sema_error_count} 个语义错误");
+            }
+
             // ---------- 输出：tokens + AST + 诊断（JSON） ----------
+            let sema_json: Vec<_> = sema_result
+                .modules
+                .iter()
+                .map(|m| {
+                    serde_json::json!({
+                        "path": m.path,
+                        "diagnostics": m.semantic_diagnostics(),
+                    })
+                })
+                .collect();
             let output_json = serde_json::json!({
                 "tokens": lex_result.tokens,
                 "program": parse_result.program,
                 "diagnostics": parse_result.diagnostics,
+                "sema_diagnostics": sema_json,
             });
             fs::write(&output, serde_json::to_string_pretty(&output_json).unwrap()).unwrap_or_else(
                 |e| {

@@ -4,7 +4,7 @@
 
 ## OVERVIEW
 
-novella 语言编译器。Rust workspace（edition 2024，Apache-2.0，8 个 crate），ANTLR4 文法与代码对齐（词法↔`TokenKind`，语法↔AST）。当前为早期阶段：**词法分析与语法分析均可用**（文法全部产生式均可产出 AST，`examples/novella-syntax-demo.nov` 零诊断），AST 全量落地，sema/codegen 仍为空壳占位。
+novella 语言编译器。Rust workspace（edition 2024，Apache-2.0，8 个 crate），ANTLR4 文法与代码对齐（词法↔`TokenKind`，语法↔AST）。**词法、语法、语义分析（第一期）均可用**：文法全部产生式均可产出 AST（`examples/novella-syntax-demo.nov` 零诊断），sema 覆盖完整导入系统（模块=文件、`@:/super:/std:` 别名、nov.toml crate 根）、名称解析、基本类型检查、extern、unsafe 规则（详见 `docs/sema-phase1.md`）；codegen 仍为空壳占位。
 
 ## STRUCTURE
 
@@ -16,7 +16,7 @@ novella/
 │   ├── novella-ast/     # AST 节点定义（expr / stmt / types / program）
 │   ├── novella-lexer/   # 词法器（logos），RawToken → TokenKind 转换
 │   ├── novella-parser/  # 手写递归下降解析器（含 token 预处理与上下文消歧）
-│   ├── novella-sema/    # 空壳（占位 add()）
+│   ├── novella-sema/    # 语义分析：模块加载 / 符号表 / 名称解析 / 类型检查（第一期）
 │   ├── novella-codegen/ # 空壳（占位 add()）
 │   ├── novella-cli/     # 二进制（包名 novella）：clap CLI，仅 compile 子命令
 │   └── novella-lsp/     # 语言服务器（lib + 二进制）：薄 LSP，输出词法级语义高亮
@@ -48,7 +48,8 @@ ast ──(构建期)── novella-derive（proc-macro，展开引用 ::novella
 | 编辑器语法高亮 | `crates/novella-lsp/src/` + `editors/vscode/` | 薄 LSP：`semantic.rs` 做类别映射与 UTF-16 偏移编码，`protocol.rs` 做报文帧，`server.rs` 做分发 |
 | 调整高亮类别 | `crates/novella-lsp/src/semantic.rs` | `token_type_index` 为穷尽 match；改动映射须同步 `TOKEN_TYPES`（数组顺序即 legend 下标） |
 | 打包 VS Code 扩展 | `editors/vscode/` | `just lsp-pack`；源码 `src/extension.js` 经 esbuild 打入 `dist/`，vsix 自包含无需 node_modules |
-| 占用位 crates | sema / codegen | `pub fn add(u64, u64) -> u64` 待替换 |
+| 占用位 crates | codegen | `pub fn add(u64, u64) -> u64` 待替换 |
+| 语义分析入口 | `crates/novella-sema/src/lib.rs`（`analyze` / `analyze_with`） | 五阶段管线：模块加载→声明收集→导入绑定→类型注册→逐模块检查；实现在 module/symbol/resolve/ty/typecheck/check.rs |
 
 ## CODE MAP
 
@@ -84,7 +85,8 @@ ast ──(构建期)── novella-derive（proc-macro，展开引用 ::novella
 - **类型全量 serde**：AST / token 均派生 `Serialize, Deserialize`，用于 JSON 输出。
 - **for 循环 init 语义**：文法中 init 段声明不带 `const/let`，统一按 `Let` 承载（见 `ForInit` 注释）。
 - **值语义延后**：AST 字面量保留源码原文（含 `f/r/b`、进制前缀），解析在语义分析阶段。
-- **空壳 crate 用占位**：sema / codegen 目前允许 `add()` 占位（parser 已完整实现，含义不明确的结构一律报诊断而非静默兜底）。
+- **空壳 crate 用占位**：codegen 目前允许 `add()` 占位（含义不明确的结构一律报诊断而非静默兜底）。
+- **sema 诊断定位**：`Module::error/warning` 由 span 经 `LineIndex` 回推行列；`ModuleDiagnostics.syntax_diagnostic_count` 区分词法/语法前缀与语义诊断，CLI 只渲染后者。
 - **注释在语法层透明**：`LineComment` 是正式 token（供高亮等消费），CLI 在喂给 parser 前过滤；parser 不感知注释。
 - **LSP 偏移一律 UTF-16**：novella 内部用字节偏移，LSP 语义 token 要求 UTF-16 码元；换算集中在 `novella-lsp/src/semantic.rs`，新增 LSP 能力时须复用该换算而不要另写一套。
 - **高亮规则不重复维护**：编辑器的染色类别映射以 `TokenKind` 为唯一来源，禁止在插件侧另写词法/关键字表。
@@ -111,7 +113,7 @@ just lint         # clippy --workspace --all-targets -D warnings
 just fmt          # cargo fmt --all        （CI 用 just fmt-check）
 just doc          # cargo doc --workspace --no-deps --open
 just book         # mdbook build docs      （book-serve 预览）
-cargo run -p novella -- compile <file> -o <out.s>   # lexer → parser → JSON（tokens + program + diagnostics）
+cargo run -p novella -- compile <file> -o <out.s>   # lexer → parser → sema → JSON（tokens + program + diagnostics + sema_diagnostics）
 
 just lsp-build    # cargo build --release -p novella-lsp
 just lsp-run      # cargo run -p novella-lsp（stdio 通道，等待编辑器连接）

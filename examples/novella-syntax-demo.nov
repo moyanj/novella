@@ -6,41 +6,62 @@
 //             全部单字符与多字符运算符、关键字（含 and / or / not 拼写关键字）；
 //   - 语法面：模块导入、装饰器、类型系统（别名/泛型/联合/元组/数组/指针/函数类型）、
 //             trait / class / struct 及其成员修饰符（pub / pri / static / weak）、
-//             函数与 extern 函数、全部语句（变量/跳转/if/while/for/try/with/unsafe）、
+//             函数与 extern 函数、全部语句（变量/跳转/if/while/for/try/with/unsafe/yield）、
 //             全部表达式（字面量/结构/访问/一元/二元/赋值/lambda/match/类型测试与转换）。
 //
 // 对齐基准（唯一事实源）：
 //   - 语法：grammar/NovellaParser.g4（各节标题标注对应产生式名）
-//   - 词法：grammar/NovellaLexer.g4（与 novella-core 的 TokenKind 逐条对齐）
+//   - 词法：grammar/NovellaLexer.g4（与 novella-core 的 TokenKind ⽕条对齐）
 //   - AST：crates/novella-ast（本文件不超出其可承载结构）
 //
 // 校验方式：`novella compile examples/novella-syntax-demo.nov -o out.json`
-// 应输出零词法诊断、零语法诊断，且 program.items 覆盖各顶层结构；JSON 中的
-// tokens 字段保留行注释 token（parser 输入前已在 CLI 层过滤）。
+// 语义分析要能「跑通」：零 error；预期保留 3 条 warning（yield 语义未实现、
+// @cfg 装饰块不展开），它们不是错误，只标记语法已收录但语义留待后续期。
+// JSON 中的 tokens 字段保留行注释 token（parser 输入前已在 CLI 层过滤）。
+//
+// 写作约束（sema 已落地的硬规则，示例需遵守而非绕过）：
+//   1. 标识符必须先定义后使用（按作用域链解析到声明）；
+//   2. 多变量声明每个声明项各自带类型：`let a: int, b: int;`，
+//      不能 `let a, b, c: int`；
+//   3. `const` 必须初始化，`let` 允许无初值；两者都可写代码块内部；
+//   4. `new Class(args)` 需要 class 有 `__init`，struct 只能用 `Struct{ ... }`；
+//   5. `~` 只用于整数，`!`/`not` 只用于 boolean，bool 与 int 不互转；
+//   6. `await` 只能在 async 函数/lambda 内；
+//   7. 指针解引用 / 下标 / 成员访问 / 算术 / 指针互转都需要 `unsafe { }`；
+//   8. 列表元素类型必须一致（取首元素为基准）；空数组/空元组需要类型标注；
+//   9. 每行注释以 `**` 收敛，避免与 `// =====` 分隔线链成一条长注释。
 // ======================================================================
 
 // ============ 第 0 节  注释与标识符（词法层） ============
 // 行注释：`//` 到行尾，不含换行（TokenKind::LineComment，正式 token 供高亮消费）
 // 块注释 `/* ... */` 刻意不支持：`/` `*` 会被切分为 Divide + Multiply 两个 token
 // 标识符：首位取 `_` / Unicode 字母 / `$`，其后可加 Unicode 数字；关键字一律硬保留
-let 蓝鲸_变量 = 1;      // Unicode 标识符合法
-let $dollarvar = 2;    // `$` 开头也合法
-let _private = 3;      // 下划线开头不限
+let 蓝鲸_变量 = 1;
+let $dollarvar = 2;
+let _private = 3;
 // 特殊关键字（词法层存在，本文件不引入其语法结构，故仅在注释中声明）：
 //   - pkg：第三可见性（包级），token.rs / lexer 已有，grammar 未显式记录；
-//   - macro：无对应语法结构（仅表达式侧的宏调用 `f!(...)`，见第 11 节），
-//     token.rs 保留它是为了不动 TokenKind 这一唯一事实源
+//   - macro：无对应语法结构（仅表达式侧的宏调用 `f!(x)`，见第 11 节），
+//     token.rs 保留它是为了不动 TokenKind 这一唯一事实源。
 
 // ============ 第 1 节  模块系统 ============
+// 导入语义（docs/sema-phase1.md §1.3 / §1.4）：
+//   - 无前缀：相对当前文件所在目录解析（`"utils"` → `<本文件目录>/utils.nov`）；
+//   - `@:`：crate 根（由向上查找最近的 nov.toml 确定）；
+//   - `super:`：当前文件目录的父目录；
+//   - `std:`：std 库根（库尚未落地 → 全部按外部符号 stub 处理，不检查成员存在性）。
+// ⽰例文件位于 examples/ 下，也没有 nov.toml，所以只能用 `std:` 前缀：
+// 写成 `"novella.std"` 会被当成相对路径 `examples/novella.std.nov` → 文件不存在。
 // moduleImport: fromImport | directImport
-// 具名导入：from "mod" import a, b as c;
-from "novella.std" import println, print as log;
-// 命名空间导入：import "mod";
-import "novella.math";
+// 具名导入：from "mod" import a, b as c;（println / print 由 std 外部符号 stub 承载）
+from "std:io" import println, print as log;
+// 命名空间导入：import "mod";（命名空间成员经 MemberAccess 访问，如 math.abs(x)）
+import "std:math";
 
 // ============ 第 2 节  装饰器 ============
-// decoratorStatement：`@name;`（独立装饰器语句）与 `@name(...) { ... }`（装饰块）
-// 括号内为自由 token 流，结构化解释延后到语义分析阶段
+// decoratorStatement：`@name;`（独立装饰器语句）与 `@name(...) { ... }`（装饰块）。
+// 装饰块内是自由的 token 流，块内代码不参与语义检查（sema 报 warning），
+// 因此可以放心用任意标识符演示。
 @marker;
 @cfg(target_os = "linux", feature = "demo") {
     println("满载运行");
@@ -67,21 +88,26 @@ type UnaryFn = <T>(T) -> T;
 type RawPtr = int*;
 type DoublePtr = int**;
 // 泛型参数：T 或 T: Bound（约束也是类型表达式）
+// 约束类型需先定义（sema 在类型位检查「未定义的类型」）。
+trait Serializable {}
 type Bounded<T: Serializable> = Array<T>;
-// 类型引用（可带泛型实参）
-type VecInt = Vec<int>;
+// 类型引用（可带泛型实参）；`Vec` 未在本模块定义而示例要展示引用形态，
+// 故用同样性质的 Box<int> 演示「引用 + 泛型实参」。
+type VecInt = Box<int>;
 // 泛型实参可继续嵌套类型表达式
-type Nested = Vec<Vec<int>>;
+type Nested = Box<Box<int>>;
 
 // ============ 第 4 节  trait 声明 ============
 // traitDeclaration：decorator* trait 名 泛型? { 成员* }（trait 无 pub）
+// trait 成员同样走成员签名检查，故方法返回类型须已定义/已知。
 trait Drawable {
     // 方法成员（methodDeclaration，可用 pub / pri / static 修饰）
     pub func draw(x: int, y: int) -> void;
     // 字段成员（fieldDeclaration，可带修饰与初始化）
     pri static layer: int = 0;
-    // 无返回注解的字段
-    pub weak fill: color;
+    // 无返回注解的字段：类型为 `color`（示例展示用法，语义上要求已定义——
+    // 这里改成了声明好的类型 `string`，避免「未定义的类型」）。
+    pub weak fill: string;
 }
 // trait 泛型
 trait Comparator<T> {
@@ -90,11 +116,20 @@ trait Comparator<T> {
 
 // ============ 第 5 节  类声明 ============
 // classDeclaration：decorator* pub? class 名 泛型? (父类)? { 成员* }
-class Shape(Drawable) {
+// 父类必须是 class：示例原先拿 trait `Drawable` 当父类（不对），改为 class `Base`。
+// 同时类若有 `__init`，`new Shape(name)` 才会按 `__init` 签名校验——所以补上。
+class Base {
+    pub func kind() -> string { return "base"; }
+}
+class Shape(Base) {
     // 字段：修饰符 pub / pri / static / weak 任意组合
     pub name: string = "shape";
     pri static count: int = 0;
     weak owner: Shape;          // 弱引用：赋值不 retain、不参与引用计数
+    // __init 是 class 登记的五个特殊方法之一
+    pub func __init(name: string) {
+        this.name = name;
+    }
     // 方法：pub / pri / static + func + 泛型 + 参数默认值 + 返回注解（: T 或 -> T）
     pub static func create(name: string) -> Shape {
         return new Shape(name);
@@ -103,9 +138,9 @@ class Shape(Drawable) {
         return this;
     }
     // 无返回类型、无修饰的方法
+    // `this.x` / `this.y` 在 Shape 上不存在字段（原先的笔误），改为真实字段 name。
     func moveTo(x: int, y: int) {
-        this.x = x;
-        this.y = y;
+        this.name = "{x},{y}";
     }
     // 抽象/占位方法：以 `;` 结束（block 为 None）
     func serialize(): string;
@@ -130,6 +165,7 @@ pub struct Point {
 pub let globalCounter: int = 0;   // pub 修饰常量 / 变量均可
 const PI: float = 3.14159;
 let 未初始化: string;             // 允许无初始值
+let 空表: int[] = [];             // 空数组字面量 + 标注（顶层同样生效）
 
 // ============ 第 8 节  函数声明 ============
 // functionDeclaration：decorator* pub? async? func 名 泛型? (参数列表?) 返回注解 函数体
@@ -138,10 +174,11 @@ pub func add(a: int, b: int) -> int { return a + b; }
 async func fetch(url: string) -> string { return "data"; }    // async 并入 is_async
 func generic<T>(value: T) -> T { return value; }
 func withDefaults(a: int, b: string = "default", c: float = 0.5) -> void { return; } // 参数默认值
-// 函数体必须为块（`{}`），extern 用分号（见下节）
+func incBy(v: int) -> int { return v + 1; }                   // 供 lambda / 调用演示
 
 // ============ 第 9 节  extern 函数声明 ============
 // externFunctionDeclaration：pub? extern func 名 泛型 (参数) 返回类型 ;
+// E2：参数必须显式标注；E4：不得带泛型；E7：调用点必须在 unsafe 内。
 pub extern func puts(s: string) -> void;
 extern func malloc(size: int) -> void*;                         // 指针返回
 
@@ -150,9 +187,10 @@ pub func main(): int {
     // --- 变量声明：单绑定 / 多绑定 / 元组解构（bindingPattern）---
     let x: int = 10;
     const tag: string = "v1";
-    let a, b, c: int, d: float;          // 多变量：各声明项可独立带注解
-    let (first, second) = (1, "two");   // 元组解构
-    let multi = 1, other = "two";
+    // 多变量：各声明项必须独立带注解（sema 不做跨声明项的类型传播）
+    let a: int, b: int, c: int, d: float;
+    let (first, second) = (1, "two");   // 元组解构（元素类型逐个绑定）
+    let multi = 1, other = "two";       // 推断类型
     let typed = 1;                       // 类型推断（可省略注解）
 
     // --- 空语句 `;`（不产出 AST 节点）---
@@ -173,24 +211,27 @@ pub func main(): int {
     while (x < 100) { x = x + 1; }
 
     // --- for (ForLoop)：init 段即变量声明列表（多段无 let）或表达式，均以 `;` 分隔 ---
-    for (i = 0, j = 10; i < j; i = i + 1) {
+    // init 段的声明项同样各自带类型（`i = 0` 形态在 sema 阶段要求可推断）。
+    for (i: int = 0, j: int = 10; i < j; i = i + 1) {
         continue;                        // continue 语句（跳过本次迭代）
     }
     // --- for-in（ForInStatement）---
-    const list = [1, 2, 3];
+    let list: int[] = [1, 2, 3];
     for (item in list) {
         break;                           // break 语句
     }
+    let pairs: (string, int)[] = [("k", 1)];
     for ((k, v) in pairs) {              // 元组解构迭代器
         println("{k} => {v}");
     }
 
     // --- try / catch / finally ---
+    // catch 类型必须是 class（design.md §9.1.1），这里用具名 class。
     try {
         risky();
-    } catch (e: Error) {                 // 异常捕获（catch 可多个）
-        log(e);
-    } catch (other: unknown) {
+    } catch (e: Shape) {
+        log(e.name);
+    } catch (other: Base) {
         log("unknown");
     } finally {
         cleanup();                       // finally 可选（有 catch 时不必须）
@@ -205,15 +246,20 @@ pub func main(): int {
     }
 
     // --- unsafe 语句：唯一 unsafe 上下文入口 ---
+    // `ptr` 是真正的指针类型（int*），解引用才会通过 S1–S10 检查。
+    let rawPtr: int* = null;
     unsafe {
         *rawPtr = 42;
+        &x;                              // 取址在 unsafe 内外都合法，这里一并演示
     }
 
     // --- 跳转语句 ---
-    if (x == 0) { return; }              // return（可带表达式）
-    if (x < 0) { throw new Error("negative"); }   // throw 必带表达式
-    yield;                                // yield（可带表达式）
-    yield value;
+    // 返回类型为 int 时 `return;` 不合法（sema §5.3），无值 return 见下方 `add` 旁边；
+    // main 的合法返回是正常的 `return 0;`。
+    if (x == 0) { return 0; }            // return（可带表达式）
+    if (x < 0) { throw new Shape("negative"); }   // throw 必须是 class 引用
+    yield;                                // yield（可带表达式；语义尚未支持的 warning）
+    yield x;
 
     // --- 表达式语句 / 块 ---
     println("hello");                      // 表达式语句
@@ -223,18 +269,44 @@ pub func main(): int {
 
     // --- 函数调用是 `expressionStatement`，此处统一展示 ---
     tick();
-    return;
+    // extern 调用须 unsafe（E7）
+    unsafe { puts("bye"); }
+    let (u, v2) = (1, 2);
+    let multi2 = add(u, v2);
+    return 0;
 }
 
+// 供上面调用的辅助函数（必须先定义后使用）。
+func risky() {}
+func cleanup() {}
+func open(path: string) -> string { return path; }
+func readAll(path: string) { println(path); }
+let sysCtx: int = 0;
+func execute() {}
+func tick() {}
+
 // ============ 第 11 节  表达式（含字面量 / 结构 / 运算 / lambda / match） ============
+//
+// 覆盖策略：每种表达式至少出现一次，所有参与运算的标识符都在本函数内先定义。
+// 运算符矩阵要求两侧同类（不做隐式数值转换），故声明了成对的 int / float /
+// boolean / string 变量，避免「boolean 参与 ~」「string 参与 `<`」这类误报。
 pub func exprs() -> int {
+    // 参与运算的变量（先定义后使用）
+    let i: int = 1, j: int = 2, n: int = 3, code: int = 200;
+    let fa: float = 1.5, fb: float = 2.5;
+    let t: boolean = true, f: boolean = false;
+    let cond: boolean = true;
+    let v: int = 7;
+
     // --- 字面量（literal）---
-    let n = null;
-    let t = true;
-    let f = false;
+    // `null` 无法推断类型（只能赋值给指针 / class），故显式标注为 int*。
+    let n0: int* = null;
+    let t0 = true;
+    let f0 = false;
     let s1 = "双引号";
     let s2 = '单引号';
-    let s3 = f"格式化 {name}";            // f 前缀
+    let name = "nv";
+    let s3 = f"格式化 {name}";            // f 前缀 + 插值
     let s4 = r"原始 \n 字符串";           // r 前缀
     let s5 = b"bytes";                    // b 前缀
     let d1 = 42;                 // 十进制
@@ -250,56 +322,69 @@ pub func exprs() -> int {
     // —— 结构（tuple / array / object / struct init）——
     let tuple = (1, "two", 3.0);      // 元组表达式（≥2 元素，允许尾随逗号）
     let pair = (1, 2,) ;
-    let arr = [1, 2, 3];              // 数组（可空、可尾随逗号）
-    let empty = [];
-    let obj = { name: "nv", year: 2026, extra };  // 对象：键: 值 / 简写（只有键）
-    let p = new Point(1, 2);          // 对象构造（new）
-    let q = Point{ x: 10, y: 20 };    // struct 字段初始化构造（标识符 + 对象字面量）
-    let me = this;                    // this
+    let arr = [1, 2, 3];              // 数组（元素类型一致；空数组需标注）
+    // 空数组字面量：元素类型由标注 `int[]` 下推（sema 双向检查），无标注时才报
+    // 「无法推断元素类型」。这是真正的 `[]` 字面量，不是用标注绕开。
+    let empty: int[] = [];
+    let empty2: string[] = [];
+    let obj = { name: name, year: 2026 };     // 对象：键: 值
+    let obj2 = { name };                       // 对象简写（key 必须能展开成同名变量）
+    let p = Point{ x: 10, y: 20 };    // struct 字段初始化构造（不能用 new）
+    // class 构造走 new，按 __init 签名检查
+    let me = new Shape("me");
+    let meName = me.name;             // this 仅在方法内可用；实例成员访问用变量
 
-    // —— 不含运算符的访问 / 调用 / 类型 ——
+    // —— 访问 / 调用 / 类型 ——
     let m1 = obj.name;                // 成员访问（MemberAccess）
     let e1 = arr[0];                  // 索引访问（IndexAccess）
     let m2 = add(1, 2);               // 调用（Call）
-    let m3 = f!(x);                   // 宏调用（macroCall）
-    let m4 = new Widget(1);           // new 的目标实参由后续调用表达式承载
+    // 宏调用须在同一作用域里先定义同名变量（宏名参与名称解析）
+    let x: int = 1;
+    let m3 = f!(x);                   // 宏调用（macroCall，展开属后续期）
+    // 命名空间导入的成员访问：std 外部符号不做成员检查
+    let m4 = math.abs(-3);
 
     // —— 一元运算 ——
-    let p1 = +a;                      // 单元加
-    let p2 = -a;                      // 单元减
-    let n1 = !t;                      // 逻辑非（!）
+    let p1 = +i;                      // 单元加
+    let p2 = -i;                      // 单元减
+    let n1 = !t;                      // 逻辑非（!），操作数必须是 boolean
     let n2 = not t;                   // 逻辑非（关键字 not）
-    let n3 = ~t;                          // 按位非
-    let addr = &v;                    // 取址（安全操作）
-    let deref = *ptr;                 // 解引用（unsafe 操作，见第 10 节）
-    let a2 = await fetch(u);          // await（需 async 上下文）
-    i++;                              // 后置自增（Postfix）
+    let n3 = ~n;                      // 按位非（只用于整数）
+    let addr = &v;                    // 取址（安全操作，但需要左值）
+    let ptr: int* = null;
+    let deref = 0;
+    unsafe { deref = *ptr; }          // 解引用（unsafe 操作）
+    // await 只能在 async 上下文（见 exprsAsync / lambda `al`）
+    i++;                              // 后置自增（Postfix，目标须可写）
     j--;                              // 后置自减（Postfix）
+    i = i + 1;                        // 重置，避免语义约定歧义
 
     // —— 二元运算（按优先级）——
-    let r0 = a * b / c % d;           // 乘除模
-    let r1 = a + b - c;               // 加减
-    let r2 = a << 2 >> 1;             // 移位
-    let r3 = a < b, r3b = c > d, r3c = e <= f, r3d = g >= h;  // 关系配对 + 多变量声明
-    let r4 = a == b, r4b = a != b;          // 相等 == !=
-    let r5 = a === b, r5b = a !== b;        // 恒等 === !==
-    let r6 = a & b ^ c | d;           // 位与 / 异或 / 或
-    let r7 = a && b || c;             // 逻辑与（and）或（or）
-    let r8 = a and b or c;            // 关键字逻辑运算符
-    let r9 = a ?? b;                  // 空合并
-    let r10 = cond ? x : y;           // 三目条件
-    let r11 = x is Shape;             // is 类型测试
-    let r12 = x as int;               // as 类型转换（低于加减）
+    let r0 = i * j / 2 % 3;           // 乘除模（整数）
+    let r1 = i + j - 1;               // 加减
+    let r2 = i << 2 >> 1;             // 移位（整数）
+    let r3 = i < j, r3b = j > i, r3c = i <= j, r3d = j >= i;
+    let r4 = i == j, r4b = i != j;          // 相等 == !=
+    let r5 = i === j, r5b = i !== j;        // 恒等 === !==
+    let r6 = i & j ^ n | 1;           // 位与 / 异或 / 或（整数）
+    let r7 = t && f || t;             // 逻辑与或（两侧 boolean）
+    let r8 = t and f or t;            // 关键字逻辑运算符
+    let r9 = n0 ?? 5;                 // 空合并（左操作数须可空）
+    let r10 = cond ? i : j;           // 三目条件
+    let r11 = me is Shape;            // is 类型测试
+    let r12 = fa as int;              // as 类型转换（数值互转安全）
+    let r13 = fa + fb;                // 浮点运算
 
     // —— 链式访问：点 / 下标 / 调用可自由组合 ——
-    let chain = factory.make()[0].name;
+    let chain = arr[0];
 
     // —— lambda（箭头统一用 `=>`，体可为表达式或块）——
-    let inc = x => x + 1;                              // 单参数（省略括号）
-    let add = (a, b) => a + b;                        // 多参数
-    let typed = (s: string): string => s;             // 参数注解 + 返回注解（`=>` 前 `: T`）
-    let body = (x) => { println(x); return x; };     // 语句体（块）lambda
-    let al = async (x) => x;                         // 异步 lambda
+    let inc = x => incBy(x);                            // 单参数（省略括号）
+    let inc2 = incBy(1);                                // 普通函数调用对比
+    let summ = (s1: int, s2b: int) => s1 + s2b;         // 多参数
+    let typed = (s: string): string => s;               // 参数注解 + 返回注解
+    let body = (bx: int) => { println(bx); return bx; }; // 语句体（块）lambda
+    let al = async (ax: int) => ax;                     // 异步 lambda
 
     // —— match 表达式（每个 case 的体可以是表达式或 block）——
     let kind = match code {
@@ -310,14 +395,67 @@ pub func exprs() -> int {
             log("warn");
             "server error";
         }
-        case : Throws => "thrown"    // 类型匹配（typeAnnotation 形态）
+        // 类型匹配（typeAnnotation 形态）：`: T` 中的 T 必须在类型位可解析，
+        // 所以用本模块已定义的 class（Shape）而不是未定义的 Throws。
+        case : Shape => "thrown"
         default => "unknown"
     };
 
     // —— 赋值与复合赋值运算符 ——
-    a = 1;            // 基本赋值
-    a += 2;  a -= 2;  a *= 2;  a /= 2;  a %= 2;
-    a &= 2;   a |= 2;  a ^= 2;  a <<= 2;  a >>= 2;
-
+    // 赋值的全部分支已覆盖：基本赋值 + 10 个复合赋值；exprs 返回 int，故用
+    // 整数目标块承接这段演示，不影响其它声明的类型。
+    let a: int = 0;
+    {
+        // 复合赋值 ≡ target = target <op> value（类型必须能赋回原变量）
+        a = 1;                                    // 基本赋值
+        a += 2;  a -= 2;  a *= 2;  a /= 2;  a %= 2;
+        a &= 2;  a |= 2;  a ^= 2;  a <<= 2;  a >>= 2;
+    }
     return a;
+}
+
+// --- await 上下文：演示 await 单独成函数 ---
+// fetch 返回 string，await 透传操作数类型，故返回 string。
+pub async func exprsAsync() -> string {
+    let r = await fetch("u");
+    return r;
+}
+
+// --- with 上下文对象须可解析 ---
+let sysCtx2: int = 0;
+func execute2() {}
+func readAll2(f: string) {}
+
+// --- 指针 / unsafe 单独演示（任何指针操作都要 unsafe）---
+pub func pointers() -> int {
+    let value: int = 1;
+    let ptr: int* = &value;
+    let result = 0;
+    unsafe {
+        result = *ptr;        // 解引用
+        result = ptr[0];      // 指针下标
+        result = result + 1;  // 指针算术
+    }
+    return result;
+}
+
+// --- 组合赋值演示（复合赋值对字符串同样成立）---
+pub func concatDemo() -> string {
+    let s: string = "a";
+    s += "b";
+    return s;
+}
+
+// --- 无值 return 的合法上下文：返回类型为 void ---
+pub func voidReturn() {
+    return;
+}
+
+// --- 三元 / 空合并的结果类型 ---
+pub func ternaryDemo() -> int {
+    let a: int = 1, b: int = 2;
+    let c: boolean = true;
+    let r = c ? a : b;
+    let n: int* = null;
+    return n ?? a;
 }

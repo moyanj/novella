@@ -181,15 +181,41 @@ from "std:exception" import ValueError, ZeroDivisionError;
 
 - 内置路径别名（语义分析阶段解析 `prefix` 时识别）：
   - **`@`** —— 当前 crate 根（等价 Rust 的 `crate`），
-    `from "@:sub:mod" import ...` 从本 crate 根出发的绝对路径；
+    `from "@:sub/mod" import ...` 从本 crate 根（最近的 `nov.toml` 所在目录）
+    出发的绝对路径；
   - **`std`** —— 标准库（`"std:exception"` → `std` 库的 `exception` 模块；
     也可写作 `"std"` 直引）；
   - **`super`** —— 当前作用域的父级（类似相对 import 的 `..` 语义，
     `from "super:xxx" import ...`）。
+- 路径语法：`:` 仅作别名分隔符且**最多一个**（`alias:path`）；别名之后的
+  路径段一律以 `/` 分隔，段内再出现 `:` 由语义分析报错；crate 根由当前文件
+  向上最近的 `nov.toml` 标记，找不到时 `@:` 报错；
 - 未知别名：语义分析阶段报「未知路径别名」；`@` / `std` / `super` 在
   `"..."` 内只是字符串内容，与语句位的 `@` 指令前缀互不影响；
 - 与 `importSpecifier` 的 `as`（本地重命名）互不冲突：`xxx:` 作用于**路径**，
   `as` 作用于**符号**。
+
+#### 4.3.2 模块语义（已确认，sema 第一期落地）
+
+- **模块 = 文件**：路径段按 `/` 映射目录，末段自动补 `.nov` 扩展名；
+  无前缀路径相对**当前文件所在目录**解析；`super:` 先上溯一级目录；
+- **装载模型**：从入口文件出发按导入闭包装载（worklist），**允许循环
+  导入**——先全量装载并收集顶层声明，再统一绑定导入与检查模块体；
+- **可见性**：仅显式 `pub` 的顶层符号可被其他模块导入（无 `pub` 默认
+  模块私有）；导入到本地的符号**只读**（不可赋值）；
+- **同名冲突**：导入绑定名与本地顶层符号重名、或两条导入引入同名绑定时
+  报错（不允许隐式覆盖）；
+- **`std`**：标准库符号登记为**外部符号**（类型未知、调用不查实参），
+  待 std 存根落地后收紧；
+- **模块顶层语句**：照常做语义检查（执行顺序属 codegen 阶段决定）；
+- **crate 根标记 `nov.toml`**：本期仅用于定位 crate 根（`@:` 解析），
+  最小 schema：
+
+  ```toml
+  [package]
+  name = "my-crate"
+  version = "0.1.0"
+  ```
 
 ### 4.4 类型别名
 
@@ -198,6 +224,14 @@ typeAliasDeclaration: Type identifier typeParameters? Assign typeExpression Semi
 typeParameters: '<' typeParameterList '>';
 typeParameter: identifier (Colon typeExpression)?;
 ```
+
+- **可见性限制（本期）**：别名**不可跨模块导入**（文法上 `type` 前无
+  `pub`，`pub` 清单不含类型别名），仅模块内可见；
+- **浅泛型**：使用点检查泛型实参个数（arity），实参不代入定义体做深度
+  展开检查；别名目标在使用点按需解析；
+- **循环检测**：`type A = B; type B = A;` 类循环在展开点报「类型别名
+  循环」；
+- `typeParameters` 的 `T: Bound` 约束本期仅记录、不校验。
 
 ### 4.5 编译器指令 `@`（attribute 语义）
 
@@ -262,8 +296,10 @@ AST：`ClassItem { attributes, name, type_parameters, members, parent, scope }`�
   识别在语义阶段按名字判定；
 - 作用范围：**仅 class**（及 trait 声明的方法签名）；**struct 不支持特殊
   方法**——struct 方法名不得带 `__` 前缀（§4.7）；
-- 可用清单（`__init` / `__destroy` / `__str` …）与调用时机（构造、析构、
-  字符串化、`with` 协议等）由语义阶段按需定义并登记，此处只固定命名约定；
+- 已登记清单（sema 第一期）：`__init`（构造，`new` 的实参按其签名检查；
+  无 `__init` 的 class `new` 不得传实参）、`__destroy`（析构）、`__str`
+  （字符串化）、`__enter` / `__exit`（`with` 协议）；清单之外的 `__`
+  前缀方法名报错；调用时机属 codegen；
 - 双下划线同时是**保留命名空间**：普通方法不得以 `__` 开头，防止撞名。
 
 ### 4.7 struct（值类型，已确认新增）
@@ -304,8 +340,17 @@ parameter: identifier typeAnnotation? (Assign expression)?;    // 形参默认�
 AST：`FunctionItem { attributes, name, r#type, block, scope, is_extern, is_async }`；
 `FunctionType { type_parameters, params, return_type }`；`Param { name, ty, default }`。
 
-- 返回类型注解 `: T` 与 `-> T` 两种写法等价；
+- 返回类型注解 `: T` 与 `-> T` 两种写法等价；缺省返回类型按 `void` 处理；
+- 形参类型标注**可选**（`parameter: identifier typeAnnotation? ...`）：本期
+  未标注的形参类型按「未知」处理——函数体与调用点均跳过该参的检查，
+  参数类型推导属后续期；
 - `extern func`（无函数体，`;` 结尾）声明外部函数，用于 FFI；
+  - 参数类型必须显式标注（FFI 边界不做参数推导）；
+  - 不得带泛型参数（FFI 边界无单态化）；
+  - 不得命名 `main`（入口必须是 novella 函数）；
+  - **调用 extern 函数是不安全操作**，必须在 `unsafe { }` 块内
+    （对齐 Rust `unsafe extern fn`；外部符号无法验证参数有效性）；
+  - 调用约定由 `@extern("C")` 类指令承载（指令语义属后续期），默认 C ABI；
 - `async func` 为异步函数（`FunctionItem.is_async`）；
 - `unsafe fn` 本期不做；`FunctionItem.is_unsafe` 字段为预留项，待 `unsafe fn`
   落地时一并加入（当前 AST 尚未含该字段）。
@@ -318,7 +363,9 @@ AST：`FunctionItem { attributes, name, r#type, block, scope, is_extern, is_asyn
 - `main` 是**硬性入口约定**，非保留字：`main` 仍是普通 `Identifier`，靠名字
   与「顶层 + 无参 + 无泛型」形态识别；
 - 入口判定：顶层函数，函数名 `main`，无参数；返回类型可为 `void` / `int`
-  （退出码，语义阶段定），其余形态报错。
+  （退出码，语义阶段定），其余形态报错；
+- 已落地的附加判定（sema 第一期）：`main` 不得带泛型、不得为 `async`、
+  不得为 `extern`；仅**入口模块**要求存在 `main`（被导入的库模块不要求）。
 
 ### 4.9 语句
 
@@ -413,7 +460,7 @@ statement: variableStatement | returnStatement | breakStatement | continueStatem
 | 变体 | 形态 | 说明 |
 |------|------|------|
 | `Predefined` | `int` / `float` / `boolean` / `string` / `void` / `u8..u64` / `i8..i64` / `f8..f64` / `usize` / `isize` / `null` | 类型名在词法层是普通 `Identifier`，由语义按名字归类 |
-| `Reference` | `Foo` / `Foo<T>` | 类型引用（class / struct / 别名） |
+| `Reference` | `Foo` / `Foo<T>` / `mod.Foo` | 类型引用（class / struct / 别名）；`qualifier` 承载命名空间限定段（经导入的模块别名解析，多级限定 `a.b.T` 本期不支持） |
 | `Array` | `T[]` | 数组类型 |
 | `Tuple` | `(T1, T2)` | 元组类型（≥2 元素；`()` / `(T,)` 非法；括号分组 `(T)` 即 `T` 本身） |
 | `Function` | `<T>(a: int) -> int` / `func (a) -> T` | 两种写法合并；类型位箭头**唯一为 `->`**，类型位写 `=>` 报错（`=>` 专属 lambda） |
@@ -424,10 +471,31 @@ statement: variableStatement | returnStatement | breakStatement | continueStatem
 
 ### 5.2 预定义类型（`PredefinedType`）
 
-`Null` `Boolean` `String` `Int` `Float` `Void` `U8` `U16` `U32` `U64` `I8`
-`I16` `I32` `I64` `F8` `F16` `F32` `F64` `Usize` `Isize`。
+`Null` `Boolean` `Int` `Float` `Void` `U8` `U16` `U32` `U64` `I8` `I16`
+`I32` `I64` `F8` `F16` `F32` `F64` `Usize` `Isize`。
 
 宽度整数 / 浮点类型直接映射目标平台原生类型；`usize` / `isize` 为指针宽度。
+**`int` ≡ `i32`、`float` ≡ `f32`**（语义阶段直接归一化，不存在独立的
+「任意宽度」类型）；`string` / `boolean` / `void` / `null` 不出现在
+`PredefinedType` 枚举中，由语义按名字归类为内置类型。
+
+### 5.2.1 类型兼容与隐式转换（已确认，sema 第一期落地）
+
+赋值 / 传参 / 返回的兼容判定（`assignable`）：
+
+- **无隐式数值转换**：`i32` 与 `i64`、`int` 与 `float` 之间赋值报错，
+  必须显式 `as`；
+- **字面量归化**：整数字面量可赋任意整数类型、浮点字面量可赋任意浮点
+  类型（字面量带「未定型」标记，进入变量后定型；按目标位宽溢出检查属
+  后续期）；
+- `null`（类型 `void*`）可赋任意 `T*` 与 class 引用（S5/§7.2）；
+- `void*` ↔ 任意 `T*` 双向隐式（S8）；
+- **子类引用 → 父类引用**隐式（单继承链）；父类 → 子类必须显式 `as`
+  （unsafe）；
+- 元组 / 数组同形后逐元素递归适用以上规则；联合类型：目标是联合时
+  源可赋任一成员即可，源是联合时全部成员可赋目标才可赋（保守）；
+- 类型参数 `T`、std 外部符号、错误恢复产生的未知类型按「不透明」放行
+  （不再追加诊断）。
 
 ### 5.3 指针类型（已确认新增）
 
@@ -849,6 +917,11 @@ stream func fib(n: i64) { ... }   // 已砍，不再支持
   符合文法）；均**可恢复**——记录后继续分析同一文件其余部分；
 - 语义错误（类型不符、unsafe 违规、未知路径别名、缺少 `main` 等）由语义
   分析阶段产出；
+- **sema 第一期未覆盖**（后续期补全，见 `docs/sema-phase1.md`）：match
+  穷尽性、函数返回路径完整性、未使用符号 warning、按目标位宽的字面量
+  溢出检查、多级限定名 `a.b.T`、限定名 struct 初始化 `mod.Type{ ... }`
+  （parser 未支持）、泛型实参代入定义体的深度检查、class 实现 trait 的
+  一致性检查；
 - 诊断渲染为 rustc 风格（`error: ...` + `--> 文件:行:列` + 源码行 + caret，
   列号 1-based 展示、caret 按字符不错位）——渲染细节属编译器设计。
 

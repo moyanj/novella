@@ -121,8 +121,9 @@ primaryType:
 
 typeList: typeExpression (',' typeExpression)*;
 
-// 类型引用：`Foo` / `Foo<T>`（对应 `TypeExpr::Reference{name, generic_args}`）
-typeReference: identifier typeGeneric?;
+// 类型引用：`Foo` / `mod.Foo<T>`（对应 `TypeExpr::Reference{qualifier, name, generic_args}`；
+// `identifier` 前段记入 qualifier，命名空间归属由语义分析按 `import "mod";` 绑定解析）
+typeReference: identifier (Dot identifier)* typeGeneric?;
 
 typeGeneric: '<' typeArgumentList '>';
 
