@@ -287,7 +287,9 @@ dependencies = [
 name = "novella-sema"
 version = "0.1.0"
 dependencies = [
+ "novella-ast",
  "novella-core",
+ "novella-lexer",
  "novella-parser",
 ]
 

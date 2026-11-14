@@ -181,11 +181,15 @@ from "std:exception" import ValueError, ZeroDivisionError;
 
 - 内置路径别名（语义分析阶段解析 `prefix` 时识别）：
   - **`@`** —— 当前 crate 根（等价 Rust 的 `crate`），
-    `from "@:sub:mod" import ...` 从本 crate 根出发的绝对路径；
+    `from "@:sub/mod" import ...` 从本 crate 根（最近的 `nov.toml` 所在目录）
+    出发的绝对路径；
   - **`std`** —— 标准库（`"std:exception"` → `std` 库的 `exception` 模块；
     也可写作 `"std"` 直引）；
   - **`super`** —— 当前作用域的父级（类似相对 import 的 `..` 语义，
     `from "super:xxx" import ...`）。
+- 路径语法：`:` 仅作别名分隔符且**最多一个**（`alias:path`）；别名之后的
+  路径段一律以 `/` 分隔，段内再出现 `:` 由语义分析报错；crate 根由当前文件
+  向上最近的 `nov.toml` 标记，找不到时 `@:` 报错；
 - 未知别名：语义分析阶段报「未知路径别名」；`@` / `std` / `super` 在
   `"..."` 内只是字符串内容，与语句位的 `@` 指令前缀互不影响；
 - 与 `importSpecifier` 的 `as`（本地重命名）互不冲突：`xxx:` 作用于**路径**，
@@ -306,6 +310,12 @@ AST：`FunctionItem { attributes, name, r#type, block, scope, is_extern, is_asyn
 
 - 返回类型注解 `: T` 与 `-> T` 两种写法等价；
 - `extern func`（无函数体，`;` 结尾）声明外部函数，用于 FFI；
+  - 参数类型必须显式标注（FFI 边界不做参数推导）；
+  - 不得带泛型参数（FFI 边界无单态化）；
+  - 不得命名 `main`（入口必须是 novella 函数）；
+  - **调用 extern 函数是不安全操作**，必须在 `unsafe { }` 块内
+    （对齐 Rust `unsafe extern fn`；外部符号无法验证参数有效性）；
+  - 调用约定由 `@extern("C")` 类指令承载（指令语义属后续期），默认 C ABI；
 - `async func` 为异步函数（`FunctionItem.is_async`）；
 - `unsafe fn` 本期不做；`FunctionItem.is_unsafe` 字段为预留项，待 `unsafe fn`
   落地时一并加入（当前 AST 尚未含该字段）。

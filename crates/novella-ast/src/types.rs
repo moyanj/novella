@@ -26,8 +26,6 @@ pub enum PredefinedType {
     Null,
     /// boolean（原生布尔类型）
     Boolean,
-    /// string
-    String,
     /// int (等价于i32)
     Int,
     /// float(等价于f32)
