@@ -275,9 +275,17 @@ fn check_stmt(sema: &mut Sema, ctx: &mut BodyCtx, stmt: &Statement) {
                 );
             }
         }
-        Statement::Yield { span, .. } => {
-            // design.md §9.4：语法保留，语义未支持
-            sema.error(ctx.module, *span, "`yield` 语义尚未支持");
+        Statement::Yield { span, value, .. } => {
+            // design.md §9.4：语法保留，语义未支持。语法展示文件需要完整覆盖
+            // 语句族，故降为 warning（可编译通过），值照常检查避免漏查副作用。
+            sema.warning(
+                ctx.module,
+                *span,
+                "`yield` 语义尚未支持（语法保留，检查跳过）",
+            );
+            if let Some(value) = value {
+                check_expr(sema, ctx, value);
+            }
         }
         Statement::Block(block) => check_block(sema, ctx, block),
         Statement::If(if_stmt) => {
@@ -516,10 +524,13 @@ fn check_variable_decl(sema: &mut Sema, ctx: &mut BodyCtx, decl: &VariableStmt) 
         .ty
         .as_ref()
         .map(|ty| sema.resolve_type(ctx.module, ctx.scope, ty, &ctx.type_env));
-    let value_ty = decl
-        .value
-        .as_ref()
-        .map(|value| check_expr(sema, ctx, value));
+    // 带类型标注时把标注作为期望类型下推（双向检查）：空数组字面量、未定型
+    // 字面量等需要上下文才能定型的表达式（design.md §5.2「数组字面量取首元素
+    // 为基准」的空情形）由标注给出元素类型，而不是直接报「无法推断」。
+    let value_ty = decl.value.as_ref().map(|value| match &annotated_ty {
+        Some(annotated) => check_expr_with_hint(sema, ctx, value, annotated),
+        None => check_expr(sema, ctx, value),
+    });
 
     let bound_ty = match (&annotated_ty, &value_ty) {
         (Some(annotated), Some(value_ty)) => {
@@ -900,7 +911,7 @@ fn adjust_diagnostics(
 fn check_identifier(sema: &mut Sema, ctx: &mut BodyCtx, name: &str, span: Span) -> Ty {
     let Some(symbol) = sema.scopes.lookup(ctx.scope, name).cloned() else {
         sema.error(ctx.module, span, format!("未定义的标识符 `{name}`"));
-        return Ty::Unknown;
+        return Ty::Error;
     };
     value_type_of_symbol(sema, ctx, symbol, name, span)
 }
@@ -996,6 +1007,31 @@ fn classify_identifier(sema: &Sema, ctx: &BodyCtx, name: &str) -> Option<IdentTa
         }
         _ => IdentTarget::Value,
     })
+}
+
+/// 带期望类型的表达式检查（当前只对能由标注定型的几种表达式生效，其余回退
+/// 到普通 [`check_expr`]）。返回表达式自身的类型，兼容性由调用方判定。
+pub(crate) fn check_expr_with_hint(
+    sema: &mut Sema,
+    ctx: &mut BodyCtx,
+    expr: &Expression,
+    hint: &Ty,
+) -> Ty {
+    match (expr, hint) {
+        // 空数组字面量：元素类型取自标注 `T[]`
+        (Expression::ArrayLiteral { elements, .. }, Ty::Array(element)) if elements.is_empty() => {
+            Ty::Array(element.clone())
+        }
+        // `null` → 标注为可空类型时即为该类型
+        (
+            Expression::Literal {
+                value: Literal::Null,
+                ..
+            },
+            hint,
+        ) if hint.is_nullable() => hint.clone(),
+        _ => check_expr(sema, ctx, expr),
+    }
 }
 
 fn check_array_literal(
@@ -1496,7 +1532,7 @@ fn check_struct_init(
         }
         None => {
             sema.error(ctx.module, span, format!("未定义的类型 `{name}`"));
-            return Ty::Unknown;
+            return Ty::Error;
         }
     };
     match sema.type_defs.get(&struct_key) {
@@ -1560,7 +1596,7 @@ fn check_struct_init(
         }
         Some(_) => {
             sema.error(ctx.module, span, format!("`{name}` 不是 struct/class 类型"));
-            Ty::Unknown
+            Ty::Error
         }
         None => Ty::Unknown, // 语法失败的模块，注册阶段已报过
     }
@@ -2106,13 +2142,19 @@ fn check_new(
             None
         }
     };
+    let unresolved_new = type_key.is_none() && sema.scopes.lookup(ctx.scope, name).is_none();
     let arg_tys: Vec<Ty> = args.iter().map(|a| check_expr(sema, ctx, a)).collect();
     let type_arg_tys: Vec<Ty> = type_args
         .iter()
         .map(|t| sema.resolve_type(ctx.module, ctx.scope, t, &ctx.type_env))
         .collect();
     let Some(type_key) = type_key else {
-        return Ty::Unknown;
+        // 未定义类型已有诊断：返回 Error 阻止上层重复报错
+        return if unresolved_new {
+            Ty::Error
+        } else {
+            Ty::Unknown
+        };
     };
     match sema.type_defs.get(&type_key) {
         Some(TypeDef::Class(def)) => {
@@ -2153,7 +2195,7 @@ fn check_new(
                 span,
                 format!("struct `{name}` 不能用 `new` 构造，请用 `{name}{{ ... }}`"),
             );
-            Ty::Unknown
+            Ty::Error
         }
         Some(_) => {
             sema.error(
@@ -2161,7 +2203,7 @@ fn check_new(
                 span,
                 format!("`{name}` 不是 class，不能用 `new` 构造"),
             );
-            Ty::Unknown
+            Ty::Error
         }
         None => Ty::Unknown, // 注册阶段已报过
     }

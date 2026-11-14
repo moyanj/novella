@@ -157,6 +157,9 @@ pub enum Ty {
     TypeParam(String),
     /// std 导入的不透明外部符号（调用 / 访问不做检查）
     External,
+    /// 错误类型（产生处已报过明确诊断）：向下传播时不产生级联诊断，
+    /// 但不参与任何兼容判定之外的推导（见 [`Ty::is_opaque`]）。
+    Error,
 }
 
 impl Ty {
@@ -176,9 +179,11 @@ impl Ty {
         matches!(self, Ty::Pointer(_) | Ty::Class(..) | Ty::Null)
     }
 
-    /// 是否是不透明占位（Unknown / External）：参与检查时一律放行，抑制级联
+    /// 是否是不透明占位（Unknown / External / Error）：参与检查时一律放行，抑制级联。
+    /// `Error` 是 `Unknown` 以外的另一档：来源处已带明确诊断（如演示文件中的
+    /// `yield`、语义未实现的写法），后续依赖它的位置不再重复报错。
     pub fn is_opaque(&self) -> bool {
-        matches!(self, Ty::Unknown | Ty::External)
+        matches!(self, Ty::Unknown | Ty::External | Ty::Error)
     }
 }
 
@@ -208,6 +213,7 @@ pub fn ty_eq(a: &Ty, b: &Ty) -> bool {
         | (Ty::Trait(m1, n1), Ty::Trait(m2, n2)) => m1 == m2 && n1 == n2,
         (Ty::TypeParam(x), Ty::TypeParam(y)) => x == y,
         (Ty::External, Ty::External) => true,
+        (Ty::Error, Ty::Error) => true,
         _ => false,
     }
 }
@@ -444,6 +450,7 @@ impl fmt::Display for Ty {
             Ty::Struct(_, n) | Ty::Class(_, n) | Ty::Trait(_, n) => write!(f, "{n}"),
             Ty::TypeParam(n) => write!(f, "{n}"),
             Ty::External => write!(f, "<外部符号>"),
+            Ty::Error => write!(f, "<错误类型>"),
         }
     }
 }
