@@ -311,9 +311,22 @@ impl Parser {
         ty
     }
 
-    /// 解析类型引用 `Foo` / `Foo<T>`（对应文法 `typeReference`）。
+    /// 解析类型引用：`Foo` / `Foo<T>` / `mod.Foo<T>`（对应文法 `typeReference`）。
+    ///
+    /// 限定段（`mod.Foo` 的 `mod`）记入 `qualifier`，末段为类型名；
+    /// 命名空间归属留待语义分析按 `import "mod";` 绑定解析。
     fn parse_type_reference(&mut self) -> Option<TypeExpr> {
-        let name_token = self.expect(TokenKind::Identifier)?;
+        let first = self.expect(TokenKind::Identifier)?;
+        let start = first.span.start;
+        let mut qualifier = vec![];
+        let mut name_token = first;
+        // 限定段链：`a.b.C` → qualifier=["a","b"]、name="C"；
+        // `Dot` 后不是标识符时结束类型解析，把 `Dot` 留给外层
+        while self.check(TokenKind::Dot) && self.check_n(TokenKind::Identifier, 1) {
+            self.advance();
+            qualifier.push(name_token.slice);
+            name_token = self.expect(TokenKind::Identifier)?;
+        }
         let mut generic_args = vec![];
         let mut end = name_token.span.end;
         if self.eat(TokenKind::LessThan).is_some() {
@@ -329,12 +342,10 @@ impl Parser {
             end = close.span.end;
         }
         Some(TypeExpr::Reference {
+            qualifier,
             name: name_token.slice,
             generic_args,
-            span: Span {
-                start: name_token.span.start,
-                end,
-            },
+            span: Span { start, end },
         })
     }
 

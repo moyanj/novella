@@ -28,9 +28,9 @@ pub enum PredefinedType {
     Boolean,
     /// string
     String,
-    /// int
+    /// int (等价于i32)
     Int,
-    /// float
+    /// float(等价于f32)
     Float,
     /// void
     Void,
@@ -105,8 +105,11 @@ pub enum TypeExpr {
         /// 源码区间
         span: Span,
     },
-    /// 类型引用（可能带泛型实参）：`Foo` / `Foo<T>`
+    /// 类型引用（可能带命名空间限定与泛型实参）：`Foo` / `mod.Foo<T>`
     Reference {
+        /// 命名空间限定段（`mod.Foo` 中的 `["mod"]`）；非限定引用时为空。
+        /// 由语义分析按命名空间导入（`import "mod";`）解析到目标模块的类型符号。
+        qualifier: Vec<String>,
         /// 被引用类型的名称
         name: String,
         /// 泛型实参列表，非泛型引用时为空
