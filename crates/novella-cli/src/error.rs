@@ -4,7 +4,7 @@ use novella_core::diagnostic::{Diagnostic, Severity};
 /// 将诊断渲染为 rustc 风格文本（多行），例如：
 ///
 /// ```text
-/// error: 未闭合的字符串字面量：以 '"' 开头，缺少闭合引号
+/// error[NVL1002]: 未闭合的字符串字面量：以 '"' 开头，缺少闭合引号
 ///   --> test.nv:2:5
 ///    |
 ///  2 | let x = "abc
@@ -12,6 +12,7 @@ use novella_core::diagnostic::{Diagnostic, Severity};
 /// ```
 ///
 /// - `source` 为出错文件的源码，用于展示出错行与 caret 指示；
+/// - 带错误码时首行渲染为 `error[NVLxxxx]: <msg>`，无错误码时退回 `error: <msg>`；
 /// - 诊断无位置（`location` 为 None，如文件读取失败）时仅输出首行；
 /// - caret 按 span 长度渲染（至少 1 个 `^`，不越出该行），
 ///   列号以字节偏移计、渲染时转字符列，保证多字节字符前指示不错位。
@@ -21,7 +22,11 @@ pub fn render_diagnostic(diag: &Diagnostic, source: Option<&str>) -> String {
         Severity::Error => "error".red(),
         Severity::Warning => "warning".yellow(),
     };
-    out.push_str(&format!("{severity}: {}\n", diag.message));
+    // 错误码固定渲染在 severity 之后（rustc 的 `error[E0308]` 风格），便于按码检索
+    match &diag.code {
+        Some(code) => out.push_str(&format!("{severity}[{code}]: {}\n", diag.message)),
+        None => out.push_str(&format!("{severity}: {}\n", diag.message)),
+    }
 
     let Some(loc) = &diag.location else {
         return out;

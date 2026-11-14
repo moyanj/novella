@@ -1,9 +1,10 @@
 use serde::{Deserialize, Serialize};
 
 pub mod diagnostic;
+pub mod keywords;
 pub mod token;
 
-#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq)]
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Hash)]
 pub struct Span {
     pub start: usize,
     pub end: usize,

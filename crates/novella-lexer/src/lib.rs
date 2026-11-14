@@ -1,7 +1,7 @@
 use logos::{Lexer, Logos};
 use novella_core::{
     Span,
-    diagnostic::{Diagnostic, DiagnosticLocation, Severity},
+    diagnostic::{Diagnostic, DiagnosticCode, DiagnosticLocation, Severity},
     token::{Token, TokenKind},
 };
 use std::fmt;
@@ -415,8 +415,13 @@ impl TokenError {
     /// 列号沿用 token 的 0-based 字节偏移（与 ANTLR `getCharPositionInLine()` 对齐），
     /// 渲染层自行转字符列与 1-based 展示。
     pub fn to_diagnostic(&self, file: Option<&str>) -> Diagnostic {
+        let code = match self.error {
+            LexError::InvalidCharacter { .. } => DiagnosticCode::InvalidCharacter,
+            LexError::UnterminatedString { .. } => DiagnosticCode::UnterminatedString,
+        };
         Diagnostic {
             severity: Severity::Error,
+            code: Some(code.to_string()),
             message: self.error.to_string(),
             location: Some(DiagnosticLocation {
                 file: file.map(str::to_owned),
@@ -536,4 +541,54 @@ pub fn lexer(input: &str) -> LexerResult {
         column,
     });
     LexerResult { tokens, errors }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::lexer;
+    use novella_core::keywords::KEYWORDS;
+
+    /// 关键字种子表（`novella_core::keywords`）与 lexer 的词法事实必须一致。
+    ///
+    /// 该表是高亮生成器与补全的种子数据，也是最容易被漏改的一侧：
+    /// lexer 新增 / 删除关键字而表未同步时，这里会立刻失败。
+    #[test]
+    fn keyword_seed_table_matches_lexer() {
+        for entry in KEYWORDS {
+            let lexed = lexer(entry.literal);
+            assert!(lexed.errors.is_empty(), "`{}` 应无词法错误", entry.literal);
+            let first = lexed.tokens.first().expect("至少一个 token");
+            assert_eq!(
+                first.kind, entry.kind,
+                "字面量 `{}` 的登记种类与 lexer 实际种类不一致",
+                entry.literal
+            );
+            assert!(
+                first.span.end - first.span.start == entry.literal.len(),
+                "字面量 `{}` 应被整体识别为一个 token",
+                entry.literal
+            );
+        }
+    }
+
+    /// 反向校验：lexer 认作关键字的每个 token 都必须在种子表里。
+    ///
+    /// 通过扫描源码中出现的全部关键字 token 完成——用种子表拼一段源码，
+    /// 再逐个比对回来，确保表既不缺也不多。
+    #[test]
+    fn every_keyword_token_is_in_seed_table() {
+        use novella_core::keywords::kind_of;
+        for entry in KEYWORDS {
+            assert_eq!(
+                kind_of(entry.literal),
+                Some(entry.kind),
+                "`{}` 应可按字面量查回登记种类",
+                entry.literal
+            );
+        }
+        // `null` / `true` / `false` 也必须登记（否则补全与高亮生成器会漏）。
+        for literal in ["null", "true", "false"] {
+            assert!(kind_of(literal).is_some(), "`{literal}` 应登记为关键字");
+        }
+    }
 }

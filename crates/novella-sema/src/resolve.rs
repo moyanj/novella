@@ -401,6 +401,7 @@ impl Sema {
                 self.error(module, span, format!("未定义的类型 `{name}`"));
                 return Ty::Unknown;
             };
+            self.record_reference(module, span, &symbol);
             return self.type_from_symbol(module, span, &symbol, name, args, type_env);
         }
 
@@ -436,6 +437,7 @@ impl Sema {
                     self.error(module, span, format!("模块中不存在类型 `{name}`"));
                     return Ty::Unknown;
                 };
+                self.record_reference(module, span, &target_symbol);
                 if !target_symbol.is_importable() {
                     self.error(module, span, format!("类型 `{name}` 不是 `pub`"));
                     return Ty::Unknown;

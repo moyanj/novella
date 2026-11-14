@@ -4,15 +4,17 @@
 //! 1. [`TOKEN_TYPES`]：服务器声明的高亮类别（客户端据此选择主题配色）；
 //! 2. [`token_type_index`]：把 [`TokenKind`] 映射到 legend 下标，
 //!    用穷尽 `match` 保证词法枚举新增变体时编译报错、不会漏配；
-//! 3. [`encode`]：把 token 流编码为 LSP 要求的 delta 整数序列，
-//!    并把 novella 的**字节偏移**换算成 LSP 规定的 **UTF-16 码元偏移**。
+//! 3. [`encode`]：把 token 流编码为 LSP 要求的 delta 整数序列；
+//!    字节偏移 → UTF-16 码元的换算本身由 [`crate::source::SemanticIndex`] 统一提供。
 //!
 //! 说明：当前只做词法级高亮，标识符不参与输出——它的语义角色
 //! （变量 / 类型 / 函数）需要 parser / sema 才能判定，
 //! 词法阶段强行染色反而会误导主题配色。
 
 use lsp_types::{SemanticToken, SemanticTokenType};
-use novella_core::{Span, token::Token};
+use novella_core::token::Token;
+
+use crate::source::SemanticIndex;
 
 /// 服务器使用的语义 token 类别，数组顺序即 legend 下标。
 ///
@@ -81,11 +83,22 @@ pub fn token_type_index(kind: novella_core::token::TokenKind) -> Option<u32> {
 ///
 /// - `tokens` 须按源码顺序排列（`novella_lexer::lexer` 的输出天然满足），
 ///   否则 delta 会出现负数回退；
-/// - 行内偏移一律以 **UTF-16 码元**计：含中文或 emoji 的行若直接用字节偏移，
-///   高亮会整体错位；
+/// - 行内偏移一律以 **UTF-16 码元**计：换算统一交给 [`SemanticIndex`]，
+///   本模块不再自带行表（含中文或 emoji 的行若直接用字节偏移，高亮会整体错位）；
 /// - 跨行 token 会被按行拆成多段（LSP 要求单个语义 token 不跨行）。
+///
+/// 需要多次复用同一份源码的换算表时（如服务器逐请求处理），改用
+/// [`encode_with_index`]，避免重复建表。
 pub fn encode(source: &str, tokens: &[Token]) -> Vec<SemanticToken> {
-    let starts = line_starts(source);
+    encode_with_index(&SemanticIndex::new(source), source, tokens)
+}
+
+/// 用已建好的换算索引编码语义 token。
+pub fn encode_with_index(
+    index: &SemanticIndex,
+    source: &str,
+    tokens: &[Token],
+) -> Vec<SemanticToken> {
     let mut data = Vec::new();
     // delta 基准：上一段 token 的行号与行内 UTF-16 起始列
     let mut prev_line = 0u32;
@@ -95,7 +108,7 @@ pub fn encode(source: &str, tokens: &[Token]) -> Vec<SemanticToken> {
         let Some(token_type) = token_type_index(token.kind) else {
             continue;
         };
-        for (line, start, length) in split_by_line(source, &starts, token.span) {
+        for (line, start, length) in index.segments(source, token.span) {
             let delta_line = line - prev_line;
             // 同一行内 delta 相对上一 token 起点，跨行则为本行绝对列
             let delta_start = if delta_line == 0 {
@@ -116,65 +129,6 @@ pub fn encode(source: &str, tokens: &[Token]) -> Vec<SemanticToken> {
     }
 
     data
-}
-
-/// 把字节区间 `[span.start, span.end)` 按行切分为
-/// `(行号, 行内 UTF-16 起始列, UTF-16 长度)`，行号为 0-based。
-///
-/// 当前词法下（行注释与各类字面量都不含换行）实际只会产出一段；
-/// 多段拆分是为将来引入块注释预留的防御性实现。
-fn split_by_line(source: &str, starts: &[usize], span: Span) -> Vec<(u32, u32, u32)> {
-    let mut segments = Vec::new();
-    let mut offset = span.start;
-
-    while offset < span.end {
-        let line = line_index_of(starts, offset);
-        let line_start = starts[line];
-        let line_end = starts.get(line + 1).copied().unwrap_or(source.len());
-        // 本段止于行尾或 token 结束，二者取小
-        let segment_end = span.end.min(line_end);
-        let text = &source[line_start..line_end];
-        let segment_start = offset - line_start;
-        let segment_stop = segment_end - line_start;
-
-        let column = utf16_len(&text[..segment_start]);
-        let length = utf16_len(&text[segment_start..segment_stop]);
-        if length > 0 {
-            segments.push((line as u32, column as u32, length as u32));
-        }
-
-        // line_end 恒大于 offset（否则 offset 会落在下一行），循环必然推进
-        offset = segment_end;
-    }
-
-    segments
-}
-
-/// 建立行起始字节偏移表（按 `\n` 分行，首行起点为 0）。
-///
-/// 分行语义与 lexer 一致：`\r\n` 中的 `\r` 归上一行。
-fn line_starts(source: &str) -> Vec<usize> {
-    let mut starts = vec![0];
-    for (index, byte) in source.bytes().enumerate() {
-        if byte == b'\n' {
-            starts.push(index + 1);
-        }
-    }
-    starts
-}
-
-/// 定位字节偏移所在的行号（0-based）。
-///
-/// `starts` 严格递增且首元素为 0，二分查找不会越界。
-fn line_index_of(starts: &[usize], offset: usize) -> usize {
-    starts
-        .partition_point(|&start| start <= offset)
-        .saturating_sub(1)
-}
-
-/// 字符串的 UTF-16 码元长度（LSP 偏移单位：BMP 内字符计 1，超出 BMP 计 2）。
-fn utf16_len(text: &str) -> usize {
-    text.encode_utf16().count()
 }
 
 #[cfg(test)]

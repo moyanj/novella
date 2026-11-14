@@ -13,7 +13,7 @@ use std::io;
 use std::path::{Component, Path, PathBuf};
 
 use novella_ast::program::{ImportItem, Program};
-use novella_core::diagnostic::{Diagnostic, DiagnosticLocation};
+use novella_core::diagnostic::{Diagnostic, DiagnosticCode, DiagnosticLocation};
 use novella_core::{Span, token::TokenKind};
 
 /// 模块标识（[`crate::Sema::modules`] 内下标）。
@@ -100,27 +100,46 @@ impl Module {
 
     /// 在指定 span 处追加一条 error 诊断（行列由本模块行索引回推）。
     pub fn error(&mut self, span: Span, message: impl Into<String>) {
+        self.error_with_code(span, DiagnosticCode::SemanticError, message);
+    }
+
+    /// 追加一条带指定错误码的 error 诊断。
+    ///
+    /// 错误码供编辑器做快速修复与稳定匹配（见 [`DiagnosticCode`]）；阶段内能
+    /// 确定归属（名称 / 类型 / 声明 / unsafe）时应显式传入，否则用
+    /// [`DiagnosticCode::SemanticError`]。
+    pub fn error_with_code(
+        &mut self,
+        span: Span,
+        code: DiagnosticCode,
+        message: impl Into<String>,
+    ) {
         let (line, column) = self.lines.locate(span.start);
-        self.diagnostics.push(
-            Diagnostic::error(message).with_location(DiagnosticLocation {
-                file: Some(self.path.display().to_string()),
-                line,
-                column,
-                span: Some(span),
-            }),
-        );
+        self.diagnostics
+            .push(
+                Diagnostic::error(message)
+                    .with_code(code)
+                    .with_location(DiagnosticLocation {
+                        file: Some(self.path.display().to_string()),
+                        line,
+                        column,
+                        span: Some(span),
+                    }),
+            );
     }
 
     /// 在指定 span 处追加一条 warning 诊断。
     pub fn warning(&mut self, span: Span, message: impl Into<String>) {
         let (line, column) = self.lines.locate(span.start);
         self.diagnostics.push(
-            Diagnostic::warning(message).with_location(DiagnosticLocation {
-                file: Some(self.path.display().to_string()),
-                line,
-                column,
-                span: Some(span),
-            }),
+            Diagnostic::warning(message)
+                .with_code(DiagnosticCode::SemanticError)
+                .with_location(DiagnosticLocation {
+                    file: Some(self.path.display().to_string()),
+                    line,
+                    column,
+                    span: Some(span),
+                }),
         );
     }
 }
@@ -144,8 +163,44 @@ pub fn normalize_path(path: &Path) -> PathBuf {
     out
 }
 
+/// 叠加内存缓冲的文件加载器（C2）。
+///
+/// 命中 overlay 的路径直接返回内存文本，其余回落磁盘——供 LSP 把
+/// 「编辑器里打开但未保存的文档」喂给语义分析：打开文档以缓冲为准
+/// （与诊断推送的文本一致），未打开的依赖模块仍从磁盘读。
+///
+/// 键的规范化与模块加载一致（[`module_key`]）：构造与查询两侧都做，
+/// 因此符号链接 / `..` 等写法不会绕过 overlay。
+pub struct OverlayLoader {
+    overlay: HashMap<PathBuf, String>,
+}
+
+impl OverlayLoader {
+    /// 以「路径 → 内存文本」构造（路径在构造时规范化）。
+    pub fn new(overlay: HashMap<PathBuf, String>) -> Self {
+        let overlay = overlay
+            .into_iter()
+            .map(|(path, text)| (module_key(&path), text))
+            .collect();
+        OverlayLoader { overlay }
+    }
+}
+
+impl FileLoader for OverlayLoader {
+    fn read_to_string(&mut self, path: &Path) -> io::Result<String> {
+        if let Some(text) = self.overlay.get(&module_key(path)) {
+            return Ok(text.clone());
+        }
+        std::fs::read_to_string(path)
+    }
+
+    fn exists(&mut self, path: &Path) -> bool {
+        self.overlay.contains_key(&module_key(path)) || path.exists()
+    }
+}
+
 /// 模块唯一键：优先 `fs::canonicalize`（解析符号链接），失败退回词法归一化。
-fn module_key(path: &Path) -> PathBuf {
+pub fn module_key(path: &Path) -> PathBuf {
     std::fs::canonicalize(path).unwrap_or_else(|_| normalize_path(path))
 }
 

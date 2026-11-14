@@ -1,0 +1,49 @@
+{
+    "$schema": "https://raw.githubusercontent.com/martinring/tmlanguage/master/tmlanguage.json",
+    "name": "Novella",
+    "scopeName": "source.novella",
+    "comment": "由 novella-syntax-gen 从 novella-lexer 的 logos 声明生成，请勿手工编辑；重新生成：just gen-syntax",
+    "patterns": [
+        {
+            "include": "#expressions"
+        }
+    ],
+    "repository": {
+        "expressions": {
+            "patterns": [
+        {
+            "name": "comment.line.novella",
+            "match": "(//[^\\r\\n\\u2028\\u2029]*)"
+        },
+        {
+            "name": "string.quoted.novella",
+            "match": "(\"([^\"\\\\\\r\\n]|\\\\.)*\")|('([^'\\\\\\r\\n]|\\\\.)*')|([fF]\"([^\"\\\\\\r\\n]|\\\\.)*\")|([fF]'([^'\\\\\\r\\n]|\\\\.)*')|([rR]\"([^\"\\\\\\r\\n]|\\\\.)*\")|([rR]'([^'\\\\\\r\\n]|\\\\.)*')|([bB]\"([^\"\\\\\\r\\n]|\\\\.)*\")|([bB]'([^'\\\\\\r\\n]|\\\\.)*')"
+        },
+        {
+            "name": "constant.numeric.novella",
+            "match": "(0[xX][0-9a-fA-F][0-9a-fA-F_]*)|(0[oO][0-7][0-7_]*)|(0[bB][01][01_]*)|([0-9][0-9_]*(?:\\.[0-9][0-9_]*)?(?:[eE][+-]?[0-9][0-9_]*)?|\\.[0-9][0-9_]*(?:[eE][+-]?[0-9][0-9_]*)?)"
+        },
+        {
+            "name": "keyword.control.novella",
+            "match": "\\bcontinue\\b|\\bdefault\\b|\\bfinally\\b|\\breturn\\b|\\bwhile\\b|\\bbreak\\b|\\bmatch\\b|\\bcatch\\b|\\bthrow\\b|\\basync\\b|\\bawait\\b|\\byield\\b|\\belse\\b|\\belif\\b|\\bcase\\b|\\bwith\\b|\\bfor\\b|\\band\\b|\\bnot\\b|\\btry\\b|\\bif\\b|\\bin\\b|\\bor\\b"
+        },
+        {
+            "name": "keyword.other.novella",
+            "match": "\\bimport\\b|\\bstatic\\b|\\bstruct\\b|\\bextern\\b|\\bunsafe\\b|\\bconst\\b|\\bclass\\b|\\btrait\\b|\\bmacro\\b|\\bfrom\\b|\\bweak\\b|\\bfunc\\b|\\bthis\\b|\\btype\\b|\\bpub\\b|\\bpri\\b|\\bpkg\\b|\\blet\\b|\\bnew\\b|\\bas\\b|\\bis\\b"
+        },
+        {
+            "name": "constant.language.novella",
+            "match": "\\bfalse\\b|\\bnull\\b|\\btrue\\b"
+        },
+        {
+            "name": "keyword.operator.novella",
+            "match": "!==|<<=|>>=|===|\\+\\+|==|!=|<<|>>|<=|>=|&&|\\|\\||\\?\\?|=>|->|\\*=|/=|%=|\\+=|-=|&=|\\^=|\\|=|--|!|\\]|\\(|\\)|\\{|\\}|;|,|=|\\?|:|\\.|\\+|-|~|\\[|\\*|/|%|<|>|&|\\^|\\||@"
+        },
+        {
+            "name": "variable.other.novella",
+            "match": "[_\\p{L}$][_\\p{L}\\d$]*"
+        }
+            ]
+        }
+    }
+}

@@ -1,7 +1,7 @@
 {
   "name": "novella-language",
   "displayName": "Novella Language",
-  "description": "novella 语言的语法高亮：由薄 LSP 服务器提供词法级语义高亮（semantic tokens）",
+  "description": "novella 语言的编辑器支持：冷启动由生成的 TextMate 语法着色，常驻由 LSP 提供语义高亮",
   "version": "0.1.0",
   "publisher": "moyanj",
   "license": "Apache-2.0",
@@ -28,6 +28,13 @@
           ".nv"
         ],
         "configuration": "./language-configuration.json"
+      }
+    ],
+    "grammars": [
+      {
+        "language": "novella",
+        "scopeName": "source.novella",
+        "path": "./syntaxes/novella.tmLanguage.json"
       }
     ],
     "semanticTokenScopes": [

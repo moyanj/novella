@@ -62,7 +62,7 @@ pub fn build_type_defs(sema: &mut Sema, module: ModuleId) {
                     }
                 }
                 if class.parent.len() > 1 {
-                    sema.error(module, class.span, "多继承暂不支持（仅首个父类生效）");
+                    sema.decl_error(module, class.span, "多继承暂不支持（仅首个父类生效）");
                 }
                 if let Some(TypeDef::Class(def)) =
                     sema.type_defs.get_mut(&(module, class.name.clone()))
@@ -104,7 +104,7 @@ pub fn build_type_defs(sema: &mut Sema, module: ModuleId) {
                 }
                 // struct 无继承（design.md §4.7；parser 保留 heritage，sema 判定）
                 if !struct_item.heritage.is_empty() {
-                    sema.error(module, struct_item.span, "struct 不支持继承");
+                    sema.decl_error(module, struct_item.span, "struct 不支持继承");
                 }
                 if let Some(TypeDef::Struct(def)) =
                     sema.type_defs.get_mut(&(module, struct_item.name.clone()))
@@ -134,7 +134,7 @@ fn check_member_collision(
     span: Span,
 ) {
     if seen.insert(name.to_string(), span).is_some() {
-        sema.error(module, span, format!("重复的成员 `{name}`"));
+        sema.decl_error(module, span, format!("重复的成员 `{name}`"));
     }
 }
 
@@ -150,7 +150,7 @@ fn check_special_method_name(
     }
     if is_class {
         if !CLASS_SPECIAL_METHODS.contains(&method.name.as_str()) {
-            sema.error(
+            sema.decl_error(
                 module,
                 method.span,
                 format!(
@@ -161,7 +161,7 @@ fn check_special_method_name(
             );
         }
     } else {
-        sema.error(
+        sema.decl_error(
             module,
             method.span,
             format!("struct 不识别 `__` 前缀特殊方法（`{}`）", method.name),
@@ -182,7 +182,7 @@ fn build_field(
         Some(ty) => sema.resolve_type(module, scope, ty, env),
         None => {
             if field.initializer.is_none() {
-                sema.error(
+                sema.decl_error(
                     module,
                     field.span,
                     format!("字段 `{}` 需要类型标注或默认值", field.name),
@@ -271,7 +271,7 @@ fn build_function_sig(
         if let Some(function_type) = &function.r#type {
             for param in &function_type.params {
                 if param.ty.is_none() {
-                    sema.error(
+                    sema.decl_error(
                         module,
                         param.span,
                         format!("extern 函数参数 `{}` 必须显式标注类型", param.name),
@@ -281,15 +281,15 @@ fn build_function_sig(
         }
         // E3：extern 不得有函数体（文法已强制 `;` 结尾，防御性复查）
         if function.block.is_some() {
-            sema.error(module, function.span, "extern 函数不能有函数体");
+            sema.decl_error(module, function.span, "extern 函数不能有函数体");
         }
         // E4：extern 不支持泛型（FFI 边界无单态化）
         if sig.type_param_count > 0 {
-            sema.error(module, function.span, "extern 函数暂不支持泛型参数");
+            sema.decl_error(module, function.span, "extern 函数暂不支持泛型参数");
         }
         // E5：入口必须有函数体
         if function.name == "main" {
-            sema.error(module, function.span, "`main` 不能声明为 extern");
+            sema.decl_error(module, function.span, "`main` 不能声明为 extern");
         }
     }
 
@@ -308,7 +308,7 @@ fn check_duplicate_params(
     let mut seen: HashMap<&str, Span> = HashMap::new();
     for param in params {
         if seen.insert(param.name.as_str(), param.span).is_some() {
-            sema.error(module, param.span, format!("重复的形参 `{}`", param.name));
+            sema.decl_error(module, param.span, format!("重复的形参 `{}`", param.name));
         }
     }
 }
@@ -341,7 +341,7 @@ pub fn resolve_class_parents(sema: &mut Sema) {
                 }
             }
             Ty::Unknown => {} // 诊断已报
-            other => sema.error(
+            other => sema.decl_error(
                 module,
                 span,
                 format!("父类必须是 class 类型，实为 `{other}`"),
@@ -362,7 +362,7 @@ pub fn resolve_class_parents(sema: &mut Sema) {
             if !visited.insert(current.clone()) {
                 // 类定义节点 span 未入注册表，环诊断退化到文件头
                 let span = Span { start: 0, end: 0 };
-                sema.error(key.0, span, format!("class `{}` 的继承链存在循环", key.1));
+                sema.decl_error(key.0, span, format!("class `{}` 的继承链存在循环", key.1));
                 break;
             }
             match sema.type_defs.get(&current) {
@@ -442,7 +442,7 @@ fn check_main_entry(sema: &mut Sema, items: &[Item]) {
         _ => None,
     });
     let Some(main) = main else {
-        sema.error(
+        sema.decl_error(
             0,
             Span { start: 0, end: 0 },
             "缺少程序入口：顶层 `func main`",
@@ -454,15 +454,15 @@ fn check_main_entry(sema: &mut Sema, items: &[Item]) {
     }
     if let Some(function_type) = &main.r#type {
         if !function_type.params.is_empty() {
-            sema.error(0, main.span, "`main` 不能接受参数");
+            sema.decl_error(0, main.span, "`main` 不能接受参数");
         }
         if !function_type.type_parameters.is_empty() {
-            sema.error(0, main.span, "`main` 不能带泛型参数");
+            sema.decl_error(0, main.span, "`main` 不能带泛型参数");
         }
         let global_scope = sema.modules[0].global_scope;
         let ret = sema.resolve_type(0, global_scope, &function_type.return_type, &HashMap::new());
         if !matches!(ret, Ty::Void | Ty::Int(_)) {
-            sema.error(
+            sema.decl_error(
                 0,
                 main.span,
                 format!("`main` 的返回类型必须是 `void` 或 `int`，实为 `{ret}`"),
@@ -470,6 +470,6 @@ fn check_main_entry(sema: &mut Sema, items: &[Item]) {
         }
     }
     if main.is_async {
-        sema.error(0, main.span, "`main` 不能声明为 async");
+        sema.decl_error(0, main.span, "`main` 不能声明为 async");
     }
 }

@@ -62,6 +62,62 @@ pub enum PredefinedType {
     Isize,
 }
 
+impl PredefinedType {
+    /// 全部预定义类型（源码拼写顺序，与枚举声明一致）。
+    ///
+    /// 供补全、文档等需要枚举「全部基础类型」的消费者使用；新增变体时
+    /// 编译器不会强制此处同步，但 `spellings_cover_enum` 测试会按数量比对。
+    pub const ALL: [PredefinedType; 19] = [
+        PredefinedType::Null,
+        PredefinedType::Boolean,
+        PredefinedType::Int,
+        PredefinedType::Float,
+        PredefinedType::Void,
+        PredefinedType::U8,
+        PredefinedType::U16,
+        PredefinedType::U32,
+        PredefinedType::U64,
+        PredefinedType::I8,
+        PredefinedType::I16,
+        PredefinedType::I32,
+        PredefinedType::I64,
+        PredefinedType::F8,
+        PredefinedType::F16,
+        PredefinedType::F32,
+        PredefinedType::F64,
+        PredefinedType::Usize,
+        PredefinedType::Isize,
+    ];
+
+    /// 该类型在源码中的拼写（小写关键字形）。
+    ///
+    /// 与 `novella_core::keywords::KEYWORDS` 共用同一批字面量，是补全/高亮的
+    /// 事实来源；新增预定义类型必须同时进关键字表，否则词法无法识别。
+    pub fn spelling(self) -> &'static str {
+        match self {
+            PredefinedType::Null => "null",
+            PredefinedType::Boolean => "boolean",
+            PredefinedType::Int => "int",
+            PredefinedType::Float => "float",
+            PredefinedType::Void => "void",
+            PredefinedType::U8 => "u8",
+            PredefinedType::U16 => "u16",
+            PredefinedType::U32 => "u32",
+            PredefinedType::U64 => "u64",
+            PredefinedType::I8 => "i8",
+            PredefinedType::I16 => "i16",
+            PredefinedType::I32 => "i32",
+            PredefinedType::I64 => "i64",
+            PredefinedType::F8 => "f8",
+            PredefinedType::F16 => "f16",
+            PredefinedType::F32 => "f32",
+            PredefinedType::F64 => "f64",
+            PredefinedType::Usize => "usize",
+            PredefinedType::Isize => "isize",
+        }
+    }
+}
+
 /// 函数参数：`name`、`name: TypeExpr` 或带默认值（对应 `parameter`）
 ///
 /// 文法的 `parameter: identifier typeAnnotation? (Assign expression)?`：
@@ -149,4 +205,25 @@ pub enum TypeExpr {
         /// 源码区间
         span: Span,
     },
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// 预定义类型的拼写表必须覆盖枚举全部变体（`ALL` 数组长度与拼写无遗漏）。
+    ///
+    /// 注意：除 `null` 外，类型名在词法层都是普通 `Identifier`（见
+    /// `crates/novella-parser/src/types.rs` 模块文档），因此不能断言它们在关键字表里。
+    #[test]
+    fn spellings_cover_enum() {
+        let spellings = PredefinedType::ALL.map(PredefinedType::spelling);
+        assert_eq!(spellings.len(), 19);
+        let mut unique = spellings.to_vec();
+        unique.sort_unstable();
+        unique.dedup();
+        assert_eq!(unique.len(), spellings.len(), "拼写不得重复");
+        assert_eq!(PredefinedType::Null.spelling(), "null");
+        assert_eq!(PredefinedType::I32.spelling(), "i32");
+    }
 }

@@ -268,8 +268,11 @@ name = "novella-lsp"
 version = "0.1.0"
 dependencies = [
  "lsp-types",
+ "novella-ast",
  "novella-core",
  "novella-lexer",
+ "novella-parser",
+ "novella-sema",
  "serde",
  "serde_json",
 ]
@@ -291,6 +294,14 @@ dependencies = [
  "novella-core",
  "novella-lexer",
  "novella-parser",
+]
+
+[[package]]
+name = "novella-syntax-gen"
+version = "0.1.0"
+dependencies = [
+ "novella-core",
+ "serde_json",
 ]
 
 [[package]]

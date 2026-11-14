@@ -9,7 +9,7 @@ use novella_ast::{
 };
 use novella_core::{
     Span,
-    diagnostic::{Diagnostic, DiagnosticLocation},
+    diagnostic::{Diagnostic, DiagnosticCode, DiagnosticLocation},
     token::{Token, TokenKind},
 };
 
@@ -247,7 +247,7 @@ impl Parser {
 
     /// 在当前 token 处记录一条错误诊断（不移动游标）；流结束时诊断无位置。
     fn error_here(&mut self, message: impl Into<String>) {
-        let mut diag = Diagnostic::error(message);
+        let mut diag = Diagnostic::error(message).with_code(DiagnosticCode::SyntaxError);
         if let Some(token) = self.peek() {
             diag = diag.with_location(DiagnosticLocation {
                 file: None,
@@ -269,12 +269,14 @@ impl Parser {
             .map(|t| (t.line, t.column))
             .unwrap_or((0, 0));
         self.diagnostics.push(
-            Diagnostic::error(message).with_location(DiagnosticLocation {
-                file: None,
-                line,
-                column,
-                span: Some(span),
-            }),
+            Diagnostic::error(message)
+                .with_code(DiagnosticCode::SyntaxError)
+                .with_location(DiagnosticLocation {
+                    file: None,
+                    line,
+                    column,
+                    span: Some(span),
+                }),
         );
     }
 

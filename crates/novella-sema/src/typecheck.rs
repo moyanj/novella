@@ -196,7 +196,7 @@ pub fn check_field_initializer(
             }
         }
     } else if !sema.is_assignable(&expected, &value_ty) {
-        sema.error(
+        sema.type_error(
             module,
             field.span,
             format!(
@@ -229,11 +229,11 @@ fn check_stmt(sema: &mut Sema, ctx: &mut BodyCtx, stmt: &Statement) {
         Statement::Return { value, span } => {
             let expected_return = ctx.expected_return.clone();
             match expected_return {
-                None => sema.error(ctx.module, *span, "`return` 只能出现在函数内"),
+                None => sema.type_error(ctx.module, *span, "`return` 只能出现在函数内"),
                 Some(expected) => match value {
                     None => {
                         if !matches!(expected, Ty::Void) && !expected.is_opaque() {
-                            sema.error(
+                            sema.type_error(
                                 ctx.module,
                                 *span,
                                 format!("函数返回类型为 `{expected}`，不能只写 `return;`"),
@@ -243,7 +243,7 @@ fn check_stmt(sema: &mut Sema, ctx: &mut BodyCtx, stmt: &Statement) {
                     Some(value) => {
                         let value_ty = check_expr(sema, ctx, value);
                         if !sema.is_assignable(&expected, &value_ty) {
-                            sema.error(
+                            sema.type_error(
                                 ctx.module,
                                 value.span(),
                                 format!("返回类型 `{value_ty}` 与函数声明的 `{expected}` 不兼容"),
@@ -255,12 +255,12 @@ fn check_stmt(sema: &mut Sema, ctx: &mut BodyCtx, stmt: &Statement) {
         }
         Statement::Break { span } => {
             if !ctx.in_loop {
-                sema.error(ctx.module, *span, "`break` 只能出现在循环内");
+                sema.type_error(ctx.module, *span, "`break` 只能出现在循环内");
             }
         }
         Statement::Continue { span } => {
             if !ctx.in_loop {
-                sema.error(ctx.module, *span, "`continue` 只能出现在循环内");
+                sema.type_error(ctx.module, *span, "`continue` 只能出现在循环内");
             }
         }
         Statement::Throw { expr, .. } => {
@@ -268,7 +268,7 @@ fn check_stmt(sema: &mut Sema, ctx: &mut BodyCtx, stmt: &Statement) {
             // design.md §9.1.1：throw 的操作数必须是 class 引用
             // （Exception 子类校验待 std:exception 落地后收紧）
             if !matches!(ty, Ty::Class(..)) && !ty.is_opaque() {
-                sema.error(
+                sema.type_error(
                     ctx.module,
                     expr.span(),
                     format!("`throw` 的操作数必须是 class 引用，实为 `{ty}`"),
@@ -327,7 +327,7 @@ fn check_stmt(sema: &mut Sema, ctx: &mut BodyCtx, stmt: &Statement) {
                         Ty::Array(element) => (**element).clone(),
                         _ if iter_ty.is_opaque() => Ty::Unknown,
                         _ => {
-                            sema.error(
+                            sema.type_error(
                                 ctx.module,
                                 cond.right.span(),
                                 format!("`for ... in` 只能遍历数组，实为 `{iter_ty}`"),
@@ -369,7 +369,7 @@ fn check_stmt(sema: &mut Sema, ctx: &mut BodyCtx, stmt: &Statement) {
                     Some(ty) => {
                         let ty = sema.resolve_type(ctx.module, ctx.scope, ty, &ctx.type_env);
                         if !matches!(ty, Ty::Class(..)) && !ty.is_opaque() {
-                            sema.error(
+                            sema.type_error(
                                 ctx.module,
                                 ty_span(ty_expr_of(catch)),
                                 format!("catch 类型必须是 class，实为 `{ty}`"),
@@ -404,7 +404,7 @@ fn check_stmt(sema: &mut Sema, ctx: &mut BodyCtx, stmt: &Statement) {
                     Some(ty) => {
                         let annotated = sema.resolve_type(ctx.module, ctx.scope, ty, &ctx.type_env);
                         if !sema.is_assignable(&annotated, &resource_ty) {
-                            sema.error(
+                            sema.type_error(
                                 ctx.module,
                                 binding.span,
                                 format!(
@@ -508,7 +508,7 @@ fn binary_op_text(op: BinaryOp) -> &'static str {
 fn expect_boolean(sema: &mut Sema, ctx: &mut BodyCtx, expr: &Expression, what: &str) {
     let ty = check_expr(sema, ctx, expr);
     if !matches!(ty, Ty::Boolean) && !ty.is_opaque() {
-        sema.error(
+        sema.type_error(
             ctx.module,
             expr.span(),
             format!("{what}必须是 `boolean`，实为 `{ty}`"),
@@ -535,7 +535,7 @@ fn check_variable_decl(sema: &mut Sema, ctx: &mut BodyCtx, decl: &VariableStmt) 
     let bound_ty = match (&annotated_ty, &value_ty) {
         (Some(annotated), Some(value_ty)) => {
             if !sema.is_assignable(annotated, value_ty) {
-                sema.error(
+                sema.type_error(
                     ctx.module,
                     decl.span,
                     format!("初始化类型 `{value_ty}` 与标注 `{annotated}` 不兼容"),
@@ -545,13 +545,13 @@ fn check_variable_decl(sema: &mut Sema, ctx: &mut BodyCtx, decl: &VariableStmt) 
         }
         (Some(annotated), None) => {
             if is_const {
-                sema.error(ctx.module, decl.span, "`const` 声明必须初始化");
+                sema.type_error(ctx.module, decl.span, "`const` 声明必须初始化");
             }
             annotated.clone()
         }
         (None, Some(value_ty)) => {
             if matches!(value_ty, Ty::Null) {
-                sema.error(
+                sema.type_error(
                     ctx.module,
                     decl.span,
                     "无法用 `null` 推断变量类型，请添加类型标注",
@@ -562,7 +562,7 @@ fn check_variable_decl(sema: &mut Sema, ctx: &mut BodyCtx, decl: &VariableStmt) 
             }
         }
         (None, None) => {
-            sema.error(
+            sema.type_error(
                 ctx.module,
                 decl.span,
                 "变量声明需要类型标注或初始值（无法推断类型）",
@@ -616,12 +616,12 @@ fn bind_pattern_impl(
                     elements_ty.clone()
                 }
                 Ty::Tuple(_) => {
-                    sema.error(ctx.module, *span, "元组解构的元素个数不匹配");
+                    sema.type_error(ctx.module, *span, "元组解构的元素个数不匹配");
                     vec![Ty::Unknown; elements.len()]
                 }
                 _ if ty.is_opaque() => vec![Ty::Unknown; elements.len()],
                 _ => {
-                    sema.error(ctx.module, *span, format!("不能用 `{ty}` 做元组解构"));
+                    sema.type_error(ctx.module, *span, format!("不能用 `{ty}` 做元组解构"));
                     vec![Ty::Unknown; elements.len()]
                 }
             };
@@ -642,7 +642,7 @@ fn define_local(sema: &mut Sema, ctx: &BodyCtx, name: &str, kind: SymbolKind, sp
         module: ctx.module,
     };
     if sema.scopes.define(ctx.scope, symbol).is_err() {
-        sema.error(ctx.module, span, format!("重复定义 `{name}`"));
+        sema.type_error(ctx.module, span, format!("重复定义 `{name}`"));
     }
 }
 
@@ -674,14 +674,14 @@ pub(crate) fn check_expr(sema: &mut Sema, ctx: &mut BodyCtx, expr: &Expression) 
         Expression::This { span } => match &ctx.this_ty {
             Some(ty) => ty.clone(),
             None => {
-                sema.error(ctx.module, *span, "`this` 只能在方法内使用");
+                sema.type_error(ctx.module, *span, "`this` 只能在方法内使用");
                 Ty::Unknown
             }
         },
         Expression::Unary { op, operand, span } => check_unary(sema, ctx, *op, operand, *span),
         Expression::Await { expr, span } => {
             if !ctx.in_async {
-                sema.error(ctx.module, *span, "`await` 只能在 async 函数内使用");
+                sema.type_error(ctx.module, *span, "`await` 只能在 async 函数内使用");
             }
             // Promise 类型属后续期，本期透传操作数类型
             check_expr(sema, ctx, expr)
@@ -713,7 +713,7 @@ pub(crate) fn check_expr(sema: &mut Sema, ctx: &mut BodyCtx, expr: &Expression) 
             let then_ty = check_expr(sema, ctx, then_expr);
             let else_ty = check_expr(sema, ctx, else_expr);
             unify_types(&then_ty, &else_ty).unwrap_or_else(|| {
-                sema.error(
+                sema.type_error(
                     ctx.module,
                     *span,
                     format!("三元表达式分支类型 `{then_ty}` 与 `{else_ty}` 不一致"),
@@ -768,7 +768,7 @@ fn check_literal(sema: &mut Sema, ctx: &mut BodyCtx, value: &Literal, span: Span
             Ty::String
         }
         Literal::Number(raw) => classify_number_literal(raw).unwrap_or_else(|| {
-            sema.error(ctx.module, span, format!("非法数字字面量 `{raw}`"));
+            sema.type_error(ctx.module, span, format!("非法数字字面量 `{raw}`"));
             Ty::Unknown
         }),
     }
@@ -821,7 +821,7 @@ fn check_fstring(sema: &mut Sema, ctx: &mut BodyCtx, raw: &str, span: Span) {
                     j += 1;
                 }
                 if j >= bytes.len() {
-                    sema.error(ctx.module, span, "f-string 插值缺少配对的 `}`");
+                    sema.type_error(ctx.module, span, "f-string 插值缺少配对的 `}`");
                     return;
                 }
                 let text = &inner[i + 1..j];
@@ -841,12 +841,12 @@ fn check_fstring(sema: &mut Sema, ctx: &mut BodyCtx, raw: &str, span: Span) {
 fn check_fstring_interpolation(sema: &mut Sema, ctx: &mut BodyCtx, text: &str, span: Span) {
     let text = text.trim();
     if text.is_empty() {
-        sema.error(ctx.module, span, "f-string 插值不能为空");
+        sema.type_error(ctx.module, span, "f-string 插值不能为空");
         return;
     }
     let lex_result = novella_lexer::lexer(text);
     if !lex_result.errors.is_empty() {
-        sema.error(ctx.module, span, "f-string 插值存在词法错误");
+        sema.type_error(ctx.module, span, "f-string 插值存在词法错误");
         return;
     }
     let tokens: Vec<_> = lex_result
@@ -857,7 +857,7 @@ fn check_fstring_interpolation(sema: &mut Sema, ctx: &mut BodyCtx, text: &str, s
     let mut parser = novella_parser::Parser::new(tokens);
     let program = parser.parse();
     if !program.diagnostics.is_empty() {
-        sema.error(ctx.module, span, "f-string 插值不是合法表达式");
+        sema.type_error(ctx.module, span, "f-string 插值不是合法表达式");
         return;
     }
     // 只接受单个表达式语句
@@ -865,12 +865,12 @@ fn check_fstring_interpolation(sema: &mut Sema, ctx: &mut BodyCtx, text: &str, s
         [novella_ast::program::Item::Statement(stmt)] => match &**stmt {
             Statement::Expression(expr) => expr.clone(),
             _ => {
-                sema.error(ctx.module, span, "f-string 插值必须是单个表达式");
+                sema.type_error(ctx.module, span, "f-string 插值必须是单个表达式");
                 return;
             }
         },
         _ => {
-            sema.error(ctx.module, span, "f-string 插值必须是单个表达式");
+            sema.type_error(ctx.module, span, "f-string 插值必须是单个表达式");
             return;
         }
     };
@@ -910,9 +910,10 @@ fn adjust_diagnostics(
 /// 标识符：查作用域链，取符号的值类型。
 fn check_identifier(sema: &mut Sema, ctx: &mut BodyCtx, name: &str, span: Span) -> Ty {
     let Some(symbol) = sema.scopes.lookup(ctx.scope, name).cloned() else {
-        sema.error(ctx.module, span, format!("未定义的标识符 `{name}`"));
+        sema.type_error(ctx.module, span, format!("未定义的标识符 `{name}`"));
         return Ty::Error;
     };
+    sema.record_reference(ctx.module, span, &symbol);
     value_type_of_symbol(sema, ctx, symbol, name, span)
 }
 
@@ -941,7 +942,7 @@ fn value_type_of_symbol(
             None => Ty::External, // std 外部符号
         },
         SymbolKind::NamespaceImport { .. } => {
-            sema.error(
+            sema.type_error(
                 ctx.module,
                 span,
                 format!("命名空间 `{name}` 不能作为值使用，请用 `{name}.成员`"),
@@ -949,7 +950,7 @@ fn value_type_of_symbol(
             Ty::Unknown
         }
         SymbolKind::Type => {
-            sema.error(ctx.module, span, format!("类型 `{name}` 不能作为值使用"));
+            sema.type_error(ctx.module, span, format!("类型 `{name}` 不能作为值使用"));
             Ty::Unknown
         }
     }
@@ -1041,7 +1042,7 @@ fn check_array_literal(
     span: Span,
 ) -> Ty {
     if elements.is_empty() {
-        sema.error(
+        sema.type_error(
             ctx.module,
             span,
             "空数组字面量无法推断元素类型，请显式写出元素或改用类型标注",
@@ -1054,7 +1055,7 @@ fn check_array_literal(
         element_ty = match unify_types(&element_ty, &ty) {
             Some(unified) => unified,
             None => {
-                sema.error(
+                sema.type_error(
                     ctx.module,
                     element.span(),
                     format!("数组元素类型 `{ty}` 与首个元素 `{element_ty}` 不一致"),
@@ -1075,7 +1076,7 @@ fn check_object_literal(
     let mut seen = HashSet::new();
     for property in properties {
         if !seen.insert(property.name.clone()) {
-            sema.error(
+            sema.type_error(
                 ctx.module,
                 property.span,
                 format!("对象字面量的键 `{}` 重复", property.name),
@@ -1088,7 +1089,7 @@ fn check_object_literal(
             None => {
                 // 简写 {b} ≡ {b: b}：校验标识符存在且是值
                 if sema.scopes.lookup(ctx.scope, &property.name).is_none() {
-                    sema.error(
+                    sema.type_error(
                         ctx.module,
                         property.span,
                         format!("对象简写键 `{}` 没有可展开的同名变量", property.name),
@@ -1116,7 +1117,7 @@ fn check_unary(
             } else if operand_ty.is_opaque() {
                 Ty::Unknown
             } else {
-                sema.error(
+                sema.type_error(
                     ctx.module,
                     span,
                     format!(
@@ -1129,7 +1130,7 @@ fn check_unary(
         }
         UnaryOp::Not => {
             if !matches!(operand_ty, Ty::Boolean) && !operand_ty.is_opaque() {
-                sema.error(
+                sema.type_error(
                     ctx.module,
                     span,
                     format!("`not` 只能用于 `boolean`，实为 `{operand_ty}`"),
@@ -1143,7 +1144,7 @@ fn check_unary(
             } else if operand_ty.is_opaque() {
                 Ty::Unknown
             } else {
-                sema.error(
+                sema.type_error(
                     ctx.module,
                     span,
                     format!("`~` 只能用于整数类型，实为 `{operand_ty}`"),
@@ -1153,14 +1154,14 @@ fn check_unary(
         }
         UnaryOp::PostIncrement | UnaryOp::PostDecrement => {
             if !is_lvalue(sema, ctx, operand) {
-                sema.error(ctx.module, operand.span(), "自增/自减需要可写的左值");
+                sema.type_error(ctx.module, operand.span(), "自增/自减需要可写的左值");
             }
             if operand_ty.is_numeric() {
                 concrete(&operand_ty)
             } else if operand_ty.is_opaque() {
                 Ty::Unknown
             } else {
-                sema.error(
+                sema.type_error(
                     ctx.module,
                     span,
                     format!("自增/自减只能用于数值类型，实为 `{operand_ty}`"),
@@ -1172,7 +1173,7 @@ fn check_unary(
             // 取址是安全操作（design.md §6），但需要左值；
             // 操作数类型未知时错误已报过，跳过左值检查避免级联
             if !operand_ty.is_opaque() && !is_lvalue(sema, ctx, operand) {
-                sema.error(ctx.module, operand.span(), "`&` 取址需要左值");
+                sema.type_error(ctx.module, operand.span(), "`&` 取址需要左值");
             }
             Ty::Pointer(Box::new(operand_ty))
         }
@@ -1182,12 +1183,12 @@ fn check_unary(
             match operand_ty {
                 Ty::Pointer(inner) => *inner,
                 Ty::Null => {
-                    sema.error(ctx.module, span, "不能解引用 `null` 字面量");
+                    sema.type_error(ctx.module, span, "不能解引用 `null` 字面量");
                     Ty::Unknown
                 }
                 ty if ty.is_opaque() => Ty::Unknown,
                 ty => {
-                    sema.error(ctx.module, span, format!("只能解引用指针，实为 `{ty}`"));
+                    sema.type_error(ctx.module, span, format!("只能解引用指针，实为 `{ty}`"));
                     Ty::Unknown
                 }
             }
@@ -1198,7 +1199,7 @@ fn check_unary(
 /// S10：指针类操作需要 `unsafe {}`。
 fn require_unsafe(sema: &mut Sema, ctx: &BodyCtx, span: Span, what: &str) {
     if !ctx.in_unsafe {
-        sema.error(
+        sema.unsafe_error(
             ctx.module,
             span,
             format!("{what}是不安全操作，需要 `unsafe {{ }}` 块"),
@@ -1235,7 +1236,7 @@ fn check_binary(
     match op {
         BinaryOp::LogicalAnd | BinaryOp::LogicalOr => {
             if !matches!(lhs, Ty::Boolean) || !matches!(rhs, Ty::Boolean) {
-                sema.error(
+                sema.type_error(
                     ctx.module,
                     span,
                     format!(
@@ -1248,7 +1249,7 @@ fn check_binary(
         }
         BinaryOp::NullCoalesce => {
             if !lhs.is_nullable() {
-                sema.error(
+                sema.type_error(
                     ctx.module,
                     left.span(),
                     format!("`??` 的左操作数必须可空，实为 `{lhs}`"),
@@ -1269,7 +1270,7 @@ fn check_binary(
             // §8.5：struct 不允许 ==
             for (side, ty) in [("左", &lhs), ("右", &rhs)] {
                 if matches!(ty, Ty::Struct(..)) {
-                    sema.error(
+                    sema.type_error(
                         ctx.module,
                         span,
                         format!("struct 类型不支持 `==`/`!=` 比较（{side}操作数为 `{ty}`）"),
@@ -1277,7 +1278,7 @@ fn check_binary(
                 }
             }
             if !comparable(&lhs, &rhs) {
-                sema.error(ctx.module, span, format!("`{lhs}` 与 `{rhs}` 不可比较"));
+                sema.type_error(ctx.module, span, format!("`{lhs}` 与 `{rhs}` 不可比较"));
             }
             Ty::Boolean
         }
@@ -1288,7 +1289,7 @@ fn check_binary(
             let ok = (lhs.is_numeric() && rhs.is_numeric() && unify_numeric(&lhs, &rhs).is_some())
                 || (matches!(lhs, Ty::String) && matches!(rhs, Ty::String));
             if !ok {
-                sema.error(
+                sema.type_error(
                     ctx.module,
                     span,
                     format!(
@@ -1311,11 +1312,11 @@ fn check_binary(
         BinaryOp::Modulus => match unify_numeric(&lhs, &rhs) {
             Some(ty) if ty.is_integer() => ty,
             Some(_) => {
-                sema.error(ctx.module, span, "`%` 只能用于整数类型");
+                sema.type_error(ctx.module, span, "`%` 只能用于整数类型");
                 Ty::Unknown
             }
             None => {
-                sema.error(
+                sema.type_error(
                     ctx.module,
                     span,
                     format!("`%` 的操作数类型不兼容（`{lhs}` 与 `{rhs}`）"),
@@ -1328,7 +1329,7 @@ fn check_binary(
                 match unify_numeric(&lhs, &rhs) {
                     Some(ty) if ty.is_integer() => ty,
                     _ => {
-                        sema.error(
+                        sema.type_error(
                             ctx.module,
                             span,
                             format!(
@@ -1340,7 +1341,7 @@ fn check_binary(
                     }
                 }
             } else {
-                sema.error(
+                sema.type_error(
                     ctx.module,
                     span,
                     format!(
@@ -1353,7 +1354,7 @@ fn check_binary(
         }
         BinaryOp::LeftShift | BinaryOp::RightShift => {
             if !lhs.is_integer() || !rhs.is_integer() {
-                sema.error(
+                sema.type_error(
                     ctx.module,
                     span,
                     format!(
@@ -1405,7 +1406,7 @@ fn check_arithmetic(
     match unify_numeric(lhs, rhs) {
         Some(ty) => ty,
         None => {
-            sema.error(
+            sema.type_error(
                 ctx.module,
                 span,
                 format!(
@@ -1503,7 +1504,7 @@ fn check_cast(
         false
     };
     if !ok {
-        sema.error(
+        sema.type_error(
             ctx.module,
             span,
             format!("无法把 `{source}` 转换为 `{target}`"),
@@ -1521,9 +1522,14 @@ fn check_struct_init(
     span: Span,
 ) -> Ty {
     let struct_key = match type_key_of_name(sema, ctx.scope, name) {
-        Some(key) => key,
+        Some(key) => {
+            if let Some(symbol) = sema.scopes.lookup(ctx.scope, name).cloned() {
+                sema.record_reference(ctx.module, span, &symbol);
+            }
+            key
+        }
         None if sema.scopes.lookup(ctx.scope, name).is_some() => {
-            sema.error(
+            sema.type_error(
                 ctx.module,
                 span,
                 format!("`{name}` 不是类型，不能用于初始化"),
@@ -1531,7 +1537,7 @@ fn check_struct_init(
             return Ty::Unknown;
         }
         None => {
-            sema.error(ctx.module, span, format!("未定义的类型 `{name}`"));
+            sema.type_error(ctx.module, span, format!("未定义的类型 `{name}`"));
             return Ty::Error;
         }
     };
@@ -1541,7 +1547,7 @@ fn check_struct_init(
             let mut seen = HashSet::new();
             for property in properties {
                 if !seen.insert(property.name.clone()) {
-                    sema.error(
+                    sema.type_error(
                         ctx.module,
                         property.span,
                         format!("字段 `{}` 重复初始化", property.name),
@@ -1549,7 +1555,7 @@ fn check_struct_init(
                     continue;
                 }
                 let Some(field_def) = def.fields.iter().find(|f| f.name == property.name) else {
-                    sema.error(
+                    sema.type_error(
                         ctx.module,
                         property.span,
                         format!("struct `{name}` 没有字段 `{}`", property.name),
@@ -1564,7 +1570,7 @@ fn check_struct_init(
                     }
                 };
                 if !sema.is_assignable(&field_def.ty, &value_ty) {
-                    sema.error(
+                    sema.type_error(
                         ctx.module,
                         property.span,
                         format!(
@@ -1577,7 +1583,7 @@ fn check_struct_init(
             // 缺失字段（无默认值的必须提供）
             for field_def in &def.fields {
                 if !field_def.has_default && !seen.contains(&field_def.name) {
-                    sema.error(
+                    sema.type_error(
                         ctx.module,
                         span,
                         format!("struct `{name}` 的字段 `{}` 未初始化", field_def.name),
@@ -1587,7 +1593,7 @@ fn check_struct_init(
             Ty::Struct(struct_key.0, struct_key.1)
         }
         Some(TypeDef::Class(_)) => {
-            sema.error(
+            sema.type_error(
                 ctx.module,
                 span,
                 format!("class `{name}` 不能用 `{{...}}` 初始化，请用 `new {name}(...)`"),
@@ -1595,7 +1601,7 @@ fn check_struct_init(
             Ty::Unknown
         }
         Some(_) => {
-            sema.error(ctx.module, span, format!("`{name}` 不是 struct/class 类型"));
+            sema.type_error(ctx.module, span, format!("`{name}` 不是 struct/class 类型"));
             Ty::Error
         }
         None => Ty::Unknown, // 语法失败的模块，注册阶段已报过
@@ -1617,7 +1623,7 @@ fn check_assignment(
     match op {
         AssignOp::Assign => {
             if !sema.is_assignable(&target_ty, &value_ty) {
-                sema.error(
+                sema.type_error(
                     ctx.module,
                     span,
                     format!("不能把 `{value_ty}` 赋给 `{target_ty}`"),
@@ -1628,7 +1634,7 @@ fn check_assignment(
             // 复合赋值 ≡ target = target <op> value，结果须能赋回
             let result_ty = check_arithmetic_compound(sema, ctx, op, &target_ty, &value_ty, span);
             if !result_ty.is_opaque() && !sema.is_assignable(&target_ty, &result_ty) {
-                sema.error(
+                sema.type_error(
                     ctx.module,
                     span,
                     format!("复合赋值结果 `{result_ty}` 不能赋回 `{target_ty}`"),
@@ -1724,7 +1730,7 @@ fn check_lvalue_assignment(sema: &mut Sema, ctx: &mut BodyCtx, target: &Expressi
                 kind: SymbolKind::Variable { is_const: true, .. },
                 ..
             }) => {
-                sema.error(
+                sema.type_error(
                     ctx.module,
                     *span,
                     format!("不能给 `const` 变量 `{name}` 赋值"),
@@ -1735,25 +1741,25 @@ fn check_lvalue_assignment(sema: &mut Sema, ctx: &mut BodyCtx, target: &Expressi
                 kind: SymbolKind::NamedImport { .. },
                 ..
             }) => {
-                sema.error(ctx.module, *span, format!("导入的 `{name}` 是只读的"));
+                sema.type_error(ctx.module, *span, format!("导入的 `{name}` 是只读的"));
                 return;
             }
             Some(Symbol {
                 kind: SymbolKind::Function { .. },
                 ..
             }) => {
-                sema.error(ctx.module, *span, format!("不能给函数 `{name}` 赋值"));
+                sema.type_error(ctx.module, *span, format!("不能给函数 `{name}` 赋值"));
                 return;
             }
             _ => {}
         }
     }
     if let Expression::This { span, .. } = target {
-        sema.error(ctx.module, *span, "不能给 `this` 赋值");
+        sema.type_error(ctx.module, *span, "不能给 `this` 赋值");
         return;
     }
     if !is_lvalue(sema, ctx, target) {
-        sema.error(ctx.module, target.span(), "赋值目标不是可写的左值");
+        sema.type_error(ctx.module, target.span(), "赋值目标不是可写的左值");
     }
 }
 
@@ -1777,7 +1783,7 @@ fn check_member_access(
             Some(IdentTarget::Namespace(NsTarget::Module(target_module))) => {
                 return match sema.global_scope_symbol(target_module, name) {
                     None => {
-                        sema.error(
+                        sema.type_error(
                             ctx.module,
                             span,
                             format!("模块 `{target_name}` 中没有 `{name}`"),
@@ -1786,12 +1792,13 @@ fn check_member_access(
                     }
                     Some(symbol) => {
                         if !symbol.is_importable() {
-                            sema.error(
+                            sema.type_error(
                                 ctx.module,
                                 span,
                                 format!("`{name}` 在模块 `{target_name}` 中不是 pub"),
                             );
                         }
+                        sema.record_reference(ctx.module, span, &symbol);
                         value_type_of_symbol(sema, ctx, symbol, name, span)
                     }
                 };
@@ -1818,13 +1825,13 @@ fn check_static_member(
     // 还原类型键（普通类型符号在定义模块；具名导入的在目标模块）
     let type_key = type_key_of_name(sema, ctx.scope, type_name);
     let Some(type_key) = type_key else {
-        sema.error(ctx.module, span, format!("`{type_name}` 不是类型"));
+        sema.type_error(ctx.module, span, format!("`{type_name}` 不是类型"));
         return Ty::Unknown;
     };
     match lookup_member_chain(sema, &type_key, name, true) {
         Some(MemberInfo::Field(field)) => {
             let _ = field;
-            sema.error(
+            sema.type_error(
                 ctx.module,
                 span,
                 format!("字段 `{name}` 不是静态成员（struct/class 字段随实例）"),
@@ -1833,7 +1840,7 @@ fn check_static_member(
         }
         Some(MemberInfo::Method(method)) => {
             if !method.is_static {
-                sema.error(
+                sema.type_error(
                     ctx.module,
                     span,
                     format!("方法 `{name}` 不是静态方法，不能通过类型名访问"),
@@ -1842,7 +1849,7 @@ fn check_static_member(
             Ty::Function(Rc::new(method.sig))
         }
         None => {
-            sema.error(
+            sema.type_error(
                 ctx.module,
                 span,
                 format!("类型 `{type_name}` 没有成员 `{name}`"),
@@ -1867,7 +1874,7 @@ fn member_type_of(
                 Some(MemberInfo::Field(field)) => field.ty,
                 Some(MemberInfo::Method(method)) => Ty::Function(Rc::new(method.sig)),
                 None => {
-                    sema.error(
+                    sema.type_error(
                         ctx.module,
                         span,
                         format!("类型 `{target_ty}` 没有成员 `{name}`"),
@@ -1883,14 +1890,14 @@ fn member_type_of(
                 Ty::Struct(..) | Ty::Class(..) => member_type_of(sema, ctx, inner, name, span),
                 ty if ty.is_opaque() => Ty::Unknown,
                 ty => {
-                    sema.error(ctx.module, span, format!("`{ty}` 没有成员 `{name}`"));
+                    sema.type_error(ctx.module, span, format!("`{ty}` 没有成员 `{name}`"));
                     Ty::Unknown
                 }
             }
         }
         ty if ty.is_opaque() => Ty::Unknown,
         ty => {
-            sema.error(ctx.module, span, format!("`{ty}` 没有成员 `{name}`"));
+            sema.type_error(ctx.module, span, format!("`{ty}` 没有成员 `{name}`"));
             Ty::Unknown
         }
     }
@@ -1966,7 +1973,7 @@ fn check_index_access(
     let target_ty = check_expr(sema, ctx, target);
     let index_ty = check_expr(sema, ctx, index);
     if !index_ty.is_integer() && !index_ty.is_opaque() {
-        sema.error(
+        sema.type_error(
             ctx.module,
             index.span(),
             format!("索引必须是整数，实为 `{index_ty}`"),
@@ -1980,7 +1987,7 @@ fn check_index_access(
             *inner
         }
         Ty::Tuple(_) => {
-            sema.error(
+            sema.type_error(
                 ctx.module,
                 span,
                 "元组索引需要常量下标，本期暂不支持（请用解构）",
@@ -1989,7 +1996,7 @@ fn check_index_access(
         }
         ty if ty.is_opaque() => Ty::Unknown,
         ty => {
-            sema.error(ctx.module, span, format!("`{ty}` 不支持下标访问"));
+            sema.type_error(ctx.module, span, format!("`{ty}` 不支持下标访问"));
             Ty::Unknown
         }
     }
@@ -2013,7 +2020,7 @@ fn check_call(
             for arg in args {
                 check_expr(sema, ctx, arg);
             }
-            sema.error(
+            sema.type_error(
                 ctx.module,
                 span,
                 format!("类型 `{name}` 不能直接调用：class 请用 `new {name}(...)`，struct 请用 `{name}{{ ... }}`"),
@@ -2027,7 +2034,7 @@ fn check_call(
             for arg in args {
                 check_expr(sema, ctx, arg);
             }
-            sema.error(ctx.module, span, format!("命名空间 `{name}` 不可调用"));
+            sema.type_error(ctx.module, span, format!("命名空间 `{name}` 不可调用"));
             return Ty::Unknown;
         }
     }
@@ -2048,7 +2055,7 @@ fn check_call(
         }
         ty if ty.is_opaque() => Ty::Unknown,
         ty => {
-            sema.error(ctx.module, span, format!("`{ty}` 不可调用"));
+            sema.type_error(ctx.module, span, format!("`{ty}` 不可调用"));
             Ty::Unknown
         }
     }
@@ -2066,7 +2073,7 @@ fn check_call_against_sig(
 ) {
     // 泛型实参 arity：给了就必须与形参个数一致；没给则浅泛型放行
     if !type_arg_tys.is_empty() && type_arg_tys.len() != sig.type_param_count {
-        sema.error(
+        sema.type_error(
             ctx.module,
             span,
             format!(
@@ -2082,7 +2089,7 @@ fn check_call_against_sig(
     }
     let required = sig.params.iter().filter(|p| !p.has_default).count();
     if arg_tys.len() < required || arg_tys.len() > sig.params.len() {
-        sema.error(
+        sema.type_error(
             ctx.module,
             span,
             format!(
@@ -2096,7 +2103,7 @@ fn check_call_against_sig(
     }
     for (arg, (param, arg_ty)) in args.iter().zip(sig.params.iter().zip(arg_tys.iter())) {
         if !sema.is_assignable(&param.ty, arg_ty) {
-            sema.error(
+            sema.type_error(
                 ctx.module,
                 arg.span(),
                 format!("参数 `{}` 需要 `{}`，实为 `{arg_ty}`", param.name, param.ty),
@@ -2124,13 +2131,18 @@ fn check_new(
         for arg in args {
             check_expr(sema, ctx, arg);
         }
-        sema.error(ctx.module, span, "`new` 的目标目前只支持类名标识符");
+        sema.type_error(ctx.module, span, "`new` 的目标目前只支持类名标识符");
         return Ty::Unknown;
     };
     let type_key = match type_key_of_name(sema, ctx.scope, name) {
-        Some(key) => Some(key),
+        Some(key) => {
+            if let Some(symbol) = sema.scopes.lookup(ctx.scope, name).cloned() {
+                sema.record_reference(ctx.module, *name_span, &symbol);
+            }
+            Some(key)
+        }
         None if sema.scopes.lookup(ctx.scope, name).is_some() => {
-            sema.error(
+            sema.type_error(
                 ctx.module,
                 *name_span,
                 format!("`{name}` 不是类型，不能用 `new` 构造"),
@@ -2138,7 +2150,7 @@ fn check_new(
             None
         }
         None => {
-            sema.error(ctx.module, *name_span, format!("未定义的类型 `{name}`"));
+            sema.type_error(ctx.module, *name_span, format!("未定义的类型 `{name}`"));
             None
         }
     };
@@ -2161,7 +2173,7 @@ fn check_new(
             let def = def.clone();
             // 泛型类浅检查
             if !type_arg_tys.is_empty() && type_arg_tys.len() != def.type_param_count {
-                sema.error(
+                sema.type_error(
                     ctx.module,
                     span,
                     format!(
@@ -2179,7 +2191,7 @@ fn check_new(
                 }
                 None => {
                     if !args.is_empty() {
-                        sema.error(
+                        sema.type_error(
                             ctx.module,
                             span,
                             format!("class `{name}` 没有 `__init`，`new` 不能传实参"),
@@ -2190,7 +2202,7 @@ fn check_new(
             Ty::Class(type_key.0, type_key.1)
         }
         Some(TypeDef::Struct(_)) => {
-            sema.error(
+            sema.type_error(
                 ctx.module,
                 span,
                 format!("struct `{name}` 不能用 `new` 构造，请用 `{name}{{ ... }}`"),
@@ -2198,7 +2210,7 @@ fn check_new(
             Ty::Error
         }
         Some(_) => {
-            sema.error(
+            sema.type_error(
                 ctx.module,
                 span,
                 format!("`{name}` 不是 class，不能用 `new` 构造"),
@@ -2227,7 +2239,7 @@ fn check_match(
             } else if let Some(unified) = unify_types(&result_ty, &ty) {
                 result_ty = unified;
             } else if !ty.is_opaque() {
-                sema.error(
+                sema.type_error(
                     ctx.module,
                     expr.span(),
                     format!("match 分支类型 `{ty}` 与先前分支 `{result_ty}` 不一致"),
@@ -2243,7 +2255,7 @@ fn check_match(
             MatchPattern::Expr { expr, .. } => {
                 let pattern_ty = check_expr(sema, ctx, expr);
                 if !comparable(&subject_ty, &pattern_ty) {
-                    sema.error(
+                    sema.type_error(
                         ctx.module,
                         expr.span(),
                         format!("case 值 `{pattern_ty}` 与 match 目标 `{subject_ty}` 不可比较"),
@@ -2290,7 +2302,7 @@ fn check_lambda(sema: &mut Sema, ctx: &mut BodyCtx, lambda: &novella_ast::expr::
             let mut seen = HashSet::new();
             for param in params {
                 if !seen.insert(param.name.clone()) {
-                    sema.error(
+                    sema.type_error(
                         ctx.module,
                         param.span,
                         format!("lambda 形参 `{}` 重复", param.name),
@@ -2327,7 +2339,7 @@ fn check_lambda(sema: &mut Sema, ctx: &mut BodyCtx, lambda: &novella_ast::expr::
             match &annotated_ret {
                 Some(annotated) => {
                     if !sema.is_assignable(annotated, &body_ty) {
-                        sema.error(
+                        sema.type_error(
                             ctx.module,
                             expr.span(),
                             format!("lambda 体类型 `{body_ty}` 与返回标注 `{annotated}` 不兼容"),

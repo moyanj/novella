@@ -14,7 +14,7 @@ use novella_ast::{
 };
 use novella_core::{
     Span,
-    diagnostic::{Diagnostic, DiagnosticLocation},
+    diagnostic::{Diagnostic, DiagnosticCode, DiagnosticLocation},
     token::TokenKind,
 };
 
@@ -692,7 +692,8 @@ impl Parser {
             self.advance();
         }
         // 走到流末尾仍未闭合：以块的起始位置补一条诊断（`enter_nesting` 已报过深度问题）
-        let mut diag = Diagnostic::error("此处缺少与之配对的 `}`");
+        let mut diag =
+            Diagnostic::error("此处缺少与之配对的 `}`").with_code(DiagnosticCode::SyntaxError);
         diag = diag.with_location(DiagnosticLocation {
             file: None,
             line: open.line,

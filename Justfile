@@ -49,6 +49,14 @@ lsp-build:
 lsp-run:
     cargo run -p novella-lsp
 
+# 由 novella-lexer 的 logos 声明生成 TextMate 语法（编辑器冷启动着色）
+gen-syntax:
+    cargo run -p novella-syntax-gen
+
+# 校验生成的语法文件是否最新（CI 用；过期则提示重新生成）
+gen-syntax-check:
+    cargo run -p novella-syntax-gen -- --check
+
 # 打包 VS Code 扩展（esbuild 打包 + vsce 产出 vsix）
 lsp-pack:
     cd editors/vscode && pnpm install && pnpm run package
