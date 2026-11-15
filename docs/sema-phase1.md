@@ -250,9 +250,21 @@ Pointer(Box<Ty>) | Error   // Error 用于错误抑制
 
 ## 8. CLI 接入与文档
 
-- `novella-cli compile`：parser 之后接 `novella_sema::analyze`；语义诊断
-  rustc 风格渲染至 stderr；JSON 输出增加 `sema_diagnostics` 字段
-  （**不兼容变更：直接替换**，无迁移）。
+- `novella-cli compile`：**只调用 `novella_sema::analyze` 一次**，不再自行
+  跑 lexer / parser（此前入口文件会被解析两次）。CLI 从
+  `SemaResult.modules` 取入口的 `tokens` / `program` / `syntax_diagnostics`
+  写 JSON，从 `diagnostics.modules` 取语义诊断；两处渲染都用模块自带的
+  `source`，不回盘重读。
+- 诊断输出：global 诊断 → 各模块词法/语法诊断 → （零错误时）`共 N 个错误`
+  → 各模块语义诊断 → 语义错误汇总。零错误时不打印 `共 0 个错误`。
+- JSON 字段（**不兼容变更：直接替换**，无迁移）：`tokens` / `program` /
+  `diagnostics`。**诊断只有一棵树**，不再有 `sema_diagnostics` 之类的第二份：
+  `diagnostics` = `{ global: [...], modules: [{ id, path, diagnostics: [...] }] }`；
+  每个模块的 `diagnostics` 已把词法 / 语法 / 语义三种诊断按**源码位置**
+  （`location.span.start`）合并排序，同一处只出现一次，与 stderr 顺序一致。
+- 诊断里的 `location.file` 与 `sema_diagnostics[].path` 由规范化绝对路径
+  改为**调用方传入的原始路径**（如 `test.nov`），便于对照命令行参数。
+- 行为修复：导入模块的语法错误现在能被渲染（旧 CLI 只解析入口，完全丢失）。
 - 文档同步：`docs/compiler-design.md`（sema 段落不再是占位）、根 `AGENTS.md`
   （结构与 CODE MAP）、`docs/design.md`（回写 §1 拍板的模块映射规则）。
 

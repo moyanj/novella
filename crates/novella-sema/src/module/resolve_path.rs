@@ -44,8 +44,9 @@ pub(crate) fn resolve_import_path(
     import: &ImportItem,
 ) -> Result<NsResolution, String> {
     let importer = &sema.modules[module];
+    // 以规范化键为基准解析，与加载阶段（`load_modules` 的 importer_dir）一致
     let dir = importer
-        .path
+        .key
         .parent()
         .map(|p| p.to_path_buf())
         .unwrap_or_default();

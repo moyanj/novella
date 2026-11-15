@@ -17,9 +17,13 @@
 //! - 入口：[`analyze`] / [`analyze_with`]，加载器 [`FileLoader`] / [`FsLoader`] /
 //!   [`OverlayLoader`]；
 //! - 结果：[`SemaResult`]，由 [`DiagnosticReport`] / [`BindingTable`] /
-//!   [`TypeHierarchy`] 三个只读视图组成；
+//!   [`TypeHierarchy`] / [`ModuleOutput`] 四个只读视图组成；
 //! - 视图内的值类型：[`Definition`] / [`DefinitionKind`] / [`TypeSummary`] /
-//!   [`TypeSummaryKind`] / [`ModuleDiagnostics`]。
+//!   [`TypeSummaryKind`] / [`ModuleDiagnostics`] / [`AnalyzedModule`]。
+//!
+//! **词法 / 语法只在 `analyze` 内执行一次**：`SemaResult.modules` 给出每个模块
+//! 的完整产物（源码、token 流、AST、词法语法诊断），下游（CLI / codegen）直接
+//! 消费，不得自行再跑 lexer / parser。
 //!
 //! 其余（符号表、作用域树、类型注册表、检查函数）一律 `pub(crate)`。
 
@@ -33,8 +37,10 @@ mod typecheck;
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 
+use novella_ast::program::Program;
 use novella_core::Span;
 use novella_core::diagnostic::{Diagnostic, DiagnosticCode, Severity};
+use novella_core::token::Token;
 
 pub use module::{FileLoader, FsLoader, ModuleId, OverlayLoader};
 pub use novella_core::path::module_key;
@@ -103,10 +109,120 @@ pub struct TypeHierarchy {
     pub summaries: Vec<TypeSummary>,
 }
 
+/// 单个模块的编译产物（只读视图）。
+///
+/// [`SemaResult::modules`] 的下标即 [`ModuleId`]，与 [`BindingTable`] /
+/// [`TypeHierarchy`] 中的模块标识一致。**入口模块恒为下标 0**。
+///
+/// 这是语法阶段产物的唯一出口：CLI 输出 JSON、codegen 取 AST 一律从这里取，
+/// 不再自行调用 `novella_lexer` / `novella_parser`。
+#[derive(Debug)]
+pub struct AnalyzedModule {
+    /// 模块标识（= 在 [`SemaResult::modules`] 中的下标）
+    pub id: ModuleId,
+    /// 调用方传入的原始路径（入口即 `analyze` 的 `entry`）；
+    /// 诊断 `location.file` 用同一值，编辑器可直接映射
+    pub path: PathBuf,
+    /// 源码全文
+    pub source: String,
+    /// 词法产物：**未经注释过滤**的完整 token 流（含 `LineComment` 与末尾 EOF）
+    pub tokens: Vec<Token>,
+    /// 抽象语法树
+    pub program: Program,
+    /// 词法 + 语法诊断（按产生顺序）。语义诊断在 [`DiagnosticReport`]，
+    /// 两处不重复——本字段即 `ModuleDiagnostics::syntax_diagnostic_count` 前缀
+    pub syntax_diagnostics: Vec<Diagnostic>,
+    /// 词法或语法阶段已有错误：语义检查已跳过该模块
+    pub syntax_failed: bool,
+    /// 文件读取失败（源码为空，诊断已记入 [`DiagnosticReport::global`]）
+    pub load_failed: bool,
+}
+
+/// 模块产物视图（[`SemaResult::modules`]）。
+pub struct ModuleOutput {
+    /// 全部已加载模块（入口为下标 0）
+    pub modules: Vec<AnalyzedModule>,
+}
+
+impl ModuleOutput {
+    /// 按 id 取模块产物。
+    pub fn get(&self, id: ModuleId) -> Option<&AnalyzedModule> {
+        self.modules.get(id)
+    }
+
+    /// 入口模块产物（下标 0；加载器保证存在）。
+    pub fn entry(&self) -> Option<&AnalyzedModule> {
+        self.modules.first()
+    }
+
+    /// 按路径查找模块产物（两侧都经 [`module_key`] 规范化，
+    /// 因此 `./a.nov`、绝对路径、符号链接写法都能命中同一模块）。
+    pub fn find_by_path(&self, path: &Path) -> Option<&AnalyzedModule> {
+        let key = module_key(path);
+        self.modules
+            .iter()
+            .find(|module| module_key(&module.path) == key)
+    }
+
+    /// 查找入口模块产物：优先按 `entry` 路径匹配，匹配不到时退回下标 0。
+    pub fn find_entry(&self, entry: &Path) -> Option<&AnalyzedModule> {
+        self.find_by_path(entry).or_else(|| self.entry())
+    }
+}
+
+/// 语义类型的公开投影（[`Ty`](crate::ty::Ty) 的只读视图）。
+///
+/// 内部 `Ty` 走 `Rc` / 内部定义类型，不能直接导出；本枚举只带名义键
+/// （`Struct(模块, 名)` 等）与结构化子类型，足以供 codegen 做布局 / 调用约定推导。
+/// 错误抑制用的 `Unknown` / `External` / `Error` 统一投影为 [`TypeView::Unknown`]。
+#[derive(Debug, Clone, PartialEq)]
+pub enum TypeView {
+    Void,
+    Boolean,
+    String,
+    /// 已定型整数：类型名（`int` 已归一化为 `i32`）
+    Int(&'static str),
+    /// 已定型浮点：类型名（`float` 已归一化为 `f32`）
+    Float(&'static str),
+    /// 未定型字面量（`42` / `1.5`），类型检查阶段的临时类型
+    IntLiteral,
+    FloatLiteral,
+    Null,
+    Pointer(Box<TypeView>),
+    Array(Box<TypeView>),
+    Tuple(Vec<TypeView>),
+    Union(Vec<TypeView>),
+    /// 指向类型注册表中函数签名的键（模块 + 函数名）
+    Function(ModuleId, String),
+    /// `(定义模块, 类型名)`
+    Struct(ModuleId, String),
+    Class(ModuleId, String),
+    Trait(ModuleId, String),
+    /// 不透明泛型形参
+    TypeParam(String),
+    /// 未知 / 外部 / 错误抑制（调用方不应据它生成代码）
+    Unknown,
+}
+
+/// 表达式级类型表（[`SemaResult::expression_types`]）。
+///
+/// 键为 `(模块 id, 表达式 span)`，值为该表达式的语义类型。只覆盖**进入类型检查
+/// 的表达式**（函数体 / 方法体 / 字段初始化 / 顶层语句）；语法失败的模块为空。
+pub struct ExpressionTypes {
+    pub types: HashMap<(ModuleId, Span), TypeView>,
+}
+
+impl ExpressionTypes {
+    /// 按 span 查询表达式类型。
+    pub fn get(&self, module: ModuleId, span: Span) -> Option<&TypeView> {
+        self.types.get(&(module, span))
+    }
+}
+
 /// 语义分析结果。
 ///
-/// 三个字段各自是**只读视图**：语义阶段内部状态（作用域树、符号表、加载器）
-/// 不外泄，下游只能查询诊断、绑定与类型层级。
+/// 各字段都是**只读视图**：语义阶段内部状态（作用域树、符号表、类型注册表、
+/// 加载器）不外泄，下游只能查询模块产物、诊断、绑定与类型层级。
 pub struct SemaResult {
     /// 诊断（按模块归组 + 全局）
     pub diagnostics: DiagnosticReport,
@@ -114,6 +230,10 @@ pub struct SemaResult {
     pub bindings: BindingTable,
     /// 具名类型层级
     pub types: TypeHierarchy,
+    /// 模块产物视图（源码 / token 流 / AST / 词法语法诊断）
+    pub modules: ModuleOutput,
+    /// 表达式级语义类型（键为 `(模块, span)`）
+    pub expression_types: ExpressionTypes,
 }
 
 /// 定义位置（[`BindingTable::references`] 的值）。
@@ -221,23 +341,56 @@ pub fn analyze_with(loader: &mut dyn FileLoader, entry: &Path) -> SemaResult {
     }
 
     let types = sema.type_summaries();
+
+    // 模块产物与诊断一次组装：`diagnostics` 按模块重建已能释放源码 / 行表，
+    // 这里再额外保留 token 流与 AST（`Program` / `Vec<Token>` 均为深拷贝，
+    // 相对符号表开销可忽略），两者都随模块移出，不产生第二份持久状态。
+    let module_count = sema.modules.len();
+    let mut analyzed_modules = Vec::with_capacity(module_count);
+    let mut module_diagnostics = Vec::with_capacity(module_count);
+    for (id, module) in std::mem::take(&mut sema.modules).into_iter().enumerate() {
+        let split_at = module.syntax_diagnostic_count;
+        let mut diagnostics = module.diagnostics;
+        let semantic = diagnostics.split_off(split_at);
+        let path = module.path;
+        analyzed_modules.push(AnalyzedModule {
+            id,
+            path: path.clone(),
+            source: module.source,
+            tokens: module.tokens,
+            program: module.program,
+            syntax_diagnostics: diagnostics,
+            syntax_failed: module.syntax_failed,
+            load_failed: module.load_failed,
+        });
+        // 语法诊断已单独放进 `AnalyzedModule.syntax_diagnostics`，
+        // 这里只留语义部分（`syntax_diagnostic_count` 归零，二者不重叠）
+        module_diagnostics.push(ModuleDiagnostics {
+            path,
+            diagnostics: semantic,
+            syntax_diagnostic_count: 0,
+        });
+    }
+
     SemaResult {
         diagnostics: DiagnosticReport {
-            modules: sema
-                .modules
-                .into_iter()
-                .map(|m| ModuleDiagnostics {
-                    path: m.path,
-                    diagnostics: m.diagnostics,
-                    syntax_diagnostic_count: m.syntax_diagnostic_count,
-                })
-                .collect(),
+            modules: module_diagnostics,
             global: sema.global_diagnostics,
         },
         bindings: BindingTable {
             references: sema.references,
         },
         types: TypeHierarchy { summaries: types },
+        modules: ModuleOutput {
+            modules: analyzed_modules,
+        },
+        expression_types: ExpressionTypes {
+            types: sema
+                .expression_types
+                .into_iter()
+                .map(|(key, ty)| (key, ty.view()))
+                .collect(),
+        },
     }
 }
 
@@ -254,6 +407,8 @@ pub(crate) struct Sema {
     pub global_diagnostics: Vec<Diagnostic>,
     /// 引用 → 定义绑定表（键为引用处的 `(模块, span)`）
     pub references: HashMap<(ModuleId, Span), Definition>,
+    /// 表达式 → 语义类型（键为 `(模块, 表达式 span)`），供 codegen 推导布局
+    pub expression_types: HashMap<(ModuleId, Span), ty::Ty>,
 }
 
 impl Sema {
@@ -266,6 +421,7 @@ impl Sema {
             module_by_path: HashMap::new(),
             global_diagnostics: Vec::new(),
             references: HashMap::new(),
+            expression_types: HashMap::new(),
         }
     }
 
@@ -506,5 +662,231 @@ mod tests {
             result.diagnostics.modules[f_def.module].path,
             module_key(&helper)
         );
+    }
+
+    /// 表达式类型表按 `(模块, span)` 导出，且投影为公开的 `TypeView`。
+    #[test]
+    fn expression_types_are_exported_as_type_views() {
+        let dir = PathBuf::from("/novella-mem-types");
+        let main = dir.join("main.nov");
+        let source = "func main() {\n    let x: int = 1 + 2;\n    let b = true;\n}\n";
+        let mut overlay = HashMap::new();
+        overlay.insert(main.clone(), source.to_owned());
+        let mut loader = OverlayLoader::new(overlay);
+        let result = analyze_with(&mut loader, &main);
+        assert!(!result.diagnostics.has_errors(), "不应有错误");
+
+        let entry = result.modules.find_entry(&main).expect("入口模块产物");
+        let program = &entry.program;
+        // 收集所有表达式 span，逐个查类型表，覆盖率必须 100%
+        let spans = collect_expression_spans(program);
+        assert!(!spans.is_empty(), "示例应含表达式");
+        for span in &spans {
+            assert!(
+                result.expression_types.get(0, *span).is_some(),
+                "表达式 span {span:?} 缺少类型"
+            );
+        }
+        // `1`、`2` 与 `1 + 2` 都是未定型字面量类型（`IntLiteral`）；
+        // 只有对照标注时才会定型为 `i32`，因此这里断言 `IntLiteral` 而不假定具体类型
+        let literals = spans
+            .iter()
+            .map(|s| result.expression_types.get(0, *s).expect("已校验"))
+            .filter(|t| matches!(t, TypeView::IntLiteral))
+            .count();
+        assert_eq!(literals, 3, "`1`、`2` 与 `1 + 2` 均为未定型整数");
+        assert!(
+            spans
+                .iter()
+                .any(|s| matches!(result.expression_types.get(0, *s), Some(TypeView::Boolean))),
+            "`true` 应投影为 Boolean"
+        );
+    }
+
+    /// 递归收集 AST 中全部表达式 span（含嵌套在语句里的）。
+    ///
+    /// 与 `typecheck` 的遍历保持同一套递归字段（AST 新增递归字段时本函数
+    /// 因 `match` 无兜底分支而编译失败，不会静默漏收）。
+    fn collect_expression_spans(program: &novella_ast::program::Program) -> Vec<Span> {
+        use novella_ast::expr::Expression;
+        use novella_ast::program::Item;
+        use novella_ast::stmt::{ForInit, ForKind, IfBranch, Statement};
+
+        fn walk_expr(expr: &Expression, out: &mut Vec<Span>) {
+            out.push(expr.span());
+            match expr {
+                Expression::Paren { expr, .. }
+                | Expression::Unary { operand: expr, .. }
+                | Expression::Await { expr, .. }
+                | Expression::Cast { expr, .. } => walk_expr(expr, out),
+                Expression::Tuple { elements, .. }
+                | Expression::ArrayLiteral { elements, .. }
+                | Expression::MacroCall { args: elements, .. } => {
+                    for element in elements {
+                        walk_expr(element, out);
+                    }
+                }
+                Expression::ObjectLiteral { properties, .. } => {
+                    for property in properties {
+                        if let Some(value) = &property.value {
+                            walk_expr(value, out);
+                        }
+                    }
+                }
+                Expression::Binary { left, right, .. } => {
+                    walk_expr(left, out);
+                    walk_expr(right, out);
+                }
+                Expression::Ternary {
+                    condition,
+                    then_expr,
+                    else_expr,
+                    ..
+                } => {
+                    walk_expr(condition, out);
+                    walk_expr(then_expr, out);
+                    walk_expr(else_expr, out);
+                }
+                Expression::Assignment { target, value, .. } => {
+                    walk_expr(target, out);
+                    walk_expr(value, out);
+                }
+                Expression::MemberAccess { target, .. } => walk_expr(target, out),
+                Expression::IndexAccess { target, index, .. } => {
+                    walk_expr(target, out);
+                    walk_expr(index, out);
+                }
+                Expression::Call { callee, args, .. } => {
+                    walk_expr(callee, out);
+                    for arg in args {
+                        walk_expr(arg, out);
+                    }
+                }
+                Expression::New { args, .. } => {
+                    for arg in args {
+                        walk_expr(arg, out);
+                    }
+                }
+                Expression::Is { operand, .. } => walk_expr(operand, out),
+                Expression::Match(m) => walk_expr(&m.subject, out),
+                // lambda 体不在本期类型检查范围内（`check_lambda` 自建上下文）
+                Expression::Lambda(_) => {}
+                Expression::Literal { .. }
+                | Expression::Identifier { .. }
+                | Expression::This { .. }
+                | Expression::StructInit { .. } => {}
+            }
+        }
+
+        fn walk_stmt(stmt: &Statement, out: &mut Vec<Span>) {
+            match stmt {
+                Statement::Block(block) => {
+                    for s in &block.stmts {
+                        walk_stmt(s, out);
+                    }
+                }
+                Statement::Variable(v) => {
+                    if let Some(value) = &v.value {
+                        walk_expr(value, out);
+                    }
+                }
+                Statement::VariableList { declarations, .. } => {
+                    for v in declarations {
+                        if let Some(value) = &v.value {
+                            walk_expr(value, out);
+                        }
+                    }
+                }
+                Statement::Expression(expr) => walk_expr(expr, out),
+                Statement::Return { value, .. } | Statement::Yield { value, .. } => {
+                    if let Some(value) = value {
+                        walk_expr(value, out);
+                    }
+                }
+                Statement::Throw { expr, .. } => walk_expr(expr, out),
+                Statement::If(s) => {
+                    for branch in &s.branches {
+                        match branch {
+                            IfBranch::ElseIf {
+                                condition, block, ..
+                            } => {
+                                walk_expr(condition, out);
+                                walk_stmt(block, out);
+                            }
+                            IfBranch::Else { block, .. } => walk_stmt(block, out),
+                        }
+                    }
+                }
+                Statement::While {
+                    condition, body, ..
+                } => {
+                    walk_expr(condition, out);
+                    walk_stmt(body, out);
+                }
+                Statement::For(s) => {
+                    match &s.condition {
+                        ForKind::ForIn(cond) => walk_expr(&cond.right, out),
+                        ForKind::ForLoop(cond) => {
+                            if let Some(init) = &cond.init {
+                                match init {
+                                    ForInit::Declaration { declarations, .. } => {
+                                        for v in declarations {
+                                            if let Some(value) = &v.value {
+                                                walk_expr(value, out);
+                                            }
+                                        }
+                                    }
+                                    ForInit::Expression { expr, .. } => walk_expr(expr, out),
+                                }
+                            }
+                            if let Some(condition) = &cond.condition {
+                                walk_expr(condition, out);
+                            }
+                            if let Some(update) = &cond.update {
+                                walk_expr(update, out);
+                            }
+                        }
+                    }
+                    walk_stmt(&s.block, out);
+                }
+                Statement::Try(s) => {
+                    for s in &s.block.stmts {
+                        walk_stmt(s, out);
+                    }
+                    for catch in &s.catches {
+                        for s in &catch.block.stmts {
+                            walk_stmt(s, out);
+                        }
+                    }
+                    if let Some(finally) = &s.finally {
+                        for s in &finally.stmts {
+                            walk_stmt(s, out);
+                        }
+                    }
+                }
+                Statement::With(s) => {
+                    walk_expr(&s.expr, out);
+                    for s in &s.block.stmts {
+                        walk_stmt(s, out);
+                    }
+                }
+                Statement::Unsafe { block, .. } => {
+                    for s in &block.stmts {
+                        walk_stmt(s, out);
+                    }
+                }
+                Statement::Empty { .. } | Statement::Break { .. } | Statement::Continue { .. } => {}
+            }
+        }
+
+        let mut out = Vec::new();
+        for item in &program.items {
+            if let Item::Function(function) = item
+                && let Some(block) = &function.block
+            {
+                walk_stmt(block, &mut out);
+            }
+        }
+        out
     }
 }

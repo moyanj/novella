@@ -52,7 +52,7 @@ ast ──(构建期)── novella-derive（proc-macro，展开引用 ::novella
 | 调整高亮类别 | `crates/novella-lsp/src/semantic.rs` | `token_type_index` 为穷尽 match；改动映射须同步 `TOKEN_TYPES`（数组顺序即 legend 下标） |
 | 打包 VS Code 扩展 | `editors/vscode/` | `just lsp-pack`；源码 `src/extension.js` 经 esbuild 打入 `dist/`，vsix 自包含无需 node_modules |
 | 占用位 crates | codegen | `pub fn add(u64, u64) -> u64` 待替换 |
-| 语义分析入口 | `crates/novella-sema/src/lib.rs`（`analyze` / `analyze_with`） | 五阶段管线：模块加载→声明收集→导入绑定→类型注册→逐模块检查；实现在 `module/`（mod/loader/resolve_path）、`resolve.rs`、`symbol.rs`、`ty.rs`、`check/`（mod/type_defs/decl）、`typecheck/`（mod/body/expr/member/call/unsafe_rules） |
+| 语义分析入口 | `crates/novella-sema/src/lib.rs`（`analyze` / `analyze_with`） | 五阶段管线：模块加载→声明收集→导入绑定→类型注册→逐模块检查；实现在 `module/`（mod/loader/resolve_path）、`resolve.rs`、`symbol.rs`、`ty.rs`、`check/`（mod/type_defs/decl）、`typecheck/`（mod/body/expr/member/call/unsafe_rules）。**词法/语法只在 loader 内各跑一次**，产物经 `SemaResult.modules`（`ModuleOutput`）交还下游 |
 
 ## CODE MAP
 
@@ -60,6 +60,8 @@ ast ──(构建期)── novella-derive（proc-macro，展开引用 ::novella
 |------|------|------|
 | `Span`, `Spanned<T>` | `novella-core/src/lib.rs` | 源码位置区间（字节偏移）/ 通用位置包装（AST 已改为节点内嵌 span，`Spanned` 暂保留备用） |
 | `Spanned`（derive 宏） | `novella-derive/src/lib.rs` | 为携带 `span` 字段的节点生成 `span()` 方法；struct 取字段、enum 具名变体取字段、newtype 变体委托内部节点 |
+| `AnalyzedModule` / `ModuleOutput` | `novella-sema/src/lib.rs` | 每模块产物（`id`/`path`/`source`/`tokens`/`program`/`syntax_diagnostics`/`syntax_failed`/`load_failed`）；`get`/`entry`/`find_by_path`/`find_entry`（路径两侧经 `module_key` 规范化） |
+| `TypeView` / `ExpressionTypes` | `novella-sema/src/lib.rs`（投影在 `ty.rs` 的 `Ty::view`） | 表达式类型表，键 `(ModuleId, Span)`；`Unknown`/`External`/`Error` 及无名义键的 lambda 统一投影为 `TypeView::Unknown` |
 | `Diagnostic` / `Severity` / `DiagnosticLocation` | `novella-core/src/diagnostic.rs` | 与阶段无关的通用诊断结构（serde），各阶段产出、CLI 渲染 |
 | `TokenKind`（107 变体） | `novella-core/src/token.rs` | 词法单元种类，纯数据投影，带 `Display`（输出 Debug 文本）；含 `LineComment`（行注释） |
 | `Token` | `novella-core/src/token.rs` | kind + span + slice + line + column |
@@ -92,8 +94,8 @@ ast ──(构建期)── novella-derive（proc-macro，展开引用 ::novella
 - **for 循环 init 语义**：文法中 init 段声明不带 `const/let`，统一按 `Let` 承载（见 `ForInit` 注释）。
 - **值语义延后**：AST 字面量保留源码原文（含 `f/r/b`、进制前缀），解析在语义分析阶段。
 - **空壳 crate 用占位**：codegen 目前允许 `add()` 占位（含义不明确的结构一律报诊断而非静默兜底）。
-- **sema 诊断定位**：`Module::error/warning` 由 span 经 `LineIndex` 回推行列；`ModuleDiagnostics.syntax_diagnostic_count` 区分词法/语法前缀与语义诊断，CLI 只渲染后者。
-- **注释在语法层透明**：`LineComment` 是正式 token（供高亮等消费），CLI 在喂给 parser 前过滤；parser 不感知注释。
+- **sema 诊断定位**：`Module::error/warning` 由 span 经 `LineIndex` 回推行列；词法/语法诊断在组装 `SemaResult` 时由 `split_off(syntax_diagnostic_count)` 切进 `AnalyzedModule.syntax_diagnostics`，`ModuleDiagnostics.syntax_diagnostic_count` 归零，两处**不重叠**。
+- **注释在语法层透明**：`LineComment` 是正式 token（供高亮等消费），由 `novella-parser/src/preprocess.rs` 的 `retain` **一处**过滤；`Module.tokens` 保留完整流（含注释），sema/loader 不得再过滤一次。parser 不感知注释。
 - **LSP 偏移一律 UTF-16**：novella 内部用字节偏移，LSP 语义 token 要求 UTF-16 码元；换算集中在 `novella-lsp/src/semantic.rs`，新增 LSP 能力时须复用该换算而不要另写一套。
 - **高亮规则不重复维护**：编辑器的染色类别映射以 `TokenKind` 为唯一来源，禁止在插件侧另写词法/关键字表。
 - **位置换算只在 core**：行列换算用 `novella_core::line_index::LineIndex`，模块路径用 `novella_core::path::module_key`，诊断填空用 `novella_core::decor`——三个 crate 不得各写一份（LSP 的 UTF-16 列在其上叠加，见 `novella-lsp/src/source.rs`）。
@@ -111,6 +113,8 @@ ast ──(构建期)── novella-derive（proc-macro，展开引用 ::novella
 - ❌ 只改代码不同步 `grammar/*.g4`——文法以代码为基准，`TokenKind` / AST 变更后必须同步；反之也不得凭文法去要求代码。
 - ❌ 修改 `Span`/`Token` 字段时不更新 JSON 消费者（cli 输出 `serde_json`）。
 - ❌ 在 lexer / sema / LSP 里各写一份行表或路径归一化——必须复用 `novella-core`。
+- ❌ 下游（CLI / codegen）自己再跑一遍 lexer / parser——`analyze` 已把语法产物放进 `SemaResult.modules`，重跑会让入口文件解析两次并产生两套诊断。
+- ❌ 在 `preprocess.rs` 之外再过滤注释 token——注释过滤只有一处。
 - ❌ 因为「方便测试」或「以后可能用」就把内部模块设成 `pub mod`——公开面即兼容承诺。
 - ❌ 除非明确要求，否则不写测试
 
@@ -124,7 +128,7 @@ just lint         # clippy --workspace --all-targets -D warnings
 just fmt          # cargo fmt --all        （CI 用 just fmt-check）
 just doc          # cargo doc --workspace --no-deps --open
 just book         # mdbook build docs      （book-serve 预览）
-cargo run -p novella -- compile <file> -o <out.s>   # lexer → parser → sema → JSON（tokens + program + diagnostics + sema_diagnostics）
+cargo run -p novella -- compile <file> -o <out.s>   # 单次 analyze（内部 lexer→parser→sema）→ JSON（tokens + program + diagnostics{global,modules}）
 
 just lsp-build    # cargo build --release -p novella-lsp
 just lsp-run      # cargo run -p novella-lsp（stdio 通道，等待编辑器连接）
@@ -138,7 +142,7 @@ just lsp-pack     # 打包 VS Code 扩展（esbuild 打包 + vsce 产出 vsix）
 - lexer 的 `TokenError` / `LexerResult` 已启用：`lexer()` 返回 token 流与错误列表，可恢复错误（非法字符、未闭合字符串）只进 `errors`，不中断后续分析；错误种类结构化（`LexError` 枚举），消息由 `Display` 生成，经 `TokenError::to_diagnostic` 转通用诊断。
 - EOF token 的 span 指向输入末尾 `{start:len, end:len}`，line/column 为末尾处行列；行号 1-based、列号 0-based（字节偏移），对齐 ANTLR `getLine()` / `getCharPositionInLine()`。
 - `TokenKind::Error` 保留为非法字符 / 未闭合字符串的占位（`to_token` 的 None 分支），随错误记录进 `errors`。
-- **注释 token 化**：lexer 把 `// ...`（到行尾，不含换行）产出为 `TokenKind::LineComment`（此前由 `logos(skip)` 丢弃），故 CLI 的 JSON 输出 `tokens` 现包含注释 token；CLI 在构造 parser 前过滤注释，JSON 输出仍保留。若将来 parser 需要 doc comment，应改为 parser 内部吞注释并移除该过滤。
+- **注释 token 化**：lexer 把 `// ...`（到行尾，不含换行）产出为 `TokenKind::LineComment`（此前由 `logos(skip)` 丢弃），故 CLI 的 JSON 输出 `tokens` 现包含注释 token；sema 的 loader 保存完整 token 流，filter 只在 `preprocess.rs` 一处完成。若将来 parser 需要 doc comment，应改为 parser 内部吞注释并移除该过滤。
 - **块注释未支持**：`/* ... */` 在本项目被刻意砍掉（文法中已无 `MultiLineComment`）；`/*` 目前会被切分为 `Divide` + `Multiply`。
 - **`Symbol.name_span` 与 `Symbol.span` 的区别**：`span` 覆盖整条声明（含函数体），`name_span` 只覆盖标识符；`Definition.span` 与类型摘要的定位一律取 `name_span`，否则编辑器跳转/重命名会选中 `() -> int { ... }` 而不是名字。
 - LSP 语义 token 的偏移单位为 **UTF-16 码元**（见 CONVENTIONS）；跨行 token 会被按行拆分为多个语义 token——当前词法下（行注释与字面量都不含换行）不会触发，属防御性实现。
@@ -151,3 +155,7 @@ just lsp-pack     # 打包 VS Code 扩展（esbuild 打包 + vsce 产出 vsix）
 - **语法歧义的消解位置**：`with expr as binding` 的 `as` 靠 `with_stack` + `with_shield` + `looks_like_with_binding()` 判定（表头裸位绑定优先，嵌套括号/实参内仍是 cast；with 表头为无括号形态，旧 `with (expr)` 写法报迁移诊断），不走全局猜测；`match subject {` 的 `{` 靠 `in_match_subject` 禁止被 StructInit 抢走；match 分支体靠 `inside_match` 让表达式解析在 `case` / `default` / `}` 处自然停下。新增同类歧义应复用这些上下文标记，不要在 `parse_primary` 里堆特判。
 - `[profile.release]` 开启 `lto = true`。
 - release build 是 LTO 全量链接，调试构建慢属预期。
+- **诊断只有一份**：JSON 的 `diagnostics` 是唯一诊断树（`{ global, modules: [{ id, path, diagnostics }] }`），每模块内词法/语法/语义诊断按 `location.span.start` 合并排序；禁止再加 `sema_diagnostics` 之类的并列字段，否则同一错误会出现两次。
+- **入口路径语义**：`Module` 同时持 `key`（`module_key` 规范化，用于去重/overlay/crate 根查找/相对导入解析基准）与 `path`（调用方原始路径，用于诊断回显）；诊断的 `location.file` 与 `sema_diagnostics[].path` 一律用 `path`，因此 CLI 输出里看到的是命令行传入的写法（如 `test.nov`）而不是规范化绝对路径。
+- **表达式类型登记**：`typecheck/expr.rs` 的 `check_expr` 是登记 `Sema::expression_types` 的唯一出口（`check_expr` 包一层记录后调 `check_expr_inner`）；`check_expr_with_hint` 的两个提示分支（空数组 / `null`→标注）绕过该出口，必须另行补记。新增表达式分支无需改动登记逻辑。
+- **函数签名名义键**：`ty::FunctionSig` 有 `module` + `name: Option<String>`，只有顶层函数在 `build_function_sig` 里回填 `name`；方法、lambda 与占位签名保持 `None`，`Ty::view()` 遇 `None` 投影为 `TypeView::Unknown`。

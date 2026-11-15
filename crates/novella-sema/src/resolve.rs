@@ -93,6 +93,9 @@ pub(crate) fn collect_module(sema: &mut Sema, module: ModuleId) {
             Item::Function(function) => {
                 // 签名在 Phase 2b 解析，此处先占位登记名字
                 let sig = FunctionSig {
+                    module,
+                    // 占位签名（Phase 2b 前），名义键在回填时补上函数名
+                    name: None,
                     params: vec![],
                     ret: Ty::Unknown,
                     type_param_count: 0,
@@ -575,6 +578,8 @@ impl Sema {
             .collect();
         let ret = self.resolve_type(module, scope, &function_type.return_type, &env);
         FunctionSig {
+            module,
+            name: None,
             params,
             ret,
             type_param_count: function_type.type_parameters.len(),

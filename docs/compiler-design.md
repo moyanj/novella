@@ -192,10 +192,32 @@ ast ──(构建期)── novella-derive（proc-macro，展开引用 ::novella
 
 **公开面**（crate 外可引用）只有三族：输入（`analyze` / `analyze_with`、
 `FileLoader` / `FsLoader` / `OverlayLoader`）、输出（`SemaResult`，内含
-`DiagnosticReport` / `BindingTable` / `TypeHierarchy` 三个只读视图）、
-值类型（`Definition` / `DefinitionKind` / `TypeSummary` / `TypeSummaryKind` /
-`ModuleDiagnostics` / `ModuleId`）。符号表、作用域树、类型注册表与全部检查
+`DiagnosticReport` / `BindingTable` / `TypeHierarchy` / `ModuleOutput` /
+`ExpressionTypes` 五个只读视图）、值类型（`Definition` / `DefinitionKind` /
+`TypeSummary` / `TypeSummaryKind` / `ModuleDiagnostics` / `ModuleId` /
+`AnalyzedModule` / `TypeView`）。符号表、作用域树、类型注册表与全部检查
 函数均为 `pub(crate)`。
+
+**词法与语法只做一次**：`lexer` / `parser` 只在 `analyze` 内部对每个模块各
+调用一次（`module/loader.rs`），产物经 `ModuleOutput` 交还下游。下游（CLI、
+codegen）**不得自行再跑 lexer / parser**，否则入口文件会被解析两次并出现
+两套互不相同的诊断。`ModuleOutput` 提供 `get(id)` / `entry()` /
+`find_by_path(path)` / `find_entry(entry)`，路径匹配两侧都经
+`module_key` 规范化，`./a.nov`、绝对路径、符号链接写法命中同一模块。
+
+`AnalyzedModule` 字段：`id` / `path`（调用方原始路径，对外回显）/
+`source` / `tokens`（完整 token 流，含注释）/ `program` /
+`syntax_diagnostics`（词法 + 语法诊断）/ `syntax_failed` / `load_failed`。
+语义诊断在 `SemaResult.diagnostics.modules(id).semantic_diagnostics()`，与
+`syntax_diagnostics` **不重叠**。模块内部的 `key`（规范化路径）只用于去重、
+overlay 查找与相对导入解析，不外泄。
+
+`ExpressionTypes` 是表达式级类型表，键 `(ModuleId, Span)`，值为 `TypeView`
+（内部 `Ty` 的公开投影）。登记点在 `typecheck/expr.rs` 的
+`check_expr` **唯一函数出口**（`check_expr_with_hint` 的两个提示分支另行补记），
+因此新增表达式分支时不会漏记。`Unknown` / `External` / `Error` 三种抑制类型
+统一投影为 `TypeView::Unknown`；匿名 lambda 与占位签名无名义键，同样投影为
+`Unknown`（其覆盖范围随 `check_lambda` 的完善而扩大）。
 
 以下为既定规则清单（来自 `design.md` §6.5 / §5 / §4）：
 

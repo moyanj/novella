@@ -409,6 +409,9 @@ pub(crate) fn check_lambda(
         }
     };
     Ty::Function(Rc::new(FunctionSig {
+        // 匿名 lambda 不在类型注册表内，没有名义键
+        module: lambda_ctx.module,
+        name: None,
         params: param_sigs,
         ret: ret_ty,
         type_param_count: 0,

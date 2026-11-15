@@ -8,7 +8,6 @@ use novella_core::Span;
 use novella_core::diagnostic::Diagnostic;
 use novella_core::line_index::LineIndex;
 use novella_core::path::module_key;
-use novella_core::token::TokenKind;
 use novella_parser::ParserInput;
 
 use super::resolve_path::find_crate_root;
@@ -27,10 +26,11 @@ pub(crate) fn load_modules(
     let mut modules: Vec<Module> = Vec::new();
     let mut by_path: HashMap<PathBuf, ModuleId> = HashMap::new();
     let mut global_diagnostics: Vec<Diagnostic> = Vec::new();
-    let mut worklist: Vec<PathBuf> = vec![entry.to_path_buf()];
+    // worklist 元素为 "(调用方路径, 规范化键)"：同一次加载中同一个文件可能先以
+    // 相对、后以绝对路径出现，两次的键相同，但只有首次出现决定 `path` 回显值。
+    let mut worklist: Vec<(PathBuf, PathBuf)> = vec![(entry.to_path_buf(), module_key(entry))];
 
-    while let Some(path) = worklist.pop() {
-        let key = module_key(&path);
+    while let Some((path, key)) = worklist.pop() {
         if by_path.contains_key(&key) {
             continue;
         }
@@ -47,8 +47,10 @@ pub(crate) fn load_modules(
                 )));
                 // 占位模块：保证 by_path 与 modules 下标一致，导入方在绑定阶段报「未找到」
                 modules.push(Module {
-                    path: key,
+                    key: key.clone(),
+                    path,
                     source: String::new(),
+                    tokens: vec![],
                     program: Program {
                         items: vec![],
                         span: Span { start: 0, end: 0 },
@@ -65,32 +67,32 @@ pub(crate) fn load_modules(
             }
         };
 
-        // ---- 词法 / 语法分析（CLI 流程的内联复刻：过滤注释后喂给 parser）----
+        // ---- 词法 / 语法分析（全流程唯一一次：下游一律消费本模块产物）----
+        let file = path.display().to_string();
         let lex = novella_lexer::lexer(&source);
         let mut diagnostics: Vec<Diagnostic> = lex
             .errors
             .iter()
             .map(|e| {
-                let mut d = e.to_diagnostic(Some(&path.display().to_string()));
+                let mut d = e.to_diagnostic(Some(&file));
                 if let Some(loc) = &mut d.location {
-                    loc.file = Some(path.display().to_string());
+                    loc.file = Some(file.clone());
                 }
                 d
             })
             .collect();
-        let tokens: Vec<_> = lex
-            .tokens
-            .into_iter()
-            .filter(|t| t.kind != TokenKind::LineComment)
-            .collect();
+        // 保留完整 token 流（含注释，供 JSON / 高亮消费）。注释过滤由 parser
+        // 的 `preprocess` 统一负责（`crates/novella-parser/src/preprocess.rs`），
+        // loader 不再自行过滤——过滤规则只应有一处。
+        let tokens = lex.tokens;
         let mut parse_result = novella_parser::Parser::new(ParserInput {
-            file: path.to_string_lossy().to_string(),
-            tokens,
+            file: file.clone(),
+            tokens: tokens.clone(),
         })
         .parse();
         for diag in &mut parse_result.diagnostics {
             if let Some(loc) = &mut diag.location {
-                loc.file = Some(path.display().to_string());
+                loc.file = Some(file.clone());
             }
         }
         let syntax_failed = !diagnostics.is_empty() || !parse_result.diagnostics.is_empty();
@@ -100,8 +102,10 @@ pub(crate) fn load_modules(
         let mut module = Module {
             lines: LineIndex::build(&source),
             source,
+            tokens,
             program: parse_result.program,
-            path: key,
+            key,
+            path,
             global_scope: scopes.new_scope(None, crate::symbol::ScopeKind::Module),
             diagnostics,
             syntax_diagnostic_count,
@@ -121,17 +125,21 @@ pub(crate) fn load_modules(
             })
             .collect();
         for import in &imports {
-            // crate 根懒查找（仅 `@:` 需要）
+            // crate 根懒查找（仅 `@:` 需要）；以规范化键为基准，避免相对路径
+            // 起点不同导致找不到 nov.toml
             if import.prefix.as_deref() == Some("@") && module.crate_root.is_none() {
-                module.crate_root = find_crate_root(loader, &module.path);
+                module.crate_root = find_crate_root(loader, &module.key);
             }
             let importer_dir = module
-                .path
+                .key
                 .parent()
                 .map(|p| p.to_path_buf())
                 .unwrap_or_default();
             match resolve_import(import, &importer_dir, module.crate_root.as_deref()) {
-                Ok(ResolvedImport::File(target)) => worklist.push(target),
+                Ok(ResolvedImport::File(target)) => {
+                    let target_key = module_key(&target);
+                    worklist.push((target, target_key));
+                }
                 Ok(ResolvedImport::StdExternal) => {}
                 Err(message) => module.error(import.span, message),
             }

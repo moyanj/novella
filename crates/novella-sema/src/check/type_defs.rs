@@ -225,6 +225,9 @@ fn build_method_sig(
     };
     MethodSig {
         sig: crate::ty::FunctionSig {
+            // 方法签名的名义键：`<类型名>.<方法名>`
+            module,
+            name: None,
             params,
             ret,
             type_param_count: method.type_parameters.len(),
@@ -249,6 +252,8 @@ fn build_function_sig(
         }
         // 防御：parser 恒产出签名，None 仅见于异常恢复路径
         None => crate::ty::FunctionSig {
+            module,
+            name: None,
             params: vec![],
             ret: Ty::Void,
             type_param_count: 0,
@@ -258,6 +263,9 @@ fn build_function_sig(
     };
     sig.is_async = function.is_async;
     sig.is_extern = function.is_extern;
+    // 回填名义键（`resolve_function_type` 不知道函数名，此处补上）
+    sig.module = module;
+    sig.name = Some(function.name.clone());
 
     if function.is_extern {
         // E2：extern 参数必须显式标注类型（FFI 边界无法推导）。

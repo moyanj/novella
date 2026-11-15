@@ -108,6 +108,11 @@ impl FloatKind {
 /// 函数签名（参数类型在声明收集后解析；extern 与普通函数共用）。
 #[derive(Debug, Clone)]
 pub(crate) struct FunctionSig {
+    /// 所属模块（名义键的一半）
+    pub module: ModuleId,
+    /// 函数名（名义键另一半）：顶层函数在签名回填时写入；
+    /// 方法 / lambda / 占位签名为 `None`，投影到 [`crate::TypeView`] 时为 `Unknown`
+    pub name: Option<String>,
     pub params: Vec<ParamSig>,
     pub ret: Ty,
     /// 泛型参数个数（本期浅泛型：调用点只查 arity）
@@ -163,6 +168,40 @@ pub(crate) enum Ty {
 }
 
 impl Ty {
+    /// 投影为公开视图 [`crate::TypeView`]（供 codegen 消费）。
+    ///
+    /// 三种错误抑制类型（`Unknown` / `External` / `Error`）统一投影为
+    /// `TypeView::Unknown`：它们的共同语义是「此处无法确定类型」，
+    /// 下游不得据其生成代码。
+    pub(crate) fn view(&self) -> crate::TypeView {
+        use crate::TypeView;
+        match self {
+            Ty::Unknown | Ty::External | Ty::Error => TypeView::Unknown,
+            Ty::Void => TypeView::Void,
+            Ty::Null => TypeView::Null,
+            Ty::Boolean => TypeView::Boolean,
+            Ty::String => TypeView::String,
+            Ty::Int(kind) => TypeView::Int(kind.name()),
+            Ty::Float(kind) => TypeView::Float(kind.name()),
+            Ty::IntLiteral => TypeView::IntLiteral,
+            Ty::FloatLiteral => TypeView::FloatLiteral,
+            Ty::Pointer(inner) => TypeView::Pointer(Box::new(inner.view())),
+            Ty::Array(element) => TypeView::Array(Box::new(element.view())),
+            Ty::Tuple(elements) => TypeView::Tuple(elements.iter().map(Ty::view).collect()),
+            Ty::Union(members) => TypeView::Union(members.iter().map(Ty::view).collect()),
+            // 函数签名实体在类型注册表内，公开视图只给名义键 `(所属模块, 名)`；
+            // 匿名 lambda 签名不在注册表内，退化为 Unknown
+            Ty::Function(sig) => match &sig.name {
+                Some(name) => TypeView::Function(sig.module, name.clone()),
+                None => TypeView::Unknown,
+            },
+            Ty::Struct(module, name) => TypeView::Struct(*module, name.clone()),
+            Ty::Class(module, name) => TypeView::Class(*module, name.clone()),
+            Ty::Trait(module, name) => TypeView::Trait(*module, name.clone()),
+            Ty::TypeParam(name) => TypeView::TypeParam(name.clone()),
+        }
+    }
+
     pub(crate) fn is_numeric(&self) -> bool {
         matches!(
             self,

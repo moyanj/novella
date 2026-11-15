@@ -1,8 +1,7 @@
 use crate::error::render_diagnostic;
 use clap::Parser;
-use novella_core::diagnostic::Diagnostic;
-use novella_parser::ParserInput;
-use std::{fs, io, process::exit};
+use novella_core::diagnostic::{Diagnostic, Severity};
+use std::{fs, process::exit};
 
 mod cli;
 mod error;
@@ -12,68 +11,48 @@ fn main() {
     match args.command {
         cli::Command::Compile { file, output } => {
             println!("Compiling...");
-            // 读取失败：区分常见原因给出友好提示，并带上文件路径
-            let source_code = match fs::read_to_string(&file) {
-                Ok(r) => r,
-                Err(e) => {
-                    let hint = match e.kind() {
-                        io::ErrorKind::NotFound => "文件不存在",
-                        io::ErrorKind::PermissionDenied => "没有读取权限",
-                        _ => "读取失败",
-                    };
-                    let diag = Diagnostic::error(format!("无法读取文件 '{file}'：{hint}（{e}）"));
-                    eprintln!("{}", render_diagnostic(&diag, None));
-                    exit(1);
-                }
-            };
-            // ---------- 词法分析 ----------
-            let lex_result = novella_lexer::lexer(&source_code);
-            // 词法错误（非法字符 / 未闭合字符串）可恢复，就近渲染到 stderr，不中断输出
-            for err in &lex_result.errors {
-                let diag = err.to_diagnostic(Some(&file));
-                eprintln!("{}", render_diagnostic(&diag, Some(&source_code)));
-            }
-
-            // ---------- 语法分析 ----------
-            // parser 消费 token 流产出 AST；为保留 tokens 于 JSON 输出，此处克隆一份。
-            // 注释 token（LineComment）在语法层面视为空白，parser 不感知：
-            // 喂给 parser 前过滤，JSON 输出则保留注释（供高亮等消费方使用）。
-            // 注：未来 parser 若需要 doc comment，应改为 parser 内部吞注释、移除此处过滤。
-            let parser_tokens: Vec<_> = lex_result.tokens.clone();
-            let mut parse_result = {
-                let mut parser = novella_parser::Parser::new(ParserInput {
-                    file: file.clone(),
-                    tokens: parser_tokens,
-                });
-                parser.parse()
-            };
-            // 语法错误（收集于 diagnostics）可恢复，就近渲染到 stderr，不中断输出；
-            for diag in &mut parse_result.diagnostics {
-                if let Some(loc) = &mut diag.location {
-                    loc.file = Some(file.clone());
-                }
-                eprintln!("{}", render_diagnostic(diag, Some(&source_code)));
-            }
-            eprintln!(
-                "共 {} 个错误",
-                lex_result.errors.len() + parse_result.diagnostics.len()
-            );
-
-            // ---------- 语义分析 ----------
-            // sema 独立重走 lexer→parser 逐模块加载导入闭包；此处只渲染语义诊断
-            // （词法 / 语法诊断已由上方渲染，避免重复）。
+            // ---------- 词法 / 语法 / 语义分析 ----------
+            // 三个阶段统一由 `novella_sema::analyze` 编排：它内部对每个模块只做
+            // 一次「读文件 → 词法 → 语法」，产物（源码、token 流、AST、诊断）
+            // 经 `SemaResult.modules` 交还。CLI 只负责渲染与序列化，
+            // 不得自行再跑 lexer / parser（否则入口文件会被解析两次）。
             let sema_result = novella_sema::analyze(std::path::Path::new(&file));
-            let mut sema_error_count = 0usize;
+
+            let mut error_count = 0usize;
+
+            // 无模块归属的错误（入口读取失败等）
             for diag in &sema_result.diagnostics.global {
                 eprintln!("{}", render_diagnostic(diag, None));
-                sema_error_count += 1;
+                if diag.severity == Severity::Error {
+                    error_count += 1;
+                }
             }
-            for module in &sema_result.diagnostics.modules {
-                // 渲染需要对应模块的源码，从磁盘重读（失败则退化为无源码渲染）
-                let module_source = fs::read_to_string(&module.path).ok();
-                for diag in module.semantic_diagnostics() {
-                    eprintln!("{}", render_diagnostic(diag, module_source.as_deref()));
-                    if diag.severity == novella_core::diagnostic::Severity::Error {
+
+            // 逐模块渲染词法 / 语法诊断：入口在前（下标 0），与模块编号一致
+            for module in &sema_result.modules.modules {
+                for diag in &module.syntax_diagnostics {
+                    eprintln!("{}", render_diagnostic(diag, Some(&module.source)));
+                    if diag.severity == Severity::Error {
+                        error_count += 1;
+                    }
+                }
+            }
+            // 零错误时不打印汇总（`共 0 个错误` 无信息量）
+            if error_count > 0 {
+                eprintln!("共 {error_count} 个错误");
+            }
+
+            // 语义诊断：`diagnostics.modules` 与 `modules` 下标一一对应，
+            // 渲染所需的源码直接取同一份产物，不再回盘重读。
+            let mut sema_error_count = 0usize;
+            for (id, module_diagnostics) in sema_result.diagnostics.modules.iter().enumerate() {
+                let source = sema_result
+                    .modules
+                    .get(id)
+                    .map(|module| module.source.as_str());
+                for diag in module_diagnostics.semantic_diagnostics() {
+                    eprintln!("{}", render_diagnostic(diag, source));
+                    if diag.severity == Severity::Error {
                         sema_error_count += 1;
                     }
                 }
@@ -83,22 +62,57 @@ fn main() {
             }
 
             // ---------- 输出：tokens + AST + 诊断（JSON） ----------
-            let sema_json: Vec<_> = sema_result
+            // 入口模块按规范化路径定位（`analyze` 收到的 entry 未规范化，
+            // 形如 `./a.nov` 时直接取下标 0 会混淆）。
+            let entry = sema_result.modules.find_entry(std::path::Path::new(&file));
+            let (tokens, program) = match entry {
+                Some(module) => (
+                    serde_json::to_value(&module.tokens).unwrap_or(serde_json::Value::Null),
+                    serde_json::to_value(&module.program).unwrap_or(serde_json::Value::Null),
+                ),
+                None => (
+                    serde_json::Value::Array(Vec::new()),
+                    serde_json::Value::Null,
+                ),
+            };
+
+            // 诊断只有一棵树：`diagnostics` 下 `global` 放无模块归属的诊断，
+            // `modules` 按模块归组并按**源码顺序**合并词法 / 语法 / 语义诊断
+            // （同一处只出现一次，不再分成 `diagnostics` + `sema_diagnostics` 两份）。
+            let modules_json: Vec<_> = sema_result
                 .diagnostics
                 .modules
                 .iter()
-                .map(|m| {
+                .enumerate()
+                .map(|(id, module_diagnostics)| {
+                    let mut merged: Vec<&Diagnostic> = sema_result
+                        .modules
+                        .get(id)
+                        .map(|module| module.syntax_diagnostics.iter().collect())
+                        .unwrap_or_default();
+                    merged.extend(module_diagnostics.semantic_diagnostics());
+                    // 语法诊断与语义诊断各自有序，合并后按源码位置重排
+                    merged.sort_by_key(|diag| {
+                        diag.location
+                            .as_ref()
+                            .and_then(|loc| loc.span)
+                            .map(|span| span.start)
+                            .unwrap_or(0)
+                    });
                     serde_json::json!({
-                        "path": m.path,
-                        "diagnostics": m.semantic_diagnostics(),
+                        "id": id,
+                        "path": module_diagnostics.path,
+                        "diagnostics": merged,
                     })
                 })
                 .collect();
             let output_json = serde_json::json!({
-                "tokens": lex_result.tokens,
-                "program": parse_result.program,
-                "diagnostics": parse_result.diagnostics,
-                "sema_diagnostics": sema_json,
+                "tokens": tokens,
+                "program": program,
+                "diagnostics": {
+                    "global": sema_result.diagnostics.global,
+                    "modules": modules_json,
+                },
             });
             fs::write(&output, serde_json::to_string_pretty(&output_json).unwrap()).unwrap_or_else(
                 |e| {

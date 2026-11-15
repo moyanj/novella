@@ -17,6 +17,7 @@ use novella_core::Span;
 use novella_core::diagnostic::{Diagnostic, DiagnosticCode, DiagnosticLocation};
 use novella_core::line_index::LineIndex;
 use novella_core::path::module_key;
+use novella_core::token::Token;
 
 /// 模块标识：语义分析结果中模块列表（[`crate::DiagnosticReport::modules`]）的下标。
 pub type ModuleId = usize;
@@ -43,10 +44,18 @@ impl FileLoader for FsLoader {
 
 /// 一个已加载并解析的模块。
 pub(crate) struct Module {
-    /// 规范化后的绝对路径（模块唯一键）
+    /// 模块唯一键（[`module_key`] 规范化结果），模块去重与路径→id 映射使用。
+    ///
+    /// 与 [`Module::path`] 分离的原因：`path` 是调用方传入的原始路径，
+    /// 诊断 / 产物视图对外回显它；去重却必须用规范化绝对路径（符号链接、
+    /// `..`、相对路径都要收敛到同一个键）。
+    pub(crate) key: PathBuf,
+    /// 调用方传入的原始路径（对外的文件标识；诊断 `location.file` 用它）
     pub(crate) path: PathBuf,
     /// 源码
     pub(crate) source: String,
+    /// 词法产物：未经注释过滤的完整 token 流（JSON 输出 / 高亮等下游消费）
+    pub(crate) tokens: Vec<Token>,
     /// 抽象语法树
     pub(crate) program: Program,
     /// 源码行索引

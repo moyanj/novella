@@ -23,7 +23,20 @@ use super::unsafe_rules::{
 
 // ---------- 表达式 ----------
 /// 表达式检查，返回表达式类型（出错时返回 Unknown 并记录诊断，保证可恢复）。
+///
+/// 顺带把「表达式 span → 类型」登记进 [`Sema::expression_types`]，供 codegen
+/// 使用。登记点必须放在**唯一的函数出口**（而不是各分支里），否则新增分支
+/// 时极易漏记；`check_expr_with_hint` 等其它入口最终也会回到这里。
 pub(crate) fn check_expr(sema: &mut Sema, ctx: &mut BodyCtx, expr: &Expression) -> Ty {
+    let ty = check_expr_inner(sema, ctx, expr);
+    sema.expression_types
+        .insert((ctx.module, expr.span()), ty.clone());
+    ty
+}
+
+/// `check_expr` 的实体：只做分派与推导，不登记类型表。
+/// 递归调用仍走 `check_expr`，因此子表达式同样会被登记。
+fn check_expr_inner(sema: &mut Sema, ctx: &mut BodyCtx, expr: &Expression) -> Ty {
     match expr {
         Expression::Literal { value, span } => check_literal(sema, ctx, value, *span),
         Expression::Identifier { name, span } => check_identifier(sema, ctx, name, *span),
@@ -372,7 +385,7 @@ pub(crate) fn check_expr_with_hint(
     expr: &Expression,
     hint: &Ty,
 ) -> Ty {
-    match (expr, hint) {
+    let ty = match (expr, hint) {
         // 空数组字面量：元素类型取自标注 `T[]`
         (Expression::ArrayLiteral { elements, .. }, Ty::Array(element)) if elements.is_empty() => {
             Ty::Array(element.clone())
@@ -386,7 +399,12 @@ pub(crate) fn check_expr_with_hint(
             hint,
         ) if hint.is_nullable() => hint.clone(),
         _ => check_expr(sema, ctx, expr),
-    }
+    };
+    // 前两个提示分支不经 `check_expr`，须在此补登记（兜底分支会重复写同一键，
+    // 值相同，后写覆盖前写无副作用）
+    sema.expression_types
+        .insert((ctx.module, expr.span()), ty.clone());
+    ty
 }
 pub(crate) fn check_array_literal(
     sema: &mut Sema,
