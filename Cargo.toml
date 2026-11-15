@@ -10,6 +10,7 @@ license = "Apache-2.0"
 [workspace.dependencies]
 logos = "0.16.1"
 serde = { version = "1.0.229", features = ["derive"] }
+stacker = "0.1.25"
 novella-core = { path = "crates/novella-core" }
 novella-lexer = { path = "crates/novella-lexer" }
 novella-parser = { path = "crates/novella-parser" }

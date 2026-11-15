@@ -30,30 +30,15 @@ impl Parser {
         {
             return None;
         }
-        let depth = self.enter_nesting();
-        // 超出嵌套上限：立即掐断递归（诊断已在 `enter_nesting` 里报过一条），
-        // 否则病态输入（上万个 `(`）会耗尽栈直接 abort。
-        let expr = if self.nesting_exceeded() {
-            None
-        } else {
-            self.parse_assignment()
-        };
-        self.leave_nesting(depth);
-        expr
+        // 栈不足时切到新分段继续递归（见 `recursion` 模块）；分段预算耗尽返回 None
+        self.guarded(|p| p.parse_assignment())?
     }
 
     /// 赋值层（对应文法 `AssignmentExpr`，右结合）。
     ///
-    /// 右结合靠自递归实现，是递归入口之一：先登记嵌套深度、超限即截断（A-03）。
+    /// 右结合靠自递归实现，是递归入口之一：经 [`Parser::guarded`] 扩展分段栈（A-03）。
     fn parse_assignment(&mut self) -> Option<Expression> {
-        let depth = self.enter_nesting();
-        let result = if self.nesting_exceeded() {
-            None
-        } else {
-            self.parse_assignment_chain()
-        };
-        self.leave_nesting(depth);
-        result
+        self.guarded(|p| p.parse_assignment_chain())?
     }
 
     /// [`Parser::parse_assignment`] 的实体（嵌套防护由外层包装负责）。
@@ -78,17 +63,9 @@ impl Parser {
 
     /// 三元层（对应文法 `TernaryExpr`）。
     ///
-    /// then / else 分支都靠递归实现，是递归入口之一：先登记嵌套深度、
-    /// 超限即截断（A-02）。
+    /// then / else 分支都靠递归实现，是递归入口之一：经 [`Parser::guarded`] 扩展分段栈（A-02）。
     fn parse_ternary(&mut self) -> Option<Expression> {
-        let depth = self.enter_nesting();
-        let result = if self.nesting_exceeded() {
-            None
-        } else {
-            self.parse_ternary_chain()
-        };
-        self.leave_nesting(depth);
-        result
+        self.guarded(|p| p.parse_ternary_chain())?
     }
 
     /// [`Parser::parse_ternary`] 的实体（嵌套防护由外层包装负责）。
@@ -349,18 +326,9 @@ impl Parser {
 
     /// 前缀一元层（对应文法 `PrefixExpr` / `AwaitExpr`），右结合。
     ///
-    /// 右结合靠自递归实现，是递归入口之一：先登记嵌套深度、超限即截断（A-01）；
-    /// 实体内的 `?` 提前返回不得跳过深度恢复（A-05），故实体拆到
-    /// [`Parser::parse_unary_inner`]，本包装保证 `leave_nesting` 成对执行。
+    /// 右结合靠自递归实现，是递归入口之一：经 [`Parser::guarded`] 扩展分段栈（A-01）。
     fn parse_unary(&mut self) -> Option<Expression> {
-        let depth = self.enter_nesting();
-        let result = if self.nesting_exceeded() {
-            None
-        } else {
-            self.parse_unary_inner()
-        };
-        self.leave_nesting(depth);
-        result
+        self.guarded(|p| p.parse_unary_inner())?
     }
 
     /// [`Parser::parse_unary`] 的实体（嵌套防护由外层包装负责）。

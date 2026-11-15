@@ -1,6 +1,8 @@
 //! 重新导出 derive 宏，供各模块统一以 `use crate::Spanned;` 引入。
 pub use novella_derive::Spanned;
 
+mod drop_guard;
+
 pub mod expr;
 pub mod program;
 pub mod stmt;

@@ -23,17 +23,10 @@ use crate::Parser;
 impl Parser {
     /// 解析类型表达式（对应文法 `typeExpression`）。
     ///
-    /// 递归入口之一：与 [`Parser::parse_expression`] 一样先登记嵌套深度、
-    /// 超限即截断，保证恶意深层输入（如数千层嵌套括号类型）线性终止（审计 A-04/A-05）。
+    /// 递归入口之一：与 [`Parser::parse_expression`] 一样经 [`Parser::guarded`]
+    /// 扩展分段栈，保证深层嵌套括号类型可正常解析（审计 A-04）。
     pub(crate) fn parse_type_expr(&mut self) -> Option<TypeExpr> {
-        let depth = self.enter_nesting();
-        let result = if self.nesting_exceeded() {
-            None
-        } else {
-            self.parse_type_union()
-        };
-        self.leave_nesting(depth);
-        result
+        self.guarded(|p| p.parse_type_union())?
     }
 
     /// 解析联合类型（`typeExpression` 的顶层结构）。

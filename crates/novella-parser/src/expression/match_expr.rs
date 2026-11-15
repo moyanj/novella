@@ -11,7 +11,16 @@ impl Parser {
     /// 解析 match 表达式（对应文法 `matchExpression`）。
     ///
     /// 前置：游标位于 `match`。
+    ///
+    /// 分支体可内含更深的 match（`match a { case 1 => match b { ... } }`），
+    /// 故同样经 [`Parser::guarded`] 扩展分段栈；实体拆到
+    /// [`Parser::parse_match_inner`]。
     pub(crate) fn parse_match(&mut self) -> Option<Expression> {
+        self.guarded(|p| p.parse_match_inner())?
+    }
+
+    /// [`Parser::parse_match`] 的实体（分段栈扩展由外层包装负责）。
+    fn parse_match_inner(&mut self) -> Option<Expression> {
         let keyword = self.advance()?;
         let start = keyword.span.start;
         // 主体后紧跟的 `{` 是 match 块，不能交给 StructInit 当结构体字面量
