@@ -110,8 +110,8 @@ impl FloatKind {
 pub(crate) struct FunctionSig {
     /// 所属模块（名义键的一半）
     pub module: ModuleId,
-    /// 函数名（名义键另一半）：顶层函数在签名回填时写入；
-    /// 方法 / lambda / 占位签名为 `None`，投影到 [`crate::TypeView`] 时为 `Unknown`
+    /// 函数名（名义键另一半）：顶层函数使用原名，方法使用 `类型::方法`；
+    /// lambda / 占位签名为 `None`，投影仍保留完整参数与返回结构。
     pub name: Option<String>,
     pub params: Vec<ParamSig>,
     pub ret: Ty,
@@ -119,6 +119,38 @@ pub(crate) struct FunctionSig {
     pub type_param_count: usize,
     pub is_async: bool,
     pub is_extern: bool,
+    /// 实例方法（隐式接收 `this`）：首个无注解的 `self` 绑定为属主类型。
+    /// 投影时该形参整体略去，
+    /// 接收者改由 [`FunctionView::receiver`] 显式表达。
+    pub is_method: bool,
+}
+
+impl FunctionSig {
+    /// 公开投影（携带完整参数 / 返回结构，含匿名 lambda）。
+    ///
+    /// 使上游能据它构造类型与签名，而不是只拿到一个名义键。
+    /// `self` 占位形参不进入 `params`，改由 `receiver` 标记，接收者类型由
+    /// 方法所属的类型定义（[`crate::TypeSummary::name`]）决定。
+    pub(crate) fn view(&self) -> crate::FunctionView {
+        let mut params = Vec::with_capacity(self.params.len());
+        let receiver = self.is_method;
+        for (index, param) in self.params.iter().enumerate() {
+            if self.is_method && param.name == "self" && index == 0 {
+                continue;
+            }
+            params.push(param.ty.view());
+        }
+        crate::FunctionView {
+            module: self.module,
+            name: self.name.clone(),
+            params,
+            ret: Box::new(self.ret.view()),
+            type_param_count: self.type_param_count,
+            is_async: self.is_async,
+            is_extern: self.is_extern,
+            receiver,
+        }
+    }
 }
 
 /// 形参签名。
@@ -189,12 +221,9 @@ impl Ty {
             Ty::Array(element) => TypeView::Array(Box::new(element.view())),
             Ty::Tuple(elements) => TypeView::Tuple(elements.iter().map(Ty::view).collect()),
             Ty::Union(members) => TypeView::Union(members.iter().map(Ty::view).collect()),
-            // 函数签名实体在类型注册表内，公开视图只给名义键 `(所属模块, 名)`；
-            // 匿名 lambda 签名不在注册表内，退化为 Unknown
-            Ty::Function(sig) => match &sig.name {
-                Some(name) => TypeView::Function(sig.module, name.clone()),
-                None => TypeView::Unknown,
-            },
+            // 函数签名：公开投影携带完整参数 / 返回结构（含匿名 lambda），
+            // 使 codegen 能据此建 FunctionType，而不是只能拿到名义键
+            Ty::Function(sig) => TypeView::Function(Box::new(sig.view())),
             Ty::Struct(module, name) => TypeView::Struct(*module, name.clone()),
             Ty::Class(module, name) => TypeView::Class(*module, name.clone()),
             Ty::Trait(module, name) => TypeView::Trait(*module, name.clone()),
@@ -347,6 +376,10 @@ pub(crate) struct FieldDef {
     pub ty: Ty,
     /// 是否有声明处默认值（StructInit 可省略该字段）
     pub has_default: bool,
+    /// 是否为弱引用字段（`weak` 修饰，仅 class 字段有意义）
+    pub is_weak: bool,
+    /// 是否为静态字段（`static` 修饰：不出现在实例布局里，而是一个全局）
+    pub is_static: bool,
 }
 
 /// 方法签名（含静态标记；`this` 不占用参数位）。

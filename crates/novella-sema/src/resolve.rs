@@ -101,6 +101,7 @@ pub(crate) fn collect_module(sema: &mut Sema, module: ModuleId) {
                     type_param_count: 0,
                     is_async: function.is_async,
                     is_extern: function.is_extern,
+                    is_method: false,
                 };
                 let symbol = Symbol {
                     name: function.name.clone(),
@@ -322,6 +323,20 @@ impl Sema {
     /// - `type_env`：泛型形参替换环境（函数类型形参按恒等映射为
     ///   [`Ty::TypeParam`]；泛型别名展开时映射为实参类型）。
     pub(crate) fn resolve_type(
+        &mut self,
+        module: ModuleId,
+        scope: ScopeId,
+        ty: &TypeExpr,
+        type_env: &HashMap<String, Ty>,
+    ) -> Ty {
+        let resolved = self.resolve_type_inner(module, scope, ty, type_env);
+        self.annotation_types
+            .insert((module, ty.span()), resolved.clone());
+        resolved
+    }
+
+    /// 统一在包装层登记注解类型，避免下游重复名称解析。
+    fn resolve_type_inner(
         &mut self,
         module: ModuleId,
         scope: ScopeId,
@@ -585,6 +600,7 @@ impl Sema {
             type_param_count: function_type.type_parameters.len(),
             is_async: false,
             is_extern: false,
+            is_method: false,
         }
     }
 }

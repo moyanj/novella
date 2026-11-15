@@ -26,6 +26,7 @@ pub(crate) fn check_module(sema: &mut Sema, module: ModuleId) {
     for item in &items {
         match item {
             Item::Function(function) => {
+                typecheck::check_function_defaults(sema, module, function);
                 if let Some(block) = &function.block {
                     typecheck::check_function_body(sema, module, function, block);
                 }
@@ -61,6 +62,7 @@ fn check_member_body(sema: &mut Sema, module: ModuleId, member: &ClassMember, th
             }
         }
         ClassMember::Method(method) => {
+            typecheck::check_method_defaults(sema, module, this_ty, method);
             if let Some(block) = &method.block {
                 typecheck::check_method_body(sema, module, this_ty, method, block);
             }

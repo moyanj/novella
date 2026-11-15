@@ -29,6 +29,70 @@ use crate::ty::{ClassDef, StructDef, Ty, TypeDef};
 use body::{BodyCtx, check_block, check_stmt, concrete, define_local};
 use expr::check_expr;
 
+/// 默认实参在声明处检查，按参数顺序只开放此前已经绑定的形参。
+fn check_defaults(
+    sema: &mut Sema,
+    module: ModuleId,
+    params: &[novella_ast::types::Param],
+    sig: &crate::ty::FunctionSig,
+    this_ty: Option<Ty>,
+) {
+    let global = sema.modules[module].global_scope;
+    let scope = sema.scopes.new_scope(Some(global), ScopeKind::Function);
+    let mut ctx = BodyCtx::base(module, scope);
+    ctx.this_ty = this_ty;
+    for (param, resolved) in params.iter().zip(&sig.params) {
+        if let Some(expr) = &param.default {
+            let actual = expr::check_expr_with_hint(sema, &mut ctx, expr, &resolved.ty);
+            if !sema.is_assignable(&resolved.ty, &actual) {
+                sema.type_error(
+                    module,
+                    expr.span(),
+                    format!("默认值需要 `{}`，实为 `{actual}`", resolved.ty),
+                );
+            }
+        }
+        define_local(
+            sema,
+            &ctx,
+            &param.name,
+            SymbolKind::Param {
+                ty: resolved.ty.clone(),
+            },
+            param.span,
+        );
+    }
+}
+
+pub(crate) fn check_function_defaults(sema: &mut Sema, module: ModuleId, function: &FunctionItem) {
+    let global = sema.modules[module].global_scope;
+    if let Some(Symbol {
+        kind: SymbolKind::Function { sig },
+        ..
+    }) = sema.scopes.lookup_local(global, &function.name).cloned()
+        && let Some(ty) = &function.r#type
+    {
+        check_defaults(sema, module, &ty.params, &sig, None);
+    }
+}
+
+pub(crate) fn check_method_defaults(
+    sema: &mut Sema,
+    module: ModuleId,
+    owner: &Ty,
+    method: &MethodMember,
+) {
+    if let Some(sig) = lookup_method_def(sema, owner, &method.name) {
+        check_defaults(
+            sema,
+            module,
+            &method.params,
+            &sig.sig,
+            (!method.modifiers.is_static).then(|| owner.clone()),
+        );
+    }
+}
+
 // ---------- 入口：函数体 / 方法体 / 字段初始化 / 顶层语句 ----------
 /// 检查顶层函数体。
 pub(crate) fn check_function_body(

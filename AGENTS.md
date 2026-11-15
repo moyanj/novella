@@ -18,7 +18,8 @@ novella/
 │   ├── novella-lexer/   # 词法器（logos），RawToken → TokenKind 转换
 │   ├── novella-parser/  # 手写递归下降解析器（含 token 预处理与上下文消歧）
 │   ├── novella-sema/    # 语义分析：module/ + resolve + symbol + ty + check/ + typecheck/
-│   ├── novella-codegen/ # 空壳（占位 add()）
+│   ├── novella-hir/     # 高层中间表示：sema 结果 → 定型指令流（ty/body/item/build）
+│   ├── novella-codegen/ # 空壳（占位 add()，规划接 inkwell 消费 HIR）
 │   ├── novella-cli/     # 二进制（包名 novella）：clap CLI，仅 compile 子命令
 │   ├── novella-lsp/     # 语言服务器（lib + 二进制）：outline/ + features/ + server/
 │   └── novella-syntax-gen/ # TextMate 语法生成器（TokenKind → editors/vscode 的 tmLanguage）
@@ -31,7 +32,7 @@ novella/
 依赖链（自上而下单向，禁止反向）：
 
 ```
-core ← ast ← parser ← sema ← codegen ← cli
+core ← ast ← parser ← sema ← hir ← codegen ← cli
 core ← lexer ← parser
 core ← lexer ← novella-lsp（独立二进制，不经 cli）
 ast ──(构建期)── novella-derive（proc-macro，展开引用 ::novella_core::Span）
@@ -52,6 +53,7 @@ ast ──(构建期)── novella-derive（proc-macro，展开引用 ::novella
 | 调整高亮类别 | `crates/novella-lsp/src/semantic.rs` | `token_type_index` 为穷尽 match；改动映射须同步 `TOKEN_TYPES`（数组顺序即 legend 下标） |
 | 打包 VS Code 扩展 | `editors/vscode/` | `just lsp-pack`；源码 `src/extension.js` 经 esbuild 打入 `dist/`，vsix 自包含无需 node_modules |
 | 占用位 crates | codegen | `pub fn add(u64, u64) -> u64` 待替换 |
+| HIR 降级入口 | `crates/novella-hir/src/build.rs`（`build_hir`） | AST → `HirProgram`；类型取自 `sema.expression_types` / `annotation_types` / `declaration_types`，无法定型即 `BuildError` |
 | 语义分析入口 | `crates/novella-sema/src/lib.rs`（`analyze` / `analyze_with`） | 五阶段管线：模块加载→声明收集→导入绑定→类型注册→逐模块检查；实现在 `module/`（mod/loader/resolve_path）、`resolve.rs`、`symbol.rs`、`ty.rs`、`check/`（mod/type_defs/decl）、`typecheck/`（mod/body/expr/member/call/unsafe_rules）。**词法/语法只在 loader 内各跑一次**，产物经 `SemaResult.modules`（`ModuleOutput`）交还下游 |
 
 ## CODE MAP
@@ -61,7 +63,7 @@ ast ──(构建期)── novella-derive（proc-macro，展开引用 ::novella
 | `Span`, `Spanned<T>` | `novella-core/src/lib.rs` | 源码位置区间（字节偏移）/ 通用位置包装（AST 已改为节点内嵌 span，`Spanned` 暂保留备用） |
 | `Spanned`（derive 宏） | `novella-derive/src/lib.rs` | 为携带 `span` 字段的节点生成 `span()` 方法；struct 取字段、enum 具名变体取字段、newtype 变体委托内部节点 |
 | `AnalyzedModule` / `ModuleOutput` | `novella-sema/src/lib.rs` | 每模块产物（`id`/`path`/`source`/`tokens`/`program`/`syntax_diagnostics`/`syntax_failed`/`load_failed`）；`get`/`entry`/`find_by_path`/`find_entry`（路径两侧经 `module_key` 规范化） |
-| `TypeView` / `ExpressionTypes` | `novella-sema/src/lib.rs`（投影在 `ty.rs` 的 `Ty::view`） | 表达式类型表，键 `(ModuleId, Span)`；`Unknown`/`External`/`Error` 及无名义键的 lambda 统一投影为 `TypeView::Unknown` |
+| `TypeView` / `ExpressionTypes` | `novella-sema/src/lib.rs`（投影在 `ty.rs` 的 `Ty::view`） | 表达式类型表，键 `(ModuleId, Span)`；`Unknown`/`External`/`Error` 投影为 `TypeView::Unknown`，函数类型投影为 `TypeView::Function(Box<FunctionView>)`（含 `params`/`ret`/`receiver`，不再因 `name: None` 退化） |
 | `Diagnostic` / `Severity` / `DiagnosticLocation` | `novella-core/src/diagnostic.rs` | 与阶段无关的通用诊断结构（serde），各阶段产出、CLI 渲染 |
 | `TokenKind`（107 变体） | `novella-core/src/token.rs` | 词法单元种类，纯数据投影，带 `Display`（输出 Debug 文本）；含 `LineComment`（行注释） |
 | `Token` | `novella-core/src/token.rs` | kind + span + slice + line + column |
@@ -158,4 +160,6 @@ just lsp-pack     # 打包 VS Code 扩展（esbuild 打包 + vsce 产出 vsix）
 - **诊断只有一份**：JSON 的 `diagnostics` 是唯一诊断树（`{ global, modules: [{ id, path, diagnostics }] }`），每模块内词法/语法/语义诊断按 `location.span.start` 合并排序；禁止再加 `sema_diagnostics` 之类的并列字段，否则同一错误会出现两次。
 - **入口路径语义**：`Module` 同时持 `key`（`module_key` 规范化，用于去重/overlay/crate 根查找/相对导入解析基准）与 `path`（调用方原始路径，用于诊断回显）；诊断的 `location.file` 与 `sema_diagnostics[].path` 一律用 `path`，因此 CLI 输出里看到的是命令行传入的写法（如 `test.nov`）而不是规范化绝对路径。
 - **表达式类型登记**：`typecheck/expr.rs` 的 `check_expr` 是登记 `Sema::expression_types` 的唯一出口（`check_expr` 包一层记录后调 `check_expr_inner`）；`check_expr_with_hint` 的两个提示分支（空数组 / `null`→标注）绕过该出口，必须另行补记。新增表达式分支无需改动登记逻辑。
-- **函数签名名义键**：`ty::FunctionSig` 有 `module` + `name: Option<String>`，只有顶层函数在 `build_function_sig` 里回填 `name`；方法、lambda 与占位签名保持 `None`，`Ty::view()` 遇 `None` 投影为 `TypeView::Unknown`。
+- **函数签名名义键**：`ty::FunctionSig` 有 `module` + `name: Option<String>`；顶层函数使用原名，方法在 `build_method_sig` 中使用 `类型::方法`，lambda 与占位签名保持 `None`。`name` 用于合成 HIR 符号键，**不决定类型投影**：`Ty::view()` 对任何 `FunctionSig` 都产出 `TypeView::Function(Box<FunctionView>)`。匿名签名键不能直接作为 lambda 实体的唯一键（实体键使用模块与源码位置，见 `docs/hir-handover.md`）。
+- **实例方法的 `self`**：`build_method_sig` 将实例方法首个无注解的 `self` 定型为所属 Struct / Class，并置 `is_method`；`FunctionSig::view()` 跳过该形参并置 `FunctionView::receiver = true`。HIR 成员访问统一查表达式类型表，不用局部类型兜底。
+- **HIR 降级边界**：实现按职责拆在 novella-hir/src/build/；条件使用 HirCond，循环 prelude 每轮执行，Loop.step 在正常尾部和 continue 后执行，break/return 跳过。Binary 必须携带两侧类型，TypeTest 必须携带输入类型；复杂左值先定位一次，复合赋值先读旧值再求 RHS。struct 接收者槽位为 Pointer(Struct)。默认实参与字段初值在定义环境展开；?? 保留非空指针而不解引用。入口拒绝任何阶段错误；运行时未定义的异常、挂起、动态派发等明确 fail-fast。覆盖与验证见 docs/hir-handover.md。

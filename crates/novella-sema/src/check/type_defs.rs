@@ -51,7 +51,9 @@ pub(crate) fn build_type_defs(sema: &mut Sema, module: ModuleId) {
                                 method.span,
                             );
                             check_special_method_name(sema, module, method, true);
-                            let sig = build_method_sig(sema, module, global_scope, method, &env);
+                            let owner = Ty::Class(module, class.name.clone());
+                            let sig =
+                                build_method_sig(sema, module, global_scope, method, &env, &owner);
                             methods.insert(method.name.clone(), sig);
                         }
                     }
@@ -92,7 +94,9 @@ pub(crate) fn build_type_defs(sema: &mut Sema, module: ModuleId) {
                                 method.span,
                             );
                             check_special_method_name(sema, module, method, false);
-                            let sig = build_method_sig(sema, module, global_scope, method, &env);
+                            let owner = Ty::Struct(module, struct_item.name.clone());
+                            let sig =
+                                build_method_sig(sema, module, global_scope, method, &env, &owner);
                             methods.insert(method.name.clone(), sig);
                         }
                     }
@@ -190,6 +194,8 @@ fn build_field(
         name: field.name.clone(),
         ty,
         has_default: field.initializer.is_some(),
+        is_weak: field.modifiers.is_weak,
+        is_static: field.modifiers.is_static,
     }
 }
 
@@ -200,6 +206,7 @@ fn build_method_sig(
     scope: crate::symbol::ScopeId,
     method: &MethodMember,
     env: &HashMap<String, Ty>,
+    owner: &Ty,
 ) -> MethodSig {
     // 方法自身泛型形参叠加进环境
     let mut env = env.clone();
@@ -207,13 +214,19 @@ fn build_method_sig(
         env.insert(param.name.clone(), Ty::TypeParam(param.name.clone()));
     }
     check_duplicate_params(sema, module, &method.params, method.span);
-    let params = method
+    let params: Vec<crate::ty::ParamSig> = method
         .params
         .iter()
-        .map(|p| crate::ty::ParamSig {
+        .enumerate()
+        .map(|(index, p)| crate::ty::ParamSig {
             name: p.name.clone(),
             ty: match &p.ty {
                 Some(ty) => sema.resolve_type(module, scope, ty, &env),
+                // 实例方法的首个 self 由属主确定，必须在语义阶段完成定型，
+                // 使成员访问及下游 expression_types 共用同一类型来源。
+                None if index == 0 && p.name == "self" && !method.modifiers.is_static => {
+                    owner.clone()
+                }
                 None => Ty::Unknown,
             },
             has_default: p.default.is_some(),
@@ -225,14 +238,19 @@ fn build_method_sig(
     };
     MethodSig {
         sig: crate::ty::FunctionSig {
-            // 方法签名的名义键：`<类型名>.<方法名>`
+            // 方法与顶层函数共享模块符号空间，以属主隔开同名方法。
             module,
-            name: None,
+            name: Some(match owner {
+                Ty::Struct(_, name) | Ty::Class(_, name) => format!("{name}::{}", method.name),
+                _ => unreachable!("方法属主恒为 struct / class"),
+            }),
             params,
             ret,
             type_param_count: method.type_parameters.len(),
             is_async: false,
             is_extern: false,
+            // 公开投影略去首个 self，并置接收者标记。
+            is_method: !method.modifiers.is_static,
         },
         is_static: method.modifiers.is_static,
     }
@@ -259,6 +277,7 @@ fn build_function_sig(
             type_param_count: 0,
             is_async: false,
             is_extern: false,
+            is_method: false,
         },
     };
     sig.is_async = function.is_async;
@@ -266,6 +285,10 @@ fn build_function_sig(
     // 回填名义键（`resolve_function_type` 不知道函数名，此处补上）
     sig.module = module;
     sig.name = Some(function.name.clone());
+    sema.declaration_types.insert(
+        (module, function.span),
+        Ty::Function(std::rc::Rc::new(sig.clone())),
+    );
 
     if function.is_extern {
         // E2：extern 参数必须显式标注类型（FFI 边界无法推导）。

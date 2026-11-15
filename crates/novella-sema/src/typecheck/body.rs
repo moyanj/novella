@@ -393,6 +393,8 @@ pub(crate) fn check_variable_decl(sema: &mut Sema, ctx: &mut BodyCtx, decl: &Var
             Ty::Unknown
         }
     };
+    sema.declaration_types
+        .insert((ctx.module, decl.span), bound_ty.clone());
     bind_pattern_typed(sema, ctx, &decl.pattern, &bound_ty, is_const);
 }
 /// 按类型绑定模式（元组解构校验结构与 arity）。
@@ -476,6 +478,8 @@ pub(crate) fn concrete(ty: &Ty) -> Ty {
     match ty {
         Ty::IntLiteral => Ty::Int(crate::ty::IntKind::I32),
         Ty::FloatLiteral => Ty::Float(crate::ty::FloatKind::F32),
+        Ty::Tuple(elements) => Ty::Tuple(elements.iter().map(concrete).collect()),
+        Ty::Array(element) => Ty::Array(Box::new(concrete(element))),
         other => other.clone(),
     }
 }

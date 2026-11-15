@@ -30,12 +30,19 @@
   ▼
 ┌─────────────────────────────────────────────────────────────┐
 │ novella-sema    类型检查 / unsafe 上下文 / 路径别名 / main 判定 │
-│ （当前为空壳占位 add()，规则见 design.md §6.5）               │
+│ → SemaResult { diagnostics, bindings, types, modules,        │
+│                expression_types }                            │
 └─────────────────────────────────────────────────────────────┘
   │
   ▼
 ┌─────────────────────────────────────────────────────────────┐
-│ novella-codegen 目标汇编（当前占位：写 JSON 文本至 output.s）   │
+│ novella-hir     AST → 定型指令流（类型取自 expression_types） │
+│ → HirProgram（fail-fast：无法定型的构造直接报错）             │
+└─────────────────────────────────────────────────────────────┘
+  │
+  ▼
+┌─────────────────────────────────────────────────────────────┐
+│ novella-codegen LLVM（inkwell）目标代码（当前占位：JSON 文本） │
 └─────────────────────────────────────────────────────────────┘
   │
   ▼
@@ -59,7 +66,8 @@ crates/
 ├── novella-lexer/   # 词法器（logos），RawToken → TokenKind
 ├── novella-parser/  # 手写递归下降（expression/ 目录 + lib/stmt/types）
 ├── novella-sema/    # 语义分析第一期（module/ + resolve + symbol + ty + check/ + typecheck/）
-├── novella-codegen/ # 代码生成（占位 add()）
+├── novella-hir/     # 高层中间表示：sema 结果 → 定型指令流（ty/body/item/build）
+├── novella-codegen/ # 代码生成（占位 add()，规划接 inkwell 消费 HIR）
 ├── novella-cli/     # 二进制 novella：clap CLI，compile 子命令
 ├── novella-lsp/     # 语言服务器（outline/ + features/ + server/），公开面仅 server::run
 └── novella-syntax-gen/ # TextMate 语法生成器（TokenKind → VS Code 扩展）
@@ -68,7 +76,7 @@ crates/
 依赖（自上而下单向，禁止反向）：
 
 ```
-core ← ast ← parser ← sema ← codegen ← cli
+core ← ast ← parser ← sema ← hir ← codegen ← cli
 core ← lexer ← parser
 core ← lexer ← novella-lsp（独立二进制，不经 cli）
 ast ──(构建期)── novella-derive（proc-macro，展开引用 ::novella_core::Span）
@@ -234,17 +242,43 @@ overlay 查找与相对导入解析，不外泄。
 6. **特殊方法登记**：class/（trait 方法签名）中 `__` 前缀方法按名称登记
    调用时机（`__init` / `__destroy` / `__str` …），struct 拒绝 `__` 前缀。
 
-## 7. 代码生成（novella-codegen）
+## 7. 高层中间表示（novella-hir）
+
+职责：把 SemaResult 降级为定型的块、控制流和顺序指令。只依赖 core、ast、sema，
+不引入 LLVM / inkwell 类型；后端不再重建 AST 求值顺序或解析类型名。
+
+- 类型来源为 sema.expression_types、annotation_types、declaration_types，分别提供
+  表达式、已解析注解、声明最终类型；字面量由使用上下文递归定型。
+- build_hir 遇到词法、语法、语义或加载错误立即拒绝，不跳过坏模块。
+  Unknown / External / Error、未定型类型、联合、泛型及未支持语义返回 BuildError。
+- Binary 携带两侧输入类型和结果类型；TypeTest 携带输入/目标类型。
+  地址、间接写入、元组构造/提取、数组构造/长度均有明确指令。
+- 条件用 HirCond { prelude, value }，循环每轮执行 prelude。
+  Loop.step 在正常尾部和 continue 后执行，break / return 跳过。
+- 左值只定位一次，复合赋值先读旧值再求 RHS；普通局部读取保存快照。
+- struct self 由 sema 定型为属主，在 HIR 参数槽位以 Pointer(Struct) 传递，
+  保证方法能修改原实例；签名的 receiver 不占显式 params。
+  方法键为 m{module}::类型::方法，lambda 实体键包含模块和源码位置。
+- 具名类型与字段访问共用父到子的跨模块字段布局；默认字段/实参使用定义环境，
+  extern 产出独立声明项。用户已确认 p ?? backup 返回指针，非空时不解引用。
+
+P1 已覆盖数组 for-in、元组/数组与递归解构、短路、默认实参、struct 实例调用、
+match 顺序、无捕获 lambda 和复杂左值。P2 已完成扩展冒烟与 workspace 质量检查。
+异常、异步、new、class 动态派发、闭包捕获、宏/装饰器、静态/弱字段、trait 成员、
+动态对象等后续期语义明确拒绝。string/数组布局和运行时 ABI 尚待后端阶段确定。
+具体降级契约、拒绝边界及验证证据见 [hir-handover.md](hir-handover.md)。
+
+## 8. 代码生成（novella-codegen）
 
 现状：占位 `add()`，CLI 默认输出文件 `output.s` 当前实际写 JSON 文本。
-目标形态（后续阶段）：
+目标形态（后续阶段）：消费 `novella-hir` 产物（经 inkwell 对接 LLVM）；
 
 - 输出汇编（.s），面向 x86-64 等目标平台；
 - 指针 = `usize` 宽度；struct 按字段顺序 + 自然对齐布局（C ABI 兼容），
   无虚表；`&` 取址 → lea/mov 地址、`*p` 解引用 → load/store、指针算术 →
   元素宽度位移、`as` 指针转换 → 位级重解释或截断/扩展。
 
-## 8. CLI 与诊断渲染（novella-cli）
+## 9. CLI 与诊断渲染（novella-cli）
 
 - clap CLI，`compile <file> -o <out>` 子命令；
 - 流程：lexer → 过滤注释 token → parser → 汇总词法 + 语法诊断 → JSON 输出
@@ -253,7 +287,7 @@ overlay 查找与相对导入解析，不外泄。
   `error: <msg>` / `--> 文件:行:列` + 源码行 + caret；展示列号 1-based、
   caret 按字符渲染（中文/emoji 不错位）。
 
-## 9. LSP（novella-lsp）
+## 10. LSP（novella-lsp）
 
 - LSP：stdin/stdout 上的 `Content-Length` 报文帧，JSON-RPC 分发
   （请求必回复、通知不回复）。三层能力：词法级（语义高亮 / 文档高亮 / 词法
@@ -274,12 +308,12 @@ overlay 查找与相对导入解析，不外泄。
   防御性实现）；
 - 高亮规则不重复维护：编辑器侧不维护词法/关键字表，全部复用 lexer。
 
-### 9.1 已确认变更
+### 10.1 已确认变更
 
 `token_type_index`：删 `Power` / `PowerAssign` 两行映射；新增
 `Unsafe` / `Struct` → `KEYWORD`（无需加 legend 类别）。
 
-## 10. 代码 ↔ 文法 ↔ 高亮三重对齐机制
+## 11. 代码 ↔ 文法 ↔ 高亮三重对齐机制
 
 | 对齐对 | 机制 | 备注 |
 |--------|------|------|
@@ -299,7 +333,7 @@ antlr4 -o target/antlr-align/gen grammar/NovellaLexer.g4
 antlr4 -lib target/antlr-align/gen/grammar -o target/antlr-align/gen grammar/NovellaParser.g4
 ```
 
-## 11. 落地清单（已确认变更，按序实施）
+## 12. 落地清单（已确认变更，按序实施）
 
 > 进度注：2026 已完成的词法/文法/AST 落地步骤标 ✅，其余待实施。
 
@@ -324,7 +358,7 @@ antlr4 -lib target/antlr-align/gen/grammar -o target/antlr-align/gen grammar/Nov
 > 工程说明：stream 已确认砍掉（含关键字）；`weak` 仅字段修饰（无空安全保证，
 > 读过期对象未定义行为）。
 
-## 12. 工程注意与已知限制
+## 13. 工程注意与已知限制
 
 - 词法变体数维持 105（删 `Power`/`PowerAssign`/`Stream` 3 个、增
   `Unsafe`/`Struct`/`Weak` 3 个，数量不变），加 `Eof` / `Error` 合成项共
@@ -337,7 +371,7 @@ antlr4 -lib target/antlr-align/gen/grammar -o target/antlr-align/gen grammar/Nov
 - lexer 中 `LineComment` 需在 CLI 喂 parser 前过滤，JSON 输出保留（已如此）；
 - LSP 偏移为 UTF-16 码元，新增高亮必须复用 `semantic.rs` 的编码换算。
 
-## 13. 常用命令
+## 14. 常用命令
 
 ```bash
 just check        # cargo check --workspace --all-targets

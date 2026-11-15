@@ -12,9 +12,7 @@ use crate::symbol::{Symbol, SymbolKind};
 use crate::ty::{Ty, TypeDef, ty_eq};
 
 use super::body::{BodyCtx, binary_op_text, concrete};
-use super::expr::{
-    IdentTarget, check_expr, check_identifier, classify_identifier, type_key_of_name,
-};
+use super::expr::{IdentTarget, check_expr, classify_identifier, type_key_of_name};
 
 /// S10：指针类操作需要 `unsafe {}`。
 pub(crate) fn require_unsafe(sema: &mut Sema, ctx: &BodyCtx, span: Span, what: &str) {
@@ -74,10 +72,18 @@ pub(crate) fn check_binary(
                     format!("`??` 的左操作数必须可空，实为 `{lhs}`"),
                 );
             }
-            // 结果类型 = 左操作数去空；无法表达时退化为右操作数类型
+            // 空合并只选择备用值；指针非空时不隐式解引用。
             match &lhs {
-                Ty::Pointer(inner) => (**inner).clone(),
-                Ty::Class(..) => lhs,
+                Ty::Pointer(_) | Ty::Class(..) => {
+                    if !sema.is_assignable(&lhs, &rhs) {
+                        sema.type_error(
+                            ctx.module,
+                            right.span(),
+                            format!("空合并的备用值需要 `{lhs}`，实为 `{rhs}`"),
+                        );
+                    }
+                    lhs
+                }
                 Ty::Null => rhs,
                 _ => rhs,
             }
@@ -379,7 +385,14 @@ pub(crate) fn check_struct_init(
                     Some(value) => check_expr(sema, ctx, value),
                     None => {
                         // 简写 {x} ≡ {x: x}
-                        check_identifier(sema, ctx, &property.name, property.span)
+                        check_expr(
+                            sema,
+                            ctx,
+                            &Expression::Identifier {
+                                name: property.name.clone(),
+                                span: property.span,
+                            },
+                        )
                     }
                 };
                 if !sema.is_assignable(&field_def.ty, &value_ty) {

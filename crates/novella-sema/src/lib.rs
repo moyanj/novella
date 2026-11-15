@@ -192,8 +192,8 @@ pub enum TypeView {
     Array(Box<TypeView>),
     Tuple(Vec<TypeView>),
     Union(Vec<TypeView>),
-    /// 指向类型注册表中函数签名的键（模块 + 函数名）
-    Function(ModuleId, String),
+    /// 函数签名投影（见 [`FunctionView`]）
+    Function(Box<FunctionView>),
     /// `(定义模块, 类型名)`
     Struct(ModuleId, String),
     Class(ModuleId, String),
@@ -202,6 +202,39 @@ pub enum TypeView {
     TypeParam(String),
     /// 未知 / 外部 / 错误抑制（调用方不应据它生成代码）
     Unknown,
+}
+
+/// 函数签名的公开投影（[`TypeView::Function`] 的载荷）。
+///
+/// 内部 [`FunctionSig`](crate::ty::FunctionSig) 持有 `Ty`，不能直接导出；
+/// 本结构只带 codegen 建调用约定所需的最小信息：参数 / 返回 / 标记。
+///
+/// 注意 `name: None` 的情形（lambda / 占位签名）：名义键缺失时仍保留
+/// 完整签名结构，codegen 可据 `params` / `ret` 建 `FunctionType`，
+/// 再用自己的稳定键（如模块 + 序号）做符号名。
+#[derive(Debug, Clone, PartialEq)]
+pub struct FunctionView {
+    /// 签名所属模块
+    pub module: ModuleId,
+    /// 函数名：顶层函数使用原名，方法使用 `类型::方法`；lambda / 占位签名为 `None`
+    pub name: Option<String>,
+    /// 形参类型（未标注类型的形参为 [`TypeView::Unknown`]）
+    pub params: Vec<TypeView>,
+    /// 返回类型
+    pub ret: Box<TypeView>,
+    /// 泛型参数个数（本期浅泛型：调用点只查 arity）
+    pub type_param_count: usize,
+    /// 是否 `async` 函数
+    pub is_async: bool,
+    /// 是否 `extern` 函数（仅有签名、无函数体）
+    pub is_extern: bool,
+    /// 是否带隐式接收者（实例方法）
+    ///
+    /// `self` 不占 `params` 位置：语义检查对 `self` 不解析类型，若把它当作
+    /// 普通形参投影，`params` 里就会出现 [`TypeView::Unknown`]，下游只能整体拒绝。
+    /// 因此投影时略去 `self` 占位形参，改由本标记表达；接收者类型即方法所属的
+    /// 具名类型（[`TypeSummary`] 中的定义）。
+    pub receiver: bool,
 }
 
 /// 表达式级类型表（[`SemaResult::expression_types`]）。
@@ -234,6 +267,10 @@ pub struct SemaResult {
     pub modules: ModuleOutput,
     /// 表达式级语义类型（键为 `(模块, span)`）
     pub expression_types: ExpressionTypes,
+    /// 类型注解的解析结果（含别名展开与限定名；键为注解 span）。
+    pub annotation_types: ExpressionTypes,
+    /// 声明的最终类型（函数签名 / 变量绑定；键为声明 span）。
+    pub declaration_types: ExpressionTypes,
 }
 
 /// 定义位置（[`BindingTable::references`] 的值）。
@@ -295,6 +332,35 @@ pub struct TypeSummary {
     pub span: Span,
     /// 解析后的父类（仅 class 可能有）
     pub parent: Option<(ModuleId, String)>,
+    /// 字段（声明顺序；struct / class 可能有，其余为空）
+    pub fields: Vec<FieldSummary>,
+    /// 方法（按名字排序，保证下游输出稳定）
+    pub methods: Vec<MethodSummary>,
+}
+
+/// 字段摘要（[`TypeSummary::fields`] 的元素）。
+///
+/// `ty` 用 [`TypeView`] 表达：字段类型里出现未知 / 外部 / 联合时会投影为
+/// `Unknown` 等值，下游据此 fail-fast，而不是拿到一个「看起来能用」的类型。
+#[derive(Debug, Clone, PartialEq)]
+pub struct FieldSummary {
+    pub name: String,
+    pub ty: TypeView,
+    /// 是否有声明处默认值
+    pub has_default: bool,
+    /// `weak` 标记：赋值不 retain、不参与引用计数
+    pub is_weak: bool,
+    /// `static` 标记：不出现在实例布局里，而是一个全局
+    pub is_static: bool,
+}
+
+/// 方法摘要（[`TypeSummary::methods`] 的元素）。
+#[derive(Debug, Clone, PartialEq)]
+pub struct MethodSummary {
+    pub name: String,
+    /// 方法签名（`this` 不占参数位；`name` 恒为 `Some(方法名)`）
+    pub signature: FunctionView,
+    pub is_static: bool,
 }
 
 /// 类型摘要的种类。
@@ -391,6 +457,20 @@ pub fn analyze_with(loader: &mut dyn FileLoader, entry: &Path) -> SemaResult {
                 .map(|(key, ty)| (key, ty.view()))
                 .collect(),
         },
+        annotation_types: ExpressionTypes {
+            types: sema
+                .annotation_types
+                .into_iter()
+                .map(|(key, ty)| (key, ty.view()))
+                .collect(),
+        },
+        declaration_types: ExpressionTypes {
+            types: sema
+                .declaration_types
+                .into_iter()
+                .map(|(key, ty)| (key, ty.view()))
+                .collect(),
+        },
     }
 }
 
@@ -409,6 +489,8 @@ pub(crate) struct Sema {
     pub references: HashMap<(ModuleId, Span), Definition>,
     /// 表达式 → 语义类型（键为 `(模块, 表达式 span)`），供 codegen 推导布局
     pub expression_types: HashMap<(ModuleId, Span), ty::Ty>,
+    pub annotation_types: HashMap<(ModuleId, Span), ty::Ty>,
+    pub declaration_types: HashMap<(ModuleId, Span), ty::Ty>,
 }
 
 impl Sema {
@@ -422,6 +504,8 @@ impl Sema {
             global_diagnostics: Vec::new(),
             references: HashMap::new(),
             expression_types: HashMap::new(),
+            annotation_types: HashMap::new(),
+            declaration_types: HashMap::new(),
         }
     }
 
@@ -460,15 +544,47 @@ impl Sema {
                 .global_scope_symbol(&self.scopes, name)
                 .map(|symbol| symbol.name_span)
                 .unwrap_or(Span { start: 0, end: 0 });
+            let (fields, methods) = self.type_members(def);
             summaries.push(TypeSummary {
                 module: *module,
                 name: name.clone(),
                 kind,
                 span,
                 parent,
+                fields,
+                methods,
             });
         }
         summaries
+    }
+
+    /// 汇总类型定义的字段与方法（方法按名字排序，跨 HashMap 迭代顺序稳定）。
+    fn type_members(&self, def: &TypeDef) -> (Vec<FieldSummary>, Vec<MethodSummary>) {
+        let (fields, methods) = match def {
+            TypeDef::Struct(item) => (&item.fields, &item.methods),
+            TypeDef::Class(item) => (&item.fields, &item.methods),
+            TypeDef::Trait(_) | TypeDef::Alias(_) => return (Vec::new(), Vec::new()),
+        };
+        let fields = fields
+            .iter()
+            .map(|field| FieldSummary {
+                name: field.name.clone(),
+                ty: field.ty.view(),
+                has_default: field.has_default,
+                is_weak: field.is_weak,
+                is_static: field.is_static,
+            })
+            .collect();
+        let mut methods: Vec<MethodSummary> = methods
+            .iter()
+            .map(|(name, method)| MethodSummary {
+                name: name.clone(),
+                signature: method.sig.view(),
+                is_static: method.is_static,
+            })
+            .collect();
+        methods.sort_by(|a, b| a.name.cmp(&b.name));
+        (fields, methods)
     }
 
     /// 在指定模块的 span 处追加 error 诊断（错误码取 [`DiagnosticCode::NameError`]，

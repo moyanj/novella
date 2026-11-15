@@ -1,0 +1,96 @@
+# novella-hir 交接文档
+
+> 更新：2026-11-15。P0、P1 覆盖补全及 P2 检查完成；改动尚未提交。
+> 本期交付为具有明确拒绝边界的 HIR，不包含 LLVM 后端或运行时实现。
+
+## 1. 已确认的架构与语义
+
+- `novella-hir` 只依赖 core、ast、sema；开发依赖 serde_json 仅用于冒烟输出，不引用 LLVM / inkwell。
+- `HirBlock` → `HirStmt` → `HirInstr` 表示控制流与顺序指令，不保留待求值表达式树。
+- `build_hir(&SemaResult)` 遇到词法、语法、语义或加载错误即返回 `BuildError`，不跳过坏模块、不返回残缺程序。
+- 类型读取 sema 的 `expression_types`、`annotation_types`、`declaration_types`，键均为 `(ModuleId, Span)`。分别提供表达式、已解析注解、变量最终绑定类型与顶层函数签名。HIR 不重新解析类型名或用初始化表达式冒充声明类型。
+- Unknown / External / Error、联合、泛型以及无上下文的未定型类型明确拒绝；字面量可由声明、返回值、实参等上下文定型，数组与元组递归传递期望类型。
+- 用户确认：`p ?? backup` 非空时返回指针 `p`，为空才执行并返回 `backup`；不隐式解引用，读取内容另写 `*`。sema 已同步保留指针结果并检查备用值类型。
+- codegen 后续消费 HIR，不直连 AST。后端选型为 inkwell；此前记录的 LLVM 为 21.1.8，接入前重新核验。string 与数组的具体布局、分配和 ABI 仍须在后端开工前确定。
+
+## 2. P1 已完成
+
+| 范围 | 降级约定 |
+| --- | --- |
+| 标量、一元/二元、转换 | 常量按上下文定型；Binary 携带 `lhs_ty` / `rhs_ty` / `dst_ty`，比较不再从 bool 结果反推输入宽度；TypeTest 携带输入类型 |
+| 指针 | 地址与间接读写、指针 ± 整数、整数 + 指针、指针差；保留两侧类型，指针差使用 PtrDiff |
+| 短路 | and/or、三元、`??` 用分支及明确分配的结果槽位，备用分支仅按条件执行 |
+| 身份比较 | 标量、指针、class 的 `===` / `!==` 映射 Eq / Ne；聚合与 string 身份比较明确拒绝 |
+| 左值与副作用 | 先定位一次；复合赋值在 RHS 前读取旧值；自增自减返回旧值；局部读取生成快照，避免后续实参修改先前读值 |
+| 元组、数组、解构 | Tuple / Array / TupleExtract；递归嵌套解构，初始化只求一次；数组长度与索引访问有独立指令 |
+| 循环 | while / C-for / 数组 for-in 统一为 Loop；条件 prelude 每轮执行；step 是 Loop 的字段，正常尾部和 continue 都执行，break / return 跳过 |
+| with | 接收者只求一次；绑定位于块作用域内，支持注解与递归元组解构；不添加资源进入/退出钩子 |
+| 调用 | 函数、静态方法、函数值及 struct 直接实例调用；显式传接收者；默认实参在定义模块环境按序展开，能引用此前参数快照；sema 调用检查排除隐式 self |
+| struct | self 槽位为 Pointer(Struct)，修改作用于原实例；显式字段按源码顺序求值，缺省字段按声明顺序在定义环境求值；支持字段简写与导入别名 |
+| 继承布局 | 跨模块沿父链由父到子展开；类型定义与字段访问共用同一布局来源；不吞掉字段类型错误 |
+| match | subject 一次；case 模式按源码顺序、仅未命中时求下一个；分支作用域独立；值 match 必须有 default；全块分支为 Void |
+| lambda | 无捕获函数降级为独立项，实体键为 `m{module}::lambda#{span.start}`；同形函数不撞名，重复默认表达式展开复用同一实体并归属定义模块；捕获明确拒绝 |
+| 外部声明 | extern 产出 HirItem::ExternFunction；函数和方法使用一致的名义键 `m{module}::名称` / `m{module}::类型::方法` |
+| 字符串 | 普通单双引号与 r/R 原始字符串；普通字符串解析换行、回车、制表、空字符、引号和反斜杠转义；未知转义明确拒绝 |
+
+## 3. 显式拒绝及后续期
+
+以下内容不静默跳过，也不伪装为普通求值或 return：
+
+| 构造 | 原因 / 后续工作 |
+| --- | --- |
+| try/catch/finally/throw | 异常传播与清理协议 |
+| async/await/yield | 状态机、挂起与恢复协议 |
+| new、class 动态方法调用、绑定方法值 | 分配、初始化、动态派发及绑定接收者表示 |
+| 宏、装饰器及装饰块 | 尚无可消费的展开或修饰结果；类型、字段、方法装饰器同样拒绝 |
+| 闭包捕获 | 环境布局与生命周期 |
+| 泛型定义/调用、联合及不透明类型 | 无单态化或具体可生成类型；不能因投影抹除信息而接受泛型类型定义 |
+| 动态对象字面量 | 尚无定型对象布局 |
+| 非数组 for-in | 尚无迭代器协议 |
+| 静态字段、weak 字段 | 静态存储与弱引用生命周期协议 |
+| 有成员的 trait | sema 类型摘要尚未完整携带成员，不能静默输出空 trait |
+| 无 default 的值 match、值/块混合 match | 不允许返回未初始化结果；本期未做穷尽性与块结果推导 |
+| 格式化串、字节串、未定义转义、聚合/string 身份比较 | 尚无对应展开或值表示契约 |
+| 无实体声明的间接函数默认实参 | 函数值签名不携带默认表达式定义 |
+
+类型/方法签名可以描述 class、trait 和纯声明方法；这不代表 class 运行时或 trait 派发已经实现。普通 string 的值比较/拼接保留为定型操作，后端仍需实现对应运行时操作。
+
+## 4. 实现位置
+
+| 文件 | 职责 |
+| --- | --- |
+| build.rs | 模块声明、共享构造状态、公开重导出 |
+| build/module.rs、error.rs | 入口、声明、错误与拒绝边界、lambda 实体归属 |
+| build/types.rs、layout.rs | sema 注解投影、类型/方法、跨模块实例布局 |
+| build/context.rs | 槽位、作用域、定义环境与类型查询 |
+| build/stmt.rs、loops.rs | 语句、with、解构及循环 |
+| build/expr.rs、operators.rs、coalesce.rs | 表达式分派、运算与短路 |
+| build/lvalue.rs | 一次定位、地址及间接读写 |
+| build/call.rs | 接收者、实参定型与默认实参展开 |
+| build/aggregate.rs、helpers.rs | struct、match、lambda、常量与转换助手 |
+| ty.rs、body.rs、item.rs | 类型与签名、指令与控制流、模块与类型定义 |
+
+## 5. P2 验证
+
+```bash
+cargo run -q -p novella-hir --example hir_smoke -- --json
+# 也可对磁盘文件运行；失败以非零状态退出，不输出部分 HIR
+cargo run -q -p novella-hir --example hir_smoke -- path/to/main.nov --json
+cargo fmt --all -- --check
+cargo clippy --workspace --all-targets -- -D warnings
+cargo test --workspace
+cargo check --workspace --all-targets
+git diff --check
+```
+
+- 扩展既有 hir_smoke，覆盖标量、条件、while/C-for/数组 for-in、嵌套解构、方法、默认实参、match、lambda、带副作用索引和空合并；未新增测试 suite。
+- 临时 HIR 解释器执行验证：sum(10)=45，coverage()=26，shortcircuit()=24（非空不执行备用表达式、空时执行一次），matching()=110（后续模式无副作用）；同形 lambda 的实体键唯一。额外验证数组内元组的 for-in 解构。
+- 临时跨模块 fixture：导入别名、默认参数、字段简写/默认值、可变 struct 接收者，cross()=23；父子布局为 x、y；extern 项存在，指针算术类型与 PtrDiff 结构正确。重复展开同一跨模块默认 lambda 的实体归属与唯一性另外核对。
+- 11 项拒绝路径：语法/词法错误、错误备用类型、闭包捕获、装饰器、格式化串、throw、对象字面量、trait 成员、静态字段、无 default 值 match 均非零退出且无部分 JSON。
+- workspace 现有 102 个测试（24 suites）通过；fmt、clippy（-D warnings）、all-targets check 与 diff 检查通过。
+
+解释器验证针对 HIR 求值与控制流，不代表 LLVM、机器码、内存 ABI 或引用计数已验证。临时 fixture/解释器位于 /tmp，不是项目新增测试。
+
+## 6. 交付与迁移
+
+保持未提交、未推送；未接入 inkwell，未修改 CLI 输出行为。开发期 HIR 无既有下游消费者，直接替换：删除冗余 Operand::Cond 和 LoopStep；Loop 增加 step；Binary 增加输入类型；TypeTest 增加输入类型；新增地址、元组和数组指令；SemaResult 新增两份类型投影表。后端实现必须按这些字段执行，不能把 continue 直接跳至条件从而漏掉 step。

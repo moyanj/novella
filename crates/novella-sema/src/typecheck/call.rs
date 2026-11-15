@@ -138,21 +138,30 @@ pub(crate) fn check_call_against_sig(
     if sig.is_extern {
         require_unsafe(sema, ctx, span, "调用 extern 函数");
     }
-    let required = sig.params.iter().filter(|p| !p.has_default).count();
-    if arg_tys.len() < required || arg_tys.len() > sig.params.len() {
+    // 实例接收者由成员访问绑定，不属于调用点显式实参。
+    let offset = usize::from(sig.is_method && sig.params.first().is_some_and(|p| p.name == "self"));
+    let params = &sig.params[offset..];
+    let required = params.iter().filter(|p| !p.has_default).count();
+    if arg_tys.len() < required
+        || arg_tys.len() > params.len()
+        || params
+            .iter()
+            .skip(arg_tys.len())
+            .any(|param| !param.has_default)
+    {
         sema.type_error(
             ctx.module,
             span,
             format!(
                 "实参个数不匹配：需要 {}–{} 个，给了 {} 个",
                 required,
-                sig.params.len(),
+                params.len(),
                 arg_tys.len()
             ),
         );
         return;
     }
-    for (arg, (param, arg_ty)) in args.iter().zip(sig.params.iter().zip(arg_tys.iter())) {
+    for (arg, (param, arg_ty)) in args.iter().zip(params.iter().zip(arg_tys.iter())) {
         if !sema.is_assignable(&param.ty, arg_ty) {
             sema.type_error(
                 ctx.module,
@@ -320,6 +329,14 @@ pub(crate) fn check_match(
     if let Some(body) = default {
         merge(sema, ctx, body);
     }
+    if matches!(result_ty, Ty::Unknown)
+        && cases
+            .iter()
+            .all(|case| matches!(case.body, MatchCaseBody::Block { .. }))
+        && default.is_none_or(|body| matches!(body, MatchCaseBody::Block { .. }))
+    {
+        return Ty::Void;
+    }
     result_ty
 }
 /// lambda：新作用域 + 形参绑定 + 返回类型（标注或推导）。
@@ -417,5 +434,6 @@ pub(crate) fn check_lambda(
         type_param_count: 0,
         is_async: lambda.is_async,
         is_extern: false,
+        is_method: false,
     }))
 }

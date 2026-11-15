@@ -15,6 +15,7 @@ novella-core = { path = "crates/novella-core" }
 novella-lexer = { path = "crates/novella-lexer" }
 novella-parser = { path = "crates/novella-parser" }
 novella-sema = { path = "crates/novella-sema" }
+novella-hir = { path = "crates/novella-hir" }
 novella-codegen = { path = "crates/novella-codegen" }
 novella-ast = { path = "crates/novella-ast" }
 
