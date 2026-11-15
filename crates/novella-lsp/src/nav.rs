@@ -19,6 +19,7 @@ use novella_sema::{Definition, ModuleId, SemaResult, TypeSummary};
 pub fn definition_at(result: &SemaResult, module: ModuleId, offset: usize) -> Option<Definition> {
     // 1) 光标在引用内：取最小包含区间对应的定义
     let by_reference = result
+        .bindings
         .references
         .iter()
         .filter(|((m, span), _)| *m == module && span.start <= offset && offset < span.end)
@@ -29,6 +30,7 @@ pub fn definition_at(result: &SemaResult, module: ModuleId, offset: usize) -> Op
     }
     // 2) 光标在声明上：定义即自身
     result
+        .bindings
         .references
         .values()
         .filter(|d| {
@@ -51,6 +53,7 @@ pub fn references_of(
     include_declaration: bool,
 ) -> Vec<(ModuleId, Span)> {
     let mut locations: Vec<(ModuleId, Span)> = result
+        .bindings
         .references
         .iter()
         .filter(|(_, definition)| *definition == target)
@@ -73,19 +76,24 @@ pub fn rename_edits(result: &SemaResult, target: &Definition) -> Vec<(ModuleId, 
 }
 
 /// 光标处的类型摘要（B3 prepare）。
-pub fn type_at<'a>(
-    result: &'a SemaResult,
-    module: ModuleId,
-    offset: usize,
-) -> Option<&'a TypeSummary> {
+#[allow(
+    dead_code,
+    reason = "供尚未实现的 LSP 能力（prepareTypeHierarchy / typeHierarchy）调用"
+)]
+pub fn type_at(result: &SemaResult, module: ModuleId, offset: usize) -> Option<&TypeSummary> {
     result
         .types
+        .summaries
         .iter()
         .filter(|t| t.module == module && t.span.start <= offset && offset < t.span.end)
         .min_by_key(|t| t.span.end - t.span.start)
 }
 
 /// 父类型链（B3 supertypes）：从直接父类一路向上，环路防御用 visited。
+#[allow(
+    dead_code,
+    reason = "供尚未实现的 LSP 能力（prepareTypeHierarchy / typeHierarchy）调用"
+)]
 pub fn supertypes_of<'a>(
     result: &'a SemaResult,
     module: ModuleId,
@@ -95,6 +103,7 @@ pub fn supertypes_of<'a>(
     let mut visited = HashSet::new();
     let mut current = result
         .types
+        .summaries
         .iter()
         .find(|t| t.module == module && t.name == name);
     while let Some(summary) = current {
@@ -106,6 +115,7 @@ pub fn supertypes_of<'a>(
         }
         let parent = result
             .types
+            .summaries
             .iter()
             .find(|t| t.module == parent_module && t.name == parent_name);
         match parent {
@@ -120,6 +130,10 @@ pub fn supertypes_of<'a>(
 }
 
 /// 直接子类型（B3 subtypes）。
+#[allow(
+    dead_code,
+    reason = "供尚未实现的 LSP 能力（prepareTypeHierarchy / typeHierarchy）调用"
+)]
 pub fn subtypes_of<'a>(
     result: &'a SemaResult,
     module: ModuleId,
@@ -127,6 +141,7 @@ pub fn subtypes_of<'a>(
 ) -> Vec<&'a TypeSummary> {
     result
         .types
+        .summaries
         .iter()
         .filter(|t| t.parent.as_ref() == Some(&(module, name.to_owned())))
         .collect()
@@ -157,11 +172,13 @@ mod tests {
         let mut loader = OverlayLoader::new(overlay);
         let result = analyze_with(&mut loader, &main);
         let main_id = result
+            .diagnostics
             .modules
             .iter()
             .position(|m| m.path.ends_with("main.nov"))
             .expect("main 模块");
         let helper_id = result
+            .diagnostics
             .modules
             .iter()
             .position(|m| m.path.ends_with("helper.nov"))

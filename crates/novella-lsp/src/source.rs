@@ -7,10 +7,13 @@
 //! - [`crate::features`] 用它实现悬停 / 补全 / 签名帮助；
 //! - [`crate::server`] 用它把诊断换算成 LSP 诊断区间。
 //!
-//! 分行语义与 lexer / sema 一致：只按 `\n` 分行，`\r\n` 的 `\r` 归上一行。
+//! 分行语义由 [`novella_core::line_index::LineIndex`] 唯一裁定（只按 `\n` 分行，
+//! `\r\n` 的 `\r` 归上一行）——本模块只在其上附加「行内 UTF-16 列」换算，
+//! 不再维护第二份行表。
 
 use lsp_types::{Position as LspPosition, Range};
 use novella_core::Span;
+use novella_core::line_index::LineIndex;
 
 /// 行号（0-based）。
 pub type Line = u32;
@@ -25,8 +28,11 @@ pub type Position = (Line, Column);
 /// 避免每个请求都重建行表。
 #[derive(Debug, Clone)]
 pub struct SemanticIndex {
-    /// 每行起始字节偏移（首行起点为 0），严格递增
-    line_starts: Vec<usize>,
+    /// 该索引对应的整份源码：所有偏移先钳到源码范围内再换算，
+    /// 越界偏移不会被误判成「下一行的行首」
+    source: String,
+    /// 行起点表（core 唯一实现）
+    lines: LineIndex,
     /// 逐行的 UTF-16 码元前缀和：为某行构造一次后按字节偏移查列
     inner: Vec<InnerIndex>,
 }
@@ -43,14 +49,9 @@ struct InnerIndex {
 impl SemanticIndex {
     /// 为整份源码建立换算表。
     pub fn new(source: &str) -> Self {
-        let mut line_starts = vec![0];
-        for (index, byte) in source.bytes().enumerate() {
-            if byte == b'\n' {
-                line_starts.push(index + 1);
-            }
-        }
         let mut index = SemanticIndex {
-            line_starts,
+            source: source.to_owned(),
+            lines: LineIndex::build(source),
             inner: Vec::new(),
         };
         index.inner = (0..index.line_count())
@@ -61,28 +62,25 @@ impl SemanticIndex {
 
     /// 行数（末尾换行不算新行）。
     pub fn line_count(&self) -> usize {
-        self.line_starts.len()
+        self.lines.line_count()
     }
 
     /// 第 `line` 行的完整源码切片（不含行尾换行）。
     pub fn line_text<'a>(&self, source: &'a str, line: usize) -> &'a str {
-        let start = self.line_starts[line];
-        let end = self
-            .line_starts
-            .get(line + 1)
-            .map_or(source.len(), |next| next - 1);
-        &source[start..end.max(start)]
+        self.lines.line_text(source, line + 1).unwrap_or("")
     }
 
     /// 字节偏移 → (0-based 行, UTF-16 列)。
     ///
-    /// 越界偏移被夹到源码末尾；落在多字节字符中间时进位到该字符之后，
+    /// 越界偏移被夹到最后一行行尾；落在多字节字符中间时进位到该字符之后，
     /// 列号始终是合法的 UTF-16 位置。
     pub fn position(&self, offset: usize) -> Position {
-        // 越界偏移夹到源码末尾（最后一行的行末），避免后续相对偏移下溢
-        let offset = offset.min(self.line_starts.last().copied().unwrap_or(0));
-        let line = self.line_index_of(offset);
-        let column = self.inner[line].utf16_of(offset - self.line_starts[line]);
+        // 先钳到源码末尾：否则 offset 略超末行时会被判成「末行之后」的列偏移，
+        // 越过行尾落到下一行
+        let offset = offset.min(self.source.len());
+        let line = (self.lines.locate(offset).0 - 1).min(self.inner.len().saturating_sub(1));
+        let line_start = self.lines.line_start(line + 1).unwrap_or(0);
+        let column = self.inner[line].utf16_of(offset.saturating_sub(line_start));
         (line as u32, column)
     }
 
@@ -91,7 +89,7 @@ impl SemanticIndex {
     /// 行号越界时夹到最后一行；列越行尾时夹到行尾（行尾即换行符之前）。
     pub fn offset(&self, line: Line, column: Column) -> usize {
         let line = (line as usize).min(self.line_count().saturating_sub(1));
-        let base = self.line_starts[line];
+        let base = self.lines.line_start(line + 1).unwrap_or(0);
         base + self.inner[line].byte_of(column)
     }
 
@@ -128,10 +126,10 @@ impl SemanticIndex {
 
         while offset < end {
             let line = self.line_index_of(offset);
-            let line_start = self.line_starts[line];
+            let line_start = self.lines.line_start(line + 1).unwrap_or(0);
             let line_end = self
-                .line_starts
-                .get(line + 1)
+                .lines
+                .line_start(line + 2)
                 .map_or(source.len(), |next| next - 1)
                 .max(line_start);
             // 本段止于行尾（不含换行符）或区间结束，二者取小
@@ -159,11 +157,9 @@ impl SemanticIndex {
 
     /// 定位字节偏移所在的行号（0-based）。
     ///
-    /// `line_starts` 严格递增且首元素为 0，二分结果减一不会下溢（见调用处的夹取）。
+    /// 行起点严格递增且首元素为 0，`LineIndex::locate` 的行号减一不会下溢。
     fn line_index_of(&self, offset: usize) -> usize {
-        self.line_starts
-            .partition_point(|&start| start <= offset)
-            .saturating_sub(1)
+        self.lines.locate(offset).0 - 1
     }
 }
 

@@ -12,11 +12,11 @@ use novella_core::{
     diagnostic::Diagnostic,
     token::{Token, TokenKind},
 };
-use novella_lexer::{LexerResult, TokenError};
+use novella_lexer::LexerResult;
 use novella_parser::ParseResult;
 
 use crate::{
-    ast::{Outline, outline},
+    outline::{Outline, outline},
     source::SemanticIndex,
 };
 
@@ -97,12 +97,14 @@ impl SourceDoc {
     }
 
     /// 语法诊断（parser 产出；`file` 由调用方按需补填）。
+    #[cfg(test)]
     pub fn syntax_diagnostics(&self) -> &[Diagnostic] {
         &self.parsed.diagnostics
     }
 
     /// 只含词法阶段的错误列表。
-    pub fn lex_errors(&self) -> &[TokenError] {
+    #[cfg(test)]
+    pub fn lex_errors(&self) -> &[novella_lexer::TokenError] {
         &self.lexed.errors
     }
 

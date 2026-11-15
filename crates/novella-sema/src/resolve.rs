@@ -23,7 +23,7 @@ use crate::ty::{
 ///
 /// 只登记名字与种类（函数签名、字段表等在 Phase 2b 解析，
 /// 彼时全部模块的顶层符号已就绪，可跨模块引用）。
-pub fn collect_module(sema: &mut Sema, module: ModuleId) {
+pub(crate) fn collect_module(sema: &mut Sema, module: ModuleId) {
     if sema.modules[module].syntax_failed {
         return;
     }
@@ -104,6 +104,7 @@ pub fn collect_module(sema: &mut Sema, module: ModuleId) {
                     kind: SymbolKind::Function { sig },
                     visibility: function.scope,
                     span: function.span,
+                    name_span: function.name_span,
                     module,
                 };
                 define(sema, module, scope, symbol);
@@ -129,6 +130,7 @@ fn define_type(
         kind: SymbolKind::Type,
         visibility,
         span,
+        name_span: span,
         module,
     };
     define(sema, module, scope, symbol);
@@ -167,6 +169,7 @@ fn collect_toplevel_variables(sema: &mut Sema, module: ModuleId, scope: ScopeId,
                 kind: SymbolKind::Variable { is_const, ty: None },
                 visibility: decl.scope,
                 span,
+                name_span: span,
                 module,
             };
             define(sema, module, scope, symbol);
@@ -189,7 +192,7 @@ pub(crate) fn collect_pattern_names(pattern: &BindingPattern, out: &mut Vec<(Str
 // ---------- Phase 2a：导入绑定 ----------
 
 /// 绑定一个模块的全部导入符号到其全局作用域。
-pub fn bind_imports(sema: &mut Sema, module: ModuleId) {
+pub(crate) fn bind_imports(sema: &mut Sema, module: ModuleId) {
     if sema.modules[module].syntax_failed {
         return;
     }
@@ -233,6 +236,7 @@ pub fn bind_imports(sema: &mut Sema, module: ModuleId) {
                     kind: SymbolKind::NamespaceImport { target },
                     visibility: None,
                     span: import.span,
+                    name_span: import.span,
                     module,
                 };
                 define_import(sema, module, scope, symbol);
@@ -283,6 +287,7 @@ pub fn bind_imports(sema: &mut Sema, module: ModuleId) {
                         },
                         visibility: None,
                         span: specifier.span,
+                        name_span: specifier.span,
                         module,
                     };
                     define_import(sema, module, scope, symbol);
@@ -313,7 +318,7 @@ impl Sema {
     /// - `scope`：使用点作用域（类型参数 / 命名空间导入查找沿父链）；
     /// - `type_env`：泛型形参替换环境（函数类型形参按恒等映射为
     ///   [`Ty::TypeParam`]；泛型别名展开时映射为实参类型）。
-    pub fn resolve_type(
+    pub(crate) fn resolve_type(
         &mut self,
         module: ModuleId,
         scope: ScopeId,
@@ -543,7 +548,7 @@ impl Sema {
     }
 
     /// 解析函数类型签名（`func (a: int) -> int` / 函数声明的签名部分）。
-    pub fn resolve_function_type(
+    pub(crate) fn resolve_function_type(
         &mut self,
         module: ModuleId,
         scope: ScopeId,

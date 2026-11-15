@@ -226,7 +226,7 @@ impl Parser {
         let condition = self.parse_parenthesized_condition()?;
         let block = self.parse_statement_body()?;
         let mut branches = vec![IfBranch::ElseIf {
-            condition,
+            condition: Box::new(condition),
             block: Box::new(block),
             span: Span {
                 start,
@@ -238,7 +238,7 @@ impl Parser {
             let condition = self.parse_parenthesized_condition()?;
             let block = self.parse_statement_body()?;
             branches.push(IfBranch::ElseIf {
-                condition,
+                condition: Box::new(condition),
                 block: Box::new(block),
                 span: Span {
                     start: elif.span.start,

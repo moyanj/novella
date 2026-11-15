@@ -17,7 +17,7 @@ use crate::module::ModuleId;
 
 /// 整数种类（`int` 已归一化为 `I32`）。
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub enum IntKind {
+pub(crate) enum IntKind {
     U8,
     U16,
     U32,
@@ -31,7 +31,7 @@ pub enum IntKind {
 }
 
 impl IntKind {
-    pub fn name(self) -> &'static str {
+    pub(crate) fn name(self) -> &'static str {
         match self {
             IntKind::U8 => "u8",
             IntKind::U16 => "u16",
@@ -47,7 +47,7 @@ impl IntKind {
     }
 
     /// 按预定义类型名归类（design.md §5.1：类型名在词法层是普通标识符）。
-    pub fn from_name(name: &str) -> Option<Self> {
+    pub(crate) fn from_name(name: &str) -> Option<Self> {
         Some(match name {
             "u8" => IntKind::U8,
             "u16" => IntKind::U16,
@@ -66,7 +66,7 @@ impl IntKind {
 
     /// 是否有符号（移位 / 取模诊断暂不使用，供 codegen 与后续期）
     #[allow(dead_code)]
-    pub fn is_signed(self) -> bool {
+    pub(crate) fn is_signed(self) -> bool {
         matches!(
             self,
             IntKind::I8 | IntKind::I16 | IntKind::I32 | IntKind::I64 | IntKind::Isize
@@ -76,7 +76,7 @@ impl IntKind {
 
 /// 浮点种类（`float` 已归一化为 `F32`）。
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub enum FloatKind {
+pub(crate) enum FloatKind {
     F8,
     F16,
     F32,
@@ -84,7 +84,7 @@ pub enum FloatKind {
 }
 
 impl FloatKind {
-    pub fn name(self) -> &'static str {
+    pub(crate) fn name(self) -> &'static str {
         match self {
             FloatKind::F8 => "f8",
             FloatKind::F16 => "f16",
@@ -93,7 +93,7 @@ impl FloatKind {
         }
     }
 
-    pub fn from_name(name: &str) -> Option<Self> {
+    pub(crate) fn from_name(name: &str) -> Option<Self> {
         Some(match name {
             "f8" => FloatKind::F8,
             "f16" => FloatKind::F16,
@@ -107,7 +107,7 @@ impl FloatKind {
 
 /// 函数签名（参数类型在声明收集后解析；extern 与普通函数共用）。
 #[derive(Debug, Clone)]
-pub struct FunctionSig {
+pub(crate) struct FunctionSig {
     pub params: Vec<ParamSig>,
     pub ret: Ty,
     /// 泛型参数个数（本期浅泛型：调用点只查 arity）
@@ -118,8 +118,8 @@ pub struct FunctionSig {
 
 /// 形参签名。
 #[derive(Debug, Clone)]
-pub struct ParamSig {
-    pub name: String,
+pub(crate) struct ParamSig {
+    pub(crate) name: String,
     /// 未标注类型时为 [`Ty::Unknown`]（参数类型推导属后续期，调用点跳过该参检查）
     pub ty: Ty,
     pub has_default: bool,
@@ -127,7 +127,7 @@ pub struct ParamSig {
 
 /// 语义类型。
 #[derive(Debug, Clone)]
-pub enum Ty {
+pub(crate) enum Ty {
     /// 类型未知（前面已报过诊断，用于抑制级联错误）
     Unknown,
     Void,
@@ -163,32 +163,32 @@ pub enum Ty {
 }
 
 impl Ty {
-    pub fn is_numeric(&self) -> bool {
+    pub(crate) fn is_numeric(&self) -> bool {
         matches!(
             self,
             Ty::Int(_) | Ty::Float(_) | Ty::IntLiteral | Ty::FloatLiteral
         )
     }
 
-    pub fn is_integer(&self) -> bool {
+    pub(crate) fn is_integer(&self) -> bool {
         matches!(self, Ty::Int(_) | Ty::IntLiteral)
     }
 
     /// 是否可参与判空（指针 / class / null 自身）
-    pub fn is_nullable(&self) -> bool {
+    pub(crate) fn is_nullable(&self) -> bool {
         matches!(self, Ty::Pointer(_) | Ty::Class(..) | Ty::Null)
     }
 
     /// 是否是不透明占位（Unknown / External / Error）：参与检查时一律放行，抑制级联。
     /// `Error` 是 `Unknown` 以外的另一档：来源处已带明确诊断（如演示文件中的
     /// `yield`、语义未实现的写法），后续依赖它的位置不再重复报错。
-    pub fn is_opaque(&self) -> bool {
+    pub(crate) fn is_opaque(&self) -> bool {
         matches!(self, Ty::Unknown | Ty::External | Ty::Error)
     }
 }
 
 /// 结构化判等（`Function` 变体比较签名内容而非 `Rc` 指针）。
-pub fn ty_eq(a: &Ty, b: &Ty) -> bool {
+pub(crate) fn ty_eq(a: &Ty, b: &Ty) -> bool {
     match (a, b) {
         (Ty::Unknown, Ty::Unknown)
         | (Ty::Void, Ty::Void)
@@ -219,7 +219,7 @@ pub fn ty_eq(a: &Ty, b: &Ty) -> bool {
 }
 
 /// 函数签名判等（忽略 async / extern 标记）。
-pub fn sig_eq(a: &FunctionSig, b: &FunctionSig) -> bool {
+pub(crate) fn sig_eq(a: &FunctionSig, b: &FunctionSig) -> bool {
     a.params.len() == b.params.len()
         && a.params
             .iter()
@@ -230,7 +230,11 @@ pub fn sig_eq(a: &FunctionSig, b: &FunctionSig) -> bool {
 
 /// `target ← source` 可赋值性（不引入隐式数值转换；`sema` 需继承链信息，
 /// class 父子判定由调用方通过 `is_subclass` 闭包注入）。
-pub fn assignable(target: &Ty, source: &Ty, is_subclass: &mut dyn FnMut(&Ty, &Ty) -> bool) -> bool {
+pub(crate) fn assignable(
+    target: &Ty,
+    source: &Ty,
+    is_subclass: &mut dyn FnMut(&Ty, &Ty) -> bool,
+) -> bool {
     // 任一侧不透明：放行（诊断已在产生 Unknown 时报出）
     if target.is_opaque() || source.is_opaque() {
         return true;
@@ -266,7 +270,7 @@ pub fn assignable(target: &Ty, source: &Ty, is_subclass: &mut dyn FnMut(&Ty, &Ty
 ///
 /// 返回 `IntLiteral` / `FloatLiteral`；非法数字文本返回 None（调用方报诊断）。
 /// 支持进制前缀（`0x` / `0o` / `0b`）与下划线分隔；具体值与溢出检查属后续期。
-pub fn classify_number_literal(raw: &str) -> Option<Ty> {
+pub(crate) fn classify_number_literal(raw: &str) -> Option<Ty> {
     let cleaned: String = raw.chars().filter(|&c| c != '_').collect();
     if cleaned.is_empty() {
         return None;
@@ -299,8 +303,8 @@ pub fn classify_number_literal(raw: &str) -> Option<Ty> {
 
 /// 字段定义（struct / class 成员）。
 #[derive(Debug, Clone)]
-pub struct FieldDef {
-    pub name: String,
+pub(crate) struct FieldDef {
+    pub(crate) name: String,
     pub ty: Ty,
     /// 是否有声明处默认值（StructInit 可省略该字段）
     pub has_default: bool,
@@ -308,14 +312,14 @@ pub struct FieldDef {
 
 /// 方法签名（含静态标记；`this` 不占用参数位）。
 #[derive(Debug, Clone)]
-pub struct MethodSig {
+pub(crate) struct MethodSig {
     pub sig: FunctionSig,
     pub is_static: bool,
 }
 
 /// struct 定义。
 #[derive(Debug, Clone)]
-pub struct StructDef {
+pub(crate) struct StructDef {
     pub fields: Vec<FieldDef>,
     pub methods: HashMap<String, MethodSig>,
     pub type_param_count: usize,
@@ -323,25 +327,25 @@ pub struct StructDef {
 
 /// class 定义。
 #[derive(Debug, Clone)]
-pub struct ClassDef {
+pub(crate) struct ClassDef {
     pub fields: Vec<FieldDef>,
     pub methods: HashMap<String, MethodSig>,
     pub type_param_count: usize,
     /// 继承父类的原始类型表达式（`classHeritage`，文法预留多继承——本期仅取首个）
-    pub parent: Option<TypeExpr>,
+    pub(crate) parent: Option<TypeExpr>,
     /// 解析后的父类（模块, 名）；在全部模块声明收集完成后解析
-    pub parent_resolved: Option<(ModuleId, String)>,
+    pub(crate) parent_resolved: Option<(ModuleId, String)>,
 }
 
 /// trait 定义（本期仅登记，不做实现一致性检查）。
 #[derive(Debug, Clone)]
-pub struct TraitDef {
+pub(crate) struct TraitDef {
     pub type_param_count: usize,
 }
 
 /// 类型别名定义（目标类型表达式按需展开，循环展开在使用点检测）。
 #[derive(Debug, Clone)]
-pub struct AliasDef {
+pub(crate) struct AliasDef {
     /// 泛型形参名列表（`type Pair<T> = (T, T)` 中的 `["T"]`）
     pub type_params: Vec<String>,
     pub target: TypeExpr,
@@ -349,7 +353,7 @@ pub struct AliasDef {
 
 /// 类型定义实体（注册表 [`crate::Sema::type_defs`] 的值）。
 #[derive(Debug, Clone)]
-pub enum TypeDef {
+pub(crate) enum TypeDef {
     Struct(StructDef),
     Class(ClassDef),
     Trait(TraitDef),
@@ -358,7 +362,7 @@ pub enum TypeDef {
 
 impl TypeDef {
     /// 泛型参数个数（浅泛型 arity 检查用）
-    pub fn type_param_count(&self) -> usize {
+    pub(crate) fn type_param_count(&self) -> usize {
         match self {
             TypeDef::Struct(d) => d.type_param_count,
             TypeDef::Class(d) => d.type_param_count,
@@ -372,7 +376,7 @@ impl TypeDef {
 ///
 /// `string` 已由设计移出 `PredefinedType`，与 `PredefinedType` 枚举一并在此按名处理；
 /// 返回 None 表示非预定义名，调用方继续走符号查找。
-pub fn predefined_from_name(name: &str) -> Option<Ty> {
+pub(crate) fn predefined_from_name(name: &str) -> Option<Ty> {
     if let Some(kind) = IntKind::from_name(name) {
         return Some(Ty::Int(kind));
     }
@@ -389,7 +393,7 @@ pub fn predefined_from_name(name: &str) -> Option<Ty> {
 }
 
 /// `PredefinedType` 枚举 → `Ty`（parser 仅对缺省 `void` 返回等少数位置产出）。
-pub fn predefined_from_enum(ty: PredefinedType) -> Ty {
+pub(crate) fn predefined_from_enum(ty: PredefinedType) -> Ty {
     match ty {
         PredefinedType::Null => Ty::Null,
         PredefinedType::Boolean => Ty::Boolean,

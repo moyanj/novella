@@ -53,7 +53,10 @@ fn diagnostic_range(index: &SemanticIndex, source: &str, diagnostic: &Diagnostic
         // 无 span 时把整行标红（1-based 行号 → 0-based），列从 0 起
         let line = location.line.saturating_sub(1) as u32;
         let end_column = index
-            .line_text(source, (line as usize).min(index.line_count().saturating_sub(1)))
+            .line_text(
+                source,
+                (line as usize).min(index.line_count().saturating_sub(1)),
+            )
             .len() as u32;
         return Range {
             start: lsp_types::Position { line, character: 0 },

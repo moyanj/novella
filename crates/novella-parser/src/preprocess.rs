@@ -20,6 +20,8 @@ use novella_core::token::{Token, TokenKind};
 pub fn preprocess(tokens: Vec<Token>) -> Vec<Token> {
     let mut result = tokens;
     downgrade_from_import(&mut result);
+    result.retain(|token| token.kind != TokenKind::LineComment);
+
     result
 }
 

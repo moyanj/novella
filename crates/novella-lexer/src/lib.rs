@@ -2,6 +2,7 @@ use logos::{Lexer, Logos};
 use novella_core::{
     Span,
     diagnostic::{Diagnostic, DiagnosticCode, DiagnosticLocation, Severity},
+    line_index::LineIndex,
     token::{Token, TokenKind},
 };
 use std::fmt;
@@ -437,40 +438,6 @@ impl TokenError {
 pub struct LexerResult {
     pub tokens: Vec<Token>,
     pub errors: Vec<TokenError>,
-}
-
-/// 一次性扫描建立的行索引，用于 O(log n) 定位 token 的行列。
-///
-/// 行号按 `\n` 划分（与 `str::lines()` 语义一致：`\r\n` 中 `\r` 归上一行），
-/// 列号是行内字节偏移（0-based）。相比旧的 `input[..start].lines().count()`
-/// 每个 token 全量重扫的 O(n²) 做法，这里只扫描一次输入。
-struct LineIndex {
-    /// 每行起始字节偏移（首行恒为 0），严格递增。
-    starts: Vec<usize>,
-}
-
-impl LineIndex {
-    /// 扫描输入建立行起点表。
-    fn build(input: &str) -> Self {
-        let mut starts = vec![0];
-        for (i, b) in input.bytes().enumerate() {
-            if b == b'\n' {
-                starts.push(i + 1);
-            }
-        }
-        LineIndex { starts }
-    }
-
-    /// 定位偏移量所在的行列位置。
-    ///
-    /// 返回 `(line, column)`：`line` 为 1-based 行号，`column` 为行内字节偏移
-    /// （0-based），语义对齐 ANTLR 的 `getLine()` / `getCharPositionInLine()`。
-    #[inline]
-    fn locate(&self, offset: usize) -> (usize, usize) {
-        // partition_point 依赖 starts 严格递增；starts 恒非空（首行 0），不会下溢
-        let idx = self.starts.partition_point(|&s| s <= offset) - 1;
-        (idx + 1, offset - self.starts[idx])
-    }
 }
 
 #[inline]

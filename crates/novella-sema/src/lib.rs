@@ -4,13 +4,24 @@
 //! `@` / `std` / `super`、nov.toml crate 根标记、循环导入安全）、类型别名、
 //! 全程序名称解析、基本类型检查、声明级基础检查与 extern 函数规则。
 //!
-//! 管线（三遍，对应计划 §1.2）：
-//! - Phase 0 [`module::load_modules`]：worklist 加载全部可达模块（循环导入安全）；
-//! - Phase 1 [`resolve::collect_module`]：逐模块收集顶层声明到全局作用域；
-//! - Phase 2a [`resolve::bind_imports`]：绑定导入符号（具名 / 命名空间）；
-//! - Phase 2b [`check::build_type_defs`]：解析字段 / 方法签名建类型注册表；
-//! - Phase 2c [`check::resolve_class_parents`]：解析 class 继承链；
-//! - Phase 2d [`check::check_module`]：声明级检查 + 函数体 / 顶层语句类型检查。
+//! 管线（三遍，对应计划 §1.2；各阶段为内部实现，见 `module` / `resolve` /
+//! `check` 模块）：
+//! - Phase 0 `module::load_modules`：worklist 加载全部可达模块（循环导入安全）；
+//! - Phase 1 `resolve::collect_module`：逐模块收集顶层声明到全局作用域；
+//! - Phase 2a `resolve::bind_imports`：绑定导入符号（具名 / 命名空间）；
+//! - Phase 2b `check::build_type_defs`：解析字段 / 方法签名建类型注册表；
+//! - Phase 2c `check::resolve_class_parents`：解析 class 继承链；
+//! - Phase 2d `check::check_module`：声明级检查 + 函数体 / 顶层语句类型检查。
+//!
+//! 公开面只有三个输入 / 输出类型族：
+//! - 入口：[`analyze`] / [`analyze_with`]，加载器 [`FileLoader`] / [`FsLoader`] /
+//!   [`OverlayLoader`]；
+//! - 结果：[`SemaResult`]，由 [`DiagnosticReport`] / [`BindingTable`] /
+//!   [`TypeHierarchy`] 三个只读视图组成；
+//! - 视图内的值类型：[`Definition`] / [`DefinitionKind`] / [`TypeSummary`] /
+//!   [`TypeSummaryKind`] / [`ModuleDiagnostics`]。
+//!
+//! 其余（符号表、作用域树、类型注册表、检查函数）一律 `pub(crate)`。
 
 mod check;
 mod module;
@@ -25,7 +36,8 @@ use std::path::{Path, PathBuf};
 use novella_core::Span;
 use novella_core::diagnostic::{Diagnostic, DiagnosticCode, Severity};
 
-pub use module::{FileLoader, FsLoader, ModuleId, OverlayLoader, module_key};
+pub use module::{FileLoader, FsLoader, ModuleId, OverlayLoader};
+pub use novella_core::path::module_key;
 
 use module::Module;
 use symbol::{ScopeTree, Symbol, SymbolKind};
@@ -47,25 +59,66 @@ impl ModuleDiagnostics {
     }
 }
 
-/// 语义分析结果。
-pub struct SemaResult {
+/// 诊断输出（[`SemaResult::diagnostics`]）。
+///
+/// 词法 / 语法 / 语义诊断分两层：`modules` 按模块归组，`global` 收集无模块
+/// 归属的错误（入口文件读取失败等）。
+pub struct DiagnosticReport {
     /// 已加载模块的诊断（含词法 / 语法 / 语义，入口为第一个）
     pub modules: Vec<ModuleDiagnostics>,
     /// 全局诊断（入口读取失败等无模块归属的错误）
-    pub diagnostics: Vec<Diagnostic>,
-    /// 引用 → 定义绑定表：键为引用处的 `(模块 id, span)`，值为定义位置。
-    ///
-    /// 覆盖值标识符、类型名（含 `new` / struct 初始化）、`ns.成员` 限定访问；
-    /// 成员访问（`a.b`）与 import 语句内的名字不在表内（成员定义无 span，
-    /// 属已知限制）。具名导入的引用记录的是目标模块的原始定义而非本地绑定。
-    pub references: HashMap<(ModuleId, Span), Definition>,
-    /// 具名类型摘要（class 继承链，供类型层级查询）
-    pub types: Vec<TypeSummary>,
+    pub global: Vec<Diagnostic>,
 }
 
-/// 定义位置（[`SemaResult::references`] 的值）。
+impl DiagnosticReport {
+    /// 是否存在 error 级诊断。
+    pub fn has_errors(&self) -> bool {
+        self.global
+            .iter()
+            .chain(self.modules.iter().flat_map(|m| m.diagnostics.iter()))
+            .any(|d| d.severity == Severity::Error)
+    }
+}
+
+/// 引用绑定表（[`SemaResult::bindings`]）：键为引用处的 `(模块 id, span)`，
+/// 值为定义位置。
 ///
-/// 故意不暴露内部 [`Symbol`]：LSP 只需要名字、位置与粗粒度种类，
+/// 覆盖值标识符、类型名（含 `new` / struct 初始化）、`ns.成员` 限定访问；
+/// 成员访问（`a.b`）与 import 语句内的名字不在表内（成员定义无 span，
+/// 属已知限制）。具名导入的引用记录的是目标模块的原始定义而非本地绑定。
+pub struct BindingTable {
+    pub references: HashMap<(ModuleId, Span), Definition>,
+}
+
+impl BindingTable {
+    /// 按键序遍历全部绑定（输出稳定，便于快照与去重）。
+    pub fn iter(&self) -> impl Iterator<Item = (&(ModuleId, Span), &Definition)> {
+        self.references.iter()
+    }
+}
+
+/// 类型层级（[`SemaResult::types`]）：具名类型摘要，供父类查找与推导。
+pub struct TypeHierarchy {
+    /// 具名类型摘要（class 继承链）
+    pub summaries: Vec<TypeSummary>,
+}
+
+/// 语义分析结果。
+///
+/// 三个字段各自是**只读视图**：语义阶段内部状态（作用域树、符号表、加载器）
+/// 不外泄，下游只能查询诊断、绑定与类型层级。
+pub struct SemaResult {
+    /// 诊断（按模块归组 + 全局）
+    pub diagnostics: DiagnosticReport,
+    /// 引用 → 定义绑定表
+    pub bindings: BindingTable,
+    /// 具名类型层级
+    pub types: TypeHierarchy,
+}
+
+/// 定义位置（[`BindingTable::references`] 的值）。
+///
+/// 故意不暴露内部 `Symbol`：LSP 只需要名字、位置与粗粒度种类，
 /// 符号表内部结构（作用域 / 可见性）不属于公共 API。
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct Definition {
@@ -73,7 +126,7 @@ pub struct Definition {
     pub name: String,
     /// 定义所在模块
     pub module: ModuleId,
-    /// 声明处 span
+    /// 名字标识符处的 span（跳转 / 高亮目标；整条声明区间另见模块符号）
     pub span: Span,
     /// 粗粒度种类
     pub kind: DefinitionKind,
@@ -104,7 +157,7 @@ impl Definition {
         Definition {
             name: symbol.name.clone(),
             module: symbol.module,
-            span: symbol.span,
+            span: symbol.name_span,
             kind,
         }
     }
@@ -131,16 +184,6 @@ pub enum TypeSummaryKind {
     Class,
     Trait,
     Alias,
-}
-
-impl SemaResult {
-    /// 是否存在 error 级诊断。
-    pub fn has_errors(&self) -> bool {
-        self.diagnostics
-            .iter()
-            .chain(self.modules.iter().flat_map(|m| m.diagnostics.iter()))
-            .any(|d| d.severity == Severity::Error)
-    }
 }
 
 /// 以真实文件系统分析入口文件及其全部导入闭包。
@@ -179,18 +222,22 @@ pub fn analyze_with(loader: &mut dyn FileLoader, entry: &Path) -> SemaResult {
 
     let types = sema.type_summaries();
     SemaResult {
-        modules: sema
-            .modules
-            .into_iter()
-            .map(|m| ModuleDiagnostics {
-                path: m.path,
-                diagnostics: m.diagnostics,
-                syntax_diagnostic_count: m.syntax_diagnostic_count,
-            })
-            .collect(),
-        diagnostics: sema.global_diagnostics,
-        references: sema.references,
-        types,
+        diagnostics: DiagnosticReport {
+            modules: sema
+                .modules
+                .into_iter()
+                .map(|m| ModuleDiagnostics {
+                    path: m.path,
+                    diagnostics: m.diagnostics,
+                    syntax_diagnostic_count: m.syntax_diagnostic_count,
+                })
+                .collect(),
+            global: sema.global_diagnostics,
+        },
+        bindings: BindingTable {
+            references: sema.references,
+        },
+        types: TypeHierarchy { summaries: types },
     }
 }
 
@@ -255,7 +302,7 @@ impl Sema {
             };
             let span = self.modules[*module]
                 .global_scope_symbol(&self.scopes, name)
-                .map(|symbol| symbol.span)
+                .map(|symbol| symbol.name_span)
                 .unwrap_or(Span { start: 0, end: 0 });
             summaries.push(TypeSummary {
                 module: *module,
@@ -408,9 +455,10 @@ mod tests {
         let mut loader = OverlayLoader::new(overlay);
         let result = analyze_with(&mut loader, &main);
         assert!(
-            !result.has_errors(),
+            !result.diagnostics.has_errors(),
             "overlay 分析应无错误：{:?}",
             result
+                .diagnostics
                 .modules
                 .iter()
                 .flat_map(|m| m.diagnostics.iter().map(|d| &d.message))
@@ -420,6 +468,7 @@ mod tests {
         // 类型摘要：Base / Shape 都在，Shape 的父类解析为 Base
         let shape = result
             .types
+            .summaries
             .iter()
             .find(|t| t.name == "Shape")
             .expect("Shape 应在类型摘要中");
@@ -430,12 +479,17 @@ mod tests {
 
         // 引用表：class 声明里的父类名 Base、`Base()` 构造、`helper.f()` 成员访问
         assert!(
-            result.references.values().any(|d| d.name == "Base"),
+            result
+                .bindings
+                .references
+                .values()
+                .any(|d| d.name == "Base"),
             "应记录 Base 的类型引用：{:?}",
-            result.references
+            result.bindings.references
         );
         assert!(
             result
+                .bindings
                 .references
                 .values()
                 .any(|d| d.name == "f" && d.kind == DefinitionKind::Function),
@@ -443,10 +497,14 @@ mod tests {
         );
         // 定义均落在声明模块内（helper.f 定义在 helper 模块）
         let f_def = result
+            .bindings
             .references
             .values()
             .find(|d| d.name == "f")
             .expect("f 的引用");
-        assert_eq!(result.modules[f_def.module].path, module::module_key(&helper));
+        assert_eq!(
+            result.diagnostics.modules[f_def.module].path,
+            module_key(&helper)
+        );
     }
 }

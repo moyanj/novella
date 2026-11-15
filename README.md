@@ -11,24 +11,26 @@ novella 语言编译器。Rust workspace（edition 2024，Apache-2.0）。
 | 阶段 | Crate | 状态 |
 |------|-------|------|
 | 词法分析 | `novella-lexer` | ✅ 可用：产出 token 流与结构化词法错误 |
-| AST | `novella-ast` | 🚧 部分落地 |
-| 语法分析 | `novella-parser` | 🚧 骨架，逐条语句实现中 |
-| 语义分析 | `novella-sema` | ⬜ 占位 |
-| 代码生成 | `novella-codegen` | ⬜ 占位 |
+| AST | `novella-ast` | ✅ 可用：文法全部产生式均能产出节点 |
+| 语法分析 | `novella-parser` | ✅ 可用：`examples/novella-syntax-demo.nov` 零诊断 |
+| 语义分析 | `novella-sema` | ✅ 第一期：导入系统 / 名称解析 / 基本类型检查 / unsafe 规则 |
+| 代码生成 | `novella-codegen` | ⬜ 占位（`add()` 待替换） |
 
 ## 目录结构
 
 ```
 crates/
 ├── novella-core/     # 共享基础：Span / TokenKind / Token / Diagnostic
+│                     #   + line_index / path / decor（行列、模块路径、诊断装饰）
 ├── novella-derive/   # proc-macro：#[derive(Spanned)]
-├── novella-ast/      # AST 节点定义
+├── novella-ast/      # AST 节点定义（expr/ 目录 / stmt / types / program）
 ├── novella-lexer/    # 词法器（logos）
-├── novella-parser/   # 手写递归下降解析器
-├── novella-sema/     # 语义分析（占位）
+├── novella-parser/   # 手写递归下降解析器（expression/ 目录）
+├── novella-sema/     # 语义分析（第一期；module/ check/ typecheck/）
 ├── novella-codegen/  # 代码生成（占位）
 ├── novella-cli/      # 命令行入口（二进制名 `novella`）
-└── novella-lsp/      # 语言服务器（薄 LSP，供编辑器语法高亮）
+├── novella-lsp/      # 语言服务器（outline/ features/ server/）
+└── novella-syntax-gen/ # TextMate 语法生成器（TokenKind → vscode 扩展）
 editors/vscode/       # VS Code 扩展
 grammar/              # ANTLR4 文法参考
 ```

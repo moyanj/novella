@@ -89,6 +89,7 @@ pub fn token_type_index(kind: novella_core::token::TokenKind) -> Option<u32> {
 ///
 /// 需要多次复用同一份源码的换算表时（如服务器逐请求处理），改用
 /// [`encode_with_index`]，避免重复建表。
+#[cfg(test)]
 pub fn encode(source: &str, tokens: &[Token]) -> Vec<SemanticToken> {
     encode_with_index(&SemanticIndex::new(source), source, tokens)
 }

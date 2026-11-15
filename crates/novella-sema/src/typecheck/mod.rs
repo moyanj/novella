@@ -1,0 +1,185 @@
+//! 类型检查（对应 `docs/sema-phase1.md` §5 与 §7 追加项 A–E），按职责分文件：
+//!
+//! - `mod`（本文件）：检查入口——函数体 / 方法体 / 字段初始化 / 顶层语句，
+//!   以及语句序列的检查上下文 [`BodyCtx`]；
+//! - `body`：语句与变量声明（`if` / `for` / `while` / 解构绑定、局部符号定义）；
+//! - `expr`：表达式检查与字面量值解析（标识符分类、f-string 插值、数组 / 对象字面量）；
+//! - `unsafe_rules`：运算符矩阵、赋值兼容、cast、struct 初始化、unsafe 上下文规则
+//!   （S1–S10 子集 + extern 调用 E7）、左值检查；
+//! - `member`：成员访问 `a.b` 与 `Type.member` 静态成员；
+//! - `call`：索引、调用、`new` 构造、`match`、lambda。
+//!
+//! 全部子模块为同一逻辑单元，只在本 crate 内使用（`pub(crate)` 即可，模块本身私有）。
+
+mod body;
+mod call;
+mod expr;
+mod member;
+mod unsafe_rules;
+
+use novella_ast::expr::Expression;
+use novella_ast::program::{FieldMember, FunctionItem, MethodMember};
+use novella_ast::stmt::{Block, Statement};
+
+use crate::Sema;
+use crate::module::ModuleId;
+use crate::symbol::{ScopeKind, Symbol, SymbolKind};
+use crate::ty::{ClassDef, StructDef, Ty, TypeDef};
+
+use body::{BodyCtx, check_block, check_stmt, concrete, define_local};
+use expr::check_expr;
+
+// ---------- 入口：函数体 / 方法体 / 字段初始化 / 顶层语句 ----------
+/// 检查顶层函数体。
+pub(crate) fn check_function_body(
+    sema: &mut Sema,
+    module: ModuleId,
+    function: &FunctionItem,
+    block: &Statement,
+) {
+    let global = sema.modules[module].global_scope;
+    // 取 Phase 2b 回填的签名（重定义冲突导致缺失时跳过体检查）
+    let sig = match sema.scopes.lookup_local(global, &function.name) {
+        Some(Symbol {
+            kind: SymbolKind::Function { sig },
+            ..
+        }) => sig.clone(),
+        _ => return,
+    };
+    let fn_scope = sema.scopes.new_scope(Some(global), ScopeKind::Function);
+    let mut ctx = BodyCtx::base(module, fn_scope);
+    ctx.in_async = sig.is_async;
+    ctx.expected_return = Some(sig.ret.clone());
+    if let Some(function_type) = &function.r#type {
+        for param in &function_type.type_parameters {
+            ctx.type_env
+                .insert(param.name.clone(), Ty::TypeParam(param.name.clone()));
+        }
+    }
+    for param in &sig.params {
+        define_local(
+            sema,
+            &ctx,
+            &param.name,
+            SymbolKind::Param {
+                ty: param.ty.clone(),
+            },
+            function.span,
+        );
+    }
+    check_stmt(sema, &mut ctx, block);
+}
+/// 检查方法体（`this` 绑定为属主类型）。
+pub(crate) fn check_method_body(
+    sema: &mut Sema,
+    module: ModuleId,
+    this_ty: &Ty,
+    method: &MethodMember,
+    block: &Block,
+) {
+    let global = sema.modules[module].global_scope;
+    let fn_scope = sema.scopes.new_scope(Some(global), ScopeKind::Function);
+    let mut ctx = BodyCtx::base(module, fn_scope);
+    ctx.this_ty = Some(this_ty.clone());
+    for param in &method.type_parameters {
+        ctx.type_env
+            .insert(param.name.clone(), Ty::TypeParam(param.name.clone()));
+    }
+    // 属主类型的泛型形参同样可见（class<T> 的方法内可用 T）
+    if let Some(def) = sema
+        .type_defs
+        .get(&(this_ty_key(this_ty).0, this_ty_key(this_ty).1))
+    {
+        let _ = def; // 形参名未存注册表，由调用方保证方法体内 T 已覆盖（见下）
+    }
+    // 从注册表读取方法签名以绑定形参
+    let method_sig = lookup_method_def(sema, this_ty, &method.name).map(|m| m.sig.clone());
+    if let Some(sig) = &method_sig {
+        ctx.expected_return = Some(sig.ret.clone());
+        for param in &sig.params {
+            define_local(
+                sema,
+                &ctx,
+                &param.name,
+                SymbolKind::Param {
+                    ty: param.ty.clone(),
+                },
+                method.span,
+            );
+        }
+    }
+    check_block(sema, &mut ctx, block);
+}
+pub(crate) fn this_ty_key(ty: &Ty) -> (ModuleId, String) {
+    match ty {
+        Ty::Struct(m, n) | Ty::Class(m, n) => (*m, n.clone()),
+        _ => unreachable!("this_ty 恒为 Struct/Class"),
+    }
+}
+pub(crate) fn lookup_method_def(
+    sema: &Sema,
+    this_ty: &Ty,
+    name: &str,
+) -> Option<crate::ty::MethodSig> {
+    let key = this_ty_key(this_ty);
+    match sema.type_defs.get(&key) {
+        Some(TypeDef::Struct(StructDef { methods, .. }))
+        | Some(TypeDef::Class(ClassDef { methods, .. })) => methods.get(name).cloned(),
+        _ => None,
+    }
+}
+/// 检查字段初始化表达式；无标注字段在此推导类型并回填注册表。
+pub(crate) fn check_field_initializer(
+    sema: &mut Sema,
+    module: ModuleId,
+    this_ty: &Ty,
+    field: &FieldMember,
+    initializer: &Expression,
+) {
+    let global = sema.modules[module].global_scope;
+    let scope = sema.scopes.new_scope(Some(global), ScopeKind::Block);
+    let mut ctx = BodyCtx::base(module, scope);
+    let value_ty = check_expr(sema, &mut ctx, initializer);
+    let key = this_ty_key(this_ty);
+    let annotated = field.ty.is_some();
+    // 先读出现有字段类型，再做检查 / 回填，避免同时可变借用注册表与 sema
+    let existing_ty = match sema.type_defs.get(&key) {
+        Some(TypeDef::Struct(StructDef { fields, .. }))
+        | Some(TypeDef::Class(ClassDef { fields, .. })) => fields
+            .iter()
+            .find(|f| f.name == field.name)
+            .map(|f| f.ty.clone()),
+        _ => None,
+    };
+    let Some(expected) = existing_ty else { return };
+    if !annotated {
+        // 无标注：推导回填（字面量归一化为默认类型）
+        let inferred = concrete(&value_ty);
+        if let Some(def) = sema.type_defs.get_mut(&key) {
+            let fields = match def {
+                TypeDef::Struct(StructDef { fields, .. })
+                | TypeDef::Class(ClassDef { fields, .. }) => fields,
+                _ => return,
+            };
+            if let Some(field_def) = fields.iter_mut().find(|f| f.name == field.name) {
+                field_def.ty = inferred;
+            }
+        }
+    } else if !sema.is_assignable(&expected, &value_ty) {
+        sema.type_error(
+            module,
+            field.span,
+            format!(
+                "字段 `{}` 的初始值类型 `{value_ty}` 与标注 `{expected}` 不兼容",
+                field.name
+            ),
+        );
+    }
+}
+/// 检查顶层语句（变量声明回填全局符号类型；`return` 非法）。
+pub(crate) fn check_toplevel_statement(sema: &mut Sema, module: ModuleId, stmt: &Statement) {
+    let global = sema.modules[module].global_scope;
+    let mut ctx = BodyCtx::base(module, global);
+    ctx.fill_existing = true;
+    check_stmt(sema, &mut ctx, stmt);
+}

@@ -68,7 +68,8 @@ pub struct VariableStmt {
 pub enum IfBranch {
     /// 有条件的分支：`if (cond) stmt` 与 `elif (cond) stmt`
     ElseIf {
-        condition: Expression,
+        /// 条件表达式（Box 用于抑制 `IfBranch` 尺寸差异）
+        condition: Box<Expression>,
         block: Box<Statement>,
         /// 该分支（条件与分支体）覆盖的源码区间
         span: Span,

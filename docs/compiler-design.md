@@ -1,6 +1,6 @@
 # Novella 编译器设计
 
-> 版本：1.1 · 状态：与代码对齐的现行实现设计 · 基准 commit：067edaa
+> 版本：1.2 · 状态：与代码对齐的现行实现设计 · 基准 commit：cedd6b6（文件划分与 API 可见性重构后）
 >
 > 本文从**编译器视角**描述 novella 编译器：crate 架构、编译管线、词法/语法/
 > 语义/代码生成各阶段的实现机制、诊断渲染、LSP 集成与「代码 ↔ 文法 ↔ 高亮」
@@ -53,14 +53,16 @@ Rust workspace（edition 2024，8 个 crate + LSP 独立二进制）：
 ```
 crates/
 ├── novella-core/    # 共享基础：Span / Spanned<T> / Token / TokenKind / Diagnostic
-├── novella-derive/   # proc-macro：#[derive(Spanned)]（AST 构建期依赖）
-├── novella-ast/      # AST 节点（expr / stmt / types / program / decorator）
-├── novella-lexer/    # 词法器（logos），RawToken → TokenKind
-├── novella-parser/   # 手写递归下降（骨架）
-├── novella-sema/     # 语义分析（占位 add()）
-├── novella-codegen/  # 代码生成（占位 add()）
-├── novella-cli/      # 二进制 novella：clap CLI，compile 子命令
-└── novella-lsp/      # 语言服务器（lib + bin），薄 LSP，词法级高亮
+│                   #   + line_index.rs / path.rs / decor.rs（位置原语，全项目唯一实现）
+├── novella-derive/  # proc-macro：#[derive(Spanned)]（AST 构建期依赖）
+├── novella-ast/     # AST 节点（expr/ 目录 / stmt / types / program）
+├── novella-lexer/   # 词法器（logos），RawToken → TokenKind
+├── novella-parser/  # 手写递归下降（expression/ 目录 + lib/stmt/types）
+├── novella-sema/    # 语义分析第一期（module/ + resolve + symbol + ty + check/ + typecheck/）
+├── novella-codegen/ # 代码生成（占位 add()）
+├── novella-cli/     # 二进制 novella：clap CLI，compile 子命令
+├── novella-lsp/     # 语言服务器（outline/ + features/ + server/），公开面仅 server::run
+└── novella-syntax-gen/ # TextMate 语法生成器（TokenKind → VS Code 扩展）
 ```
 
 依赖（自上而下单向，禁止反向）：
@@ -183,8 +185,19 @@ ast ──(构建期)── novella-derive（proc-macro，展开引用 ::novella
 
 ## 6. 语义分析（novella-sema）
 
-现状：空壳占位（`pub fn add(u64, u64) -> u64`），待替换。以下为既定规则清单
-（来自 `design.md` §6.5 / §5 / §4）：
+现状：第一期可用，规则清单见 [`sema-phase1.md`](sema-phase1.md)。管线为
+模块加载（`module/loader.rs`）→ 声明收集（`resolve.rs`）→ 导入绑定
+（`module/resolve_path.rs` + `resolve.rs`）→ 类型注册（`check/type_defs.rs`）
+→ 逐模块检查（`check/decl.rs` + `typecheck/`）。
+
+**公开面**（crate 外可引用）只有三族：输入（`analyze` / `analyze_with`、
+`FileLoader` / `FsLoader` / `OverlayLoader`）、输出（`SemaResult`，内含
+`DiagnosticReport` / `BindingTable` / `TypeHierarchy` 三个只读视图）、
+值类型（`Definition` / `DefinitionKind` / `TypeSummary` / `TypeSummaryKind` /
+`ModuleDiagnostics` / `ModuleId`）。符号表、作用域树、类型注册表与全部检查
+函数均为 `pub(crate)`。
+
+以下为既定规则清单（来自 `design.md` §6.5 / §5 / §4）：
 
 1. **类型检查**：解析字面量值（进制、字符串转义）、`PredefinedType` 归类、
    class/struct 引用解析、泛型实例化；
@@ -220,12 +233,22 @@ ast ──(构建期)── novella-derive（proc-macro，展开引用 ::novella
 
 ## 9. LSP（novella-lsp）
 
-- 薄 LSP：stdin/stdout 上的 `Content-Length` 报文帧，JSON-RPC 分发
-  （请求必回复、通知不回复）→ 词法级语义高亮（semantic tokens）；
+- LSP：stdin/stdout 上的 `Content-Length` 报文帧，JSON-RPC 分发
+  （请求必回复、通知不回复）。三层能力：词法级（语义高亮 / 文档高亮 / 词法
+  诊断）、语法级（文档符号 / 折叠 / 补全 / 悬浮 / 签名帮助 / 选择范围 /
+  内联提示 / 快速修复）、语义级（诊断推送与跨模块跳转定义 / 引用 / 重命名）；
+- **模块划分**：`lib.rs` 只 `pub mod server`；`outline/` 做 AST → 符号树与
+  折叠区间的投影，`features/` 按能力一文件做 lsp-types 转换，`server/` 的
+  `dispatch` / `capabilities` / `lexical` / `syntax` / `navigation` / `sync` /
+  `query` / `adapter` / `run` 分别负责路由、能力声明、能力挂载、文档同步、
+  参数解码与主循环；
+- **位置原语复用 core**：行表用 `novella_core::line_index::LineIndex`
+  （`source.rs` 只叠加 UTF-16 列前缀和），模块键用
+  `novella_core::path::module_key`；
 - **复用编译器词法器**：`token_type_index` 穷尽匹配 `TokenKind` → legend 下标
   （`TOKEN_TYPES` 数组顺序即 legend），注释/关键字/数字/字符串/运算符分类；
-- **偏移一律 UTF-16 码元**：内部字节偏移换算集中在 `semantic.rs`（`utf16_len`
-  等），含中文/emoji 的行整体不错位；跨行 token 按行拆分（当前词法下不触发，
+- **偏移一律 UTF-16 码元**：内部字节偏移换算集中在 `source.rs`（`SemanticIndex`
+  的按行 UTF-16 前缀和），含中文/emoji 的行整体不错位；跨行 token 按行拆分（当前词法下不触发，
   防御性实现）；
 - 高亮规则不重复维护：编辑器侧不维护词法/关键字表，全部复用 lexer。
 
@@ -270,7 +293,7 @@ antlr4 -lib target/antlr-align/gen/grammar -o target/antlr-align/gen grammar/Nov
 | 8 | `grammar/NovellaParser.g4` | 删幂行；增指针后缀、`as`、`unsafeStatement`、`structDeclaration`、struct 构造、weak 修饰 | ✅ |
 | 9 | `crates/novella-parser/src/lib.rs` | 类型后缀、前缀取址/解引用、`as` 分支、unsafe 语句、struct 声明与构造 | ⬜ parser 骨架实现 |
 | 10 | `crates/novella-lsp/src/semantic.rs` | 删 3 映射；增 `Unsafe`、`Struct`、`Weak` 映射 | ✅ |
-| 11 | `novella-sema`（下一阶段） | 语义规则（§6 清单）实现 | ⬜ |
+| 11 | `novella-sema` | 语义规则（§6 清单）实现 | ✅ 第一期 |
 | 12 | `grammar/README.md` 等 | 同步更新（含 `Power`/`Stream` 移除说明） | ⬜ |
 
 依赖：1→2→（lexer 依赖 core）；3/4/5/6 相互独立；7 依赖 1；8 依赖 3/4/5/6；

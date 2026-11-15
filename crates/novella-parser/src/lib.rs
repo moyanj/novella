@@ -1,5 +1,5 @@
 use novella_ast::{
-    decorator::Decorator,
+    program::Decorator,
     program::{
         ClassItem, ClassMember, FieldMember, FunctionItem, ImportItem, ImportKind, ImportSpecifier,
         Item, MemberModifiers, MethodMember, Program, Scope, StructItem, TraitItem, TypeAliasItem,
@@ -19,8 +19,6 @@ mod stmt;
 mod types;
 
 use preprocess::preprocess;
-
-pub use preprocess::preprocess as preprocess_tokens;
 
 /// 解析结果：程序 AST 与解析诊断。
 ///
@@ -43,6 +41,8 @@ pub const MAX_EXPRESSION_NESTING: usize = 128;
 
 /// 嵌套类递归（语句 / 块 / 类型）的统一深度上限。
 pub const MAX_NESTING: usize = 128;
+/// 诊断条数上限：超过后置位 `aborted` 并停止解析，避免病态输入产生海量诊断。
+pub const MAX_DIAGNOSTICS: usize = 1000;
 
 /// 手写递归下降解析器：持有 token 流、游标与诊断收集器，逐条解析顶层 item。
 ///
@@ -87,9 +87,6 @@ pub struct Parser {
 }
 
 impl Parser {
-    /// 诊断条数上限：超过后置位 `aborted` 并停止解析，避免病态输入产生海量诊断。
-    pub const MAX_DIAGNOSTICS: usize = 100;
-
     pub fn new(tokens: Vec<Token>) -> Self {
         Parser {
             tokens: preprocess(tokens),
@@ -311,7 +308,7 @@ impl Parser {
 
     /// 诊断数量是否已超上限（超限后解析循环应尽快停下）。
     fn overflowed(&self) -> bool {
-        self.diagnostics.len() > Self::MAX_DIAGNOSTICS
+        self.diagnostics.len() > MAX_DIAGNOSTICS
     }
 
     /// 顶层同步：条目解析结束后若未推进到新的一行，说明卡在无法恢复的 token 上，
@@ -685,6 +682,7 @@ impl Parser {
             scope,
             is_extern: true,
             is_async: false,
+            name_span: name.span,
             span: Span { start, end },
         }))
     }
@@ -1022,6 +1020,7 @@ impl Parser {
             scope,
             is_extern: false,
             is_async,
+            name_span: name.span,
             span: Span { start, end },
         }))
     }

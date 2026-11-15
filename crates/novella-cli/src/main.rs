@@ -38,12 +38,7 @@ fn main() {
             // 注释 token（LineComment）在语法层面视为空白，parser 不感知：
             // 喂给 parser 前过滤，JSON 输出则保留注释（供高亮等消费方使用）。
             // 注：未来 parser 若需要 doc comment，应改为 parser 内部吞注释、移除此处过滤。
-            let parser_tokens: Vec<_> = lex_result
-                .tokens
-                .iter()
-                .filter(|t| t.kind != novella_core::token::TokenKind::LineComment)
-                .cloned()
-                .collect();
+            let parser_tokens: Vec<_> = lex_result.tokens.clone();
             let mut parse_result = {
                 let mut parser = novella_parser::Parser::new(parser_tokens);
                 parser.parse()
@@ -68,11 +63,11 @@ fn main() {
             // （词法 / 语法诊断已由上方渲染，避免重复）。
             let sema_result = novella_sema::analyze(std::path::Path::new(&file));
             let mut sema_error_count = 0usize;
-            for diag in &sema_result.diagnostics {
+            for diag in &sema_result.diagnostics.global {
                 eprintln!("{}", render_diagnostic(diag, None));
                 sema_error_count += 1;
             }
-            for module in &sema_result.modules {
+            for module in &sema_result.diagnostics.modules {
                 // 渲染需要对应模块的源码，从磁盘重读（失败则退化为无源码渲染）
                 let module_source = fs::read_to_string(&module.path).ok();
                 for diag in module.semantic_diagnostics() {
@@ -88,6 +83,7 @@ fn main() {
 
             // ---------- 输出：tokens + AST + 诊断（JSON） ----------
             let sema_json: Vec<_> = sema_result
+                .diagnostics
                 .modules
                 .iter()
                 .map(|m| {
