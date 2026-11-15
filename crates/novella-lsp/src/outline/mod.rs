@@ -232,17 +232,16 @@ mod tests {
     use novella_ast::program::Program;
 
     use super::*;
-    use novella_parser::Parser;
+    use novella_parser::{Parser, ParserInput};
 
     /// 解析一段源码（过滤行注释），返回 AST 与偏移索引。
     fn build(text: &str) -> (Program, crate::source::SemanticIndex) {
         let lexed = novella_lexer::lexer(text);
-        let tokens = lexed
-            .tokens
-            .into_iter()
-            .filter(|token| token.kind != novella_core::token::TokenKind::LineComment)
-            .collect::<Vec<_>>();
-        let mut parser = Parser::new(tokens);
+        let tokens = lexed.tokens;
+        let mut parser = Parser::new(ParserInput {
+            tokens,
+            file: "TEST".to_string(),
+        });
         let parsed = parser.parse();
         let index = crate::source::SemanticIndex::new(text);
         (parsed.program, index)

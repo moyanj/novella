@@ -27,9 +27,12 @@ use preprocess::preprocess;
 pub struct ParseResult {
     pub program: Program,
     pub diagnostics: Vec<Diagnostic>,
-    /// 是否因语法错误过多而提前终止（见 [`Parser::MAX_DIAGNOSTICS`]）；
-    /// 为 `true` 时程序 AST 不是完整的输入投影，仅保留已解析出的部分。
-    pub aborted: bool,
+}
+
+/// 解析输入：文件路径和Token列表
+pub struct ParserInput {
+    pub file: String,
+    pub tokens: Vec<Token>,
 }
 
 /// 表达式嵌套深度上限（括号 / 一元 / 调用链等逐层递归的路径）。
@@ -41,29 +44,23 @@ pub const MAX_EXPRESSION_NESTING: usize = 128;
 
 /// 嵌套类递归（语句 / 块 / 类型）的统一深度上限。
 pub const MAX_NESTING: usize = 128;
-/// 诊断条数上限：超过后置位 `aborted` 并停止解析，避免病态输入产生海量诊断。
-pub const MAX_DIAGNOSTICS: usize = 1000;
 
-/// 手写递归下降解析器：持有 token 流、游标与诊断收集器，逐条解析顶层 item。
+/// Novella手写递归下降解析器：持有 token 流、游标与诊断收集器，逐条解析顶层 item。
 ///
 /// 只消费 [`Token`]/[`TokenKind`]，不接触 lexer 内部类型；
 /// 语法错误就近经 `error_here` 记录并继续解析后续 item。
 ///
 /// 构造时会对 token 流做一次性重写（`from`/`import` 降级、`>>` 拆分），把
-/// 「仅由上下文才能区分的歧义」提前消解：
-///
-/// - `import` 在 `from "m" import ...` 中充当分隔符，在 `import "m";` 中充当起始关键字，
-///   两者词法相同；解析时按「当前语句是否以 `from` 开头」决定其种类；
-/// - `<` / `>` 在「比较 / 泛型」与「移位」之间是上下文相关的：`>>` 与 `>` `>` 同样
-///   逻辑等价（`Vec<Vec<int>>`），解析 `<...>` 实参列表时把 `>>` 拆成两个 `>`。
-///
+/// 「仅由上下文才能区分的歧义」提前消解
 /// 重写只改 `kind`，`slice` / `span` / 行列保持源码原样，JSON 输出仍反映真实输入。
 ///
-/// 注：`(...)` 之后的 `=>` 一律按 lambda 处理；类型位箭头唯一为 `->`，
-/// 类型位遇 `=>` 由类型解析就近报诊断（E-03 规范拍板，不再做 token 改判）。
 pub struct Parser {
+    /// 输入 token 流，包含 lexer 输出的 EOF token。
     tokens: Vec<Token>,
+    /// 目前游标位置
     pos: usize,
+    /// 当前文件路径
+    file: String,
     /// 解析期间收集的诊断，`parse()` 结束时取出返回。
     diagnostics: Vec<Diagnostic>,
     /// 当前递归深度（语句 / 表达式 / 类型共用一个计数器）。
@@ -87,10 +84,12 @@ pub struct Parser {
 }
 
 impl Parser {
-    pub fn new(tokens: Vec<Token>) -> Self {
+    pub fn new(input: ParserInput) -> Self {
+        let input = input;
         Parser {
-            tokens: preprocess(tokens),
+            tokens: preprocess(input.tokens), // 预处理
             pos: 0,
+            file: input.file,
             diagnostics: vec![],
             depth: 0,
             depth_reported: false,
@@ -130,9 +129,6 @@ impl Parser {
         }
         token
     }
-
-    // ---------- token 判定与消费 ----------
-
     /// 当前 token 是否为指定 kind（不消费）。
     fn check(&self, kind: TokenKind) -> bool {
         matches!(self.peek(), Some(token) if token.kind == kind)
@@ -247,7 +243,7 @@ impl Parser {
         let mut diag = Diagnostic::error(message).with_code(DiagnosticCode::SyntaxError);
         if let Some(token) = self.peek() {
             diag = diag.with_location(DiagnosticLocation {
-                file: None,
+                file: Some(self.file.clone()),
                 line: token.line,
                 column: token.column,
                 span: Some(token.span),
@@ -269,7 +265,7 @@ impl Parser {
             Diagnostic::error(message)
                 .with_code(DiagnosticCode::SyntaxError)
                 .with_location(DiagnosticLocation {
-                    file: None,
+                    file: Some(self.file.clone()),
                     line,
                     column,
                     span: Some(span),
@@ -283,9 +279,6 @@ impl Parser {
     pub fn parse(&mut self) -> ParseResult {
         let mut items: Vec<Item> = vec![];
         while !self.at_eof() {
-            if self.overflowed() {
-                break;
-            }
             // 顶层同步点：条目解析未把游标推进到下一行时强制跳过，防止死循环
             let start = self.pos;
             // 单条 item 解析失败时诊断已记录，继续解析后续 item
@@ -301,14 +294,8 @@ impl Parser {
                 items,
                 span: Span { start: 0, end },
             },
-            aborted: self.overflowed(),
             diagnostics: std::mem::take(&mut self.diagnostics),
         }
-    }
-
-    /// 诊断数量是否已超上限（超限后解析循环应尽快停下）。
-    fn overflowed(&self) -> bool {
-        self.diagnostics.len() > MAX_DIAGNOSTICS
     }
 
     /// 顶层同步：条目解析结束后若未推进到新的一行，说明卡在无法恢复的 token 上，
@@ -723,9 +710,6 @@ impl Parser {
         self.expect(TokenKind::OpenBrace)?;
         let mut members = vec![];
         while !self.check(TokenKind::CloseBrace) && !self.at_eof() {
-            if self.overflowed() {
-                break;
-            }
             let before = self.pos;
             if let Some(member) = self.parse_member() {
                 members.push(member);

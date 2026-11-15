@@ -45,9 +45,6 @@ impl Parser {
                     }
                 }
             }
-            if self.overflowed() {
-                break;
-            }
         }
         self.leave_nesting(depth);
         let close = self.expect(TokenKind::CloseBrace)?;

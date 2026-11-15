@@ -45,8 +45,11 @@ impl FileLoader for FsLoader {
 pub(crate) struct Module {
     /// 规范化后的绝对路径（模块唯一键）
     pub(crate) path: PathBuf,
+    /// 源码
     pub(crate) source: String,
+    /// 抽象语法树
     pub(crate) program: Program,
+    /// 源码行索引
     pub(crate) lines: LineIndex,
     /// 模块全局作用域（声明收集阶段建立）
     pub(crate) global_scope: crate::symbol::ScopeId,

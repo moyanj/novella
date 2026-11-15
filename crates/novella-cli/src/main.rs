@@ -1,6 +1,7 @@
 use crate::error::render_diagnostic;
 use clap::Parser;
 use novella_core::diagnostic::Diagnostic;
+use novella_parser::ParserInput;
 use std::{fs, io, process::exit};
 
 mod cli;
@@ -40,23 +41,23 @@ fn main() {
             // 注：未来 parser 若需要 doc comment，应改为 parser 内部吞注释、移除此处过滤。
             let parser_tokens: Vec<_> = lex_result.tokens.clone();
             let mut parse_result = {
-                let mut parser = novella_parser::Parser::new(parser_tokens);
+                let mut parser = novella_parser::Parser::new(ParserInput {
+                    file: file.clone(),
+                    tokens: parser_tokens,
+                });
                 parser.parse()
             };
             // 语法错误（收集于 diagnostics）可恢复，就近渲染到 stderr，不中断输出；
-            // parser 不感知文件名，展示路径由 CLI 原地补全（渲染与 JSON 输出共用）
             for diag in &mut parse_result.diagnostics {
                 if let Some(loc) = &mut diag.location {
                     loc.file = Some(file.clone());
                 }
                 eprintln!("{}", render_diagnostic(diag, Some(&source_code)));
             }
-            if !lex_result.errors.is_empty() {
-                eprintln!("检测到 {} 个词法错误", lex_result.errors.len());
-            }
-            if !parse_result.diagnostics.is_empty() {
-                eprintln!("检测到 {} 个语法错误", parse_result.diagnostics.len());
-            }
+            eprintln!(
+                "共 {} 个错误",
+                lex_result.errors.len() + parse_result.diagnostics.len()
+            );
 
             // ---------- 语义分析 ----------
             // sema 独立重走 lexer→parser 逐模块加载导入闭包；此处只渲染语义诊断

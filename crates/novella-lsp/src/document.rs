@@ -13,7 +13,7 @@ use novella_core::{
     token::{Token, TokenKind},
 };
 use novella_lexer::LexerResult;
-use novella_parser::ParseResult;
+use novella_parser::{ParseResult, ParserInput};
 
 use crate::{
     outline::{Outline, outline},
@@ -62,13 +62,11 @@ impl SourceDoc {
         let index = SemanticIndex::new(&text);
 
         // 注释是正式 token（供高亮消费），但 parser 不感知注释，喂入前过滤
-        let tokens = lexed
-            .tokens
-            .iter()
-            .filter(|token| token.kind != TokenKind::LineComment)
-            .cloned()
-            .collect::<Vec<_>>();
-        let mut parser = novella_parser::Parser::new(tokens);
+        let tokens = lexed.tokens.clone();
+        let mut parser = novella_parser::Parser::new(ParserInput {
+            tokens,
+            file: "TEST".to_string(),
+        });
         let parsed = parser.parse();
 
         let outline = outline(&parsed.program, &text, &index);

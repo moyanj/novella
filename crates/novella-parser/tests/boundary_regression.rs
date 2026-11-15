@@ -10,7 +10,7 @@ use novella_ast::{
 };
 use novella_core::token::TokenKind;
 use novella_lexer::lexer;
-use novella_parser::{ParseResult, Parser};
+use novella_parser::{ParseResult, Parser, ParserInput};
 
 /// 词法 + 语法解析；词法错误直接失败（测试输入都应当词法合法）。
 fn parse(src: &str) -> ParseResult {
@@ -20,7 +20,11 @@ fn parse(src: &str) -> ParseResult {
     lexed
         .tokens
         .retain(|token| token.kind != TokenKind::LineComment);
-    Parser::new(lexed.tokens).parse()
+    Parser::new(ParserInput {
+        tokens: lexed.tokens,
+        file: "TEST".to_string(),
+    })
+    .parse()
 }
 
 /// 解析并断言零诊断。

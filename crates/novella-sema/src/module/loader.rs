@@ -9,6 +9,7 @@ use novella_core::diagnostic::Diagnostic;
 use novella_core::line_index::LineIndex;
 use novella_core::path::module_key;
 use novella_core::token::TokenKind;
+use novella_parser::ParserInput;
 
 use super::resolve_path::find_crate_root;
 use super::{FileLoader, Module, ModuleId, ResolvedImport, resolve_import};
@@ -82,7 +83,11 @@ pub(crate) fn load_modules(
             .into_iter()
             .filter(|t| t.kind != TokenKind::LineComment)
             .collect();
-        let mut parse_result = novella_parser::Parser::new(tokens).parse();
+        let mut parse_result = novella_parser::Parser::new(ParserInput {
+            file: path.to_string_lossy().to_string(),
+            tokens,
+        })
+        .parse();
         for diag in &mut parse_result.diagnostics {
             if let Some(loc) = &mut diag.location {
                 loc.file = Some(path.display().to_string());

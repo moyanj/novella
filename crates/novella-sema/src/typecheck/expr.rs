@@ -6,6 +6,7 @@ use std::rc::Rc;
 use novella_ast::expr::{Expression, Literal, UnaryOp};
 use novella_ast::stmt::Statement;
 use novella_core::Span;
+use novella_parser::ParserInput;
 
 use crate::Sema;
 use crate::module::ModuleId;
@@ -220,7 +221,10 @@ pub(crate) fn check_fstring_interpolation(
         .into_iter()
         .filter(|t| t.kind != novella_core::token::TokenKind::LineComment)
         .collect();
-    let mut parser = novella_parser::Parser::new(tokens);
+    let mut parser = novella_parser::Parser::new(ParserInput {
+        tokens,
+        file: "Sema".to_string(),
+    });
     let program = parser.parse();
     if !program.diagnostics.is_empty() {
         sema.type_error(ctx.module, span, "f-string 插值不是合法表达式");
