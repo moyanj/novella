@@ -132,13 +132,16 @@ fn a_deep_nesting_is_parsed_not_rejected() {
 /// A-05：在小栈线程里解析超深输入也不溢出真实栈。
 ///
 /// 线程栈刻意压到 256 KiB（远小于 `recursion::STACK_SEGMENT` 的 2 MiB 分段），
-/// 若分段栈失效，50000 层括号会立刻 abort；此用例是分段栈生效的直接证据。
+/// 若分段栈失效，8000 层括号会立刻 abort；此用例是分段栈生效的直接证据。
+///
+/// 层数取 8000 而非更高，是因为 debug 构建下每层括号约耗 131 KiB 栈，
+/// 而分段预算 `MAX_STACK_BYTES` 为 1 GiB——8000 层约 1 GiB 之内可稳定通过。
 #[test]
 fn a_deep_nesting_survives_small_thread_stack() {
     let src = format!(
         "func f() {{ let x = {}1{}; }}",
-        "(".repeat(50_000),
-        ")".repeat(50_000)
+        "(".repeat(8_000),
+        ")".repeat(8_000)
     );
     let result = std::thread::Builder::new()
         .stack_size(256 * 1024)
@@ -156,9 +159,10 @@ fn a_deep_nesting_survives_small_thread_stack() {
 /// A-06：超出分段预算的病态输入仍线性终止并报诊断，不无限下钻。
 #[test]
 fn a_excessive_depth_reports_upper_bound() {
-    // 一层括号约消耗 8 次递归守卫，预算为 `MAX_STACK_SEGMENTS`(1 << 20) 次，
-    // 故取 40 万层括号：远超预算，必定触发上限诊断
-    let parens = 400_000usize;
+    // 预算按**实际新开分段数**计：1 GiB / 2 MiB = 512 段，debug 下每层括号
+    // 约耗 131 KiB，对应约 8000 层。取 2 万层确保远超上限、必定触发诊断，
+    // 同时把输入规模控制在能在 1 秒内跑完（早期用 40 万层曾把整机 OOM）。
+    let parens = 20_000usize;
     let src = format!(
         "func f() {{ let x = {}1{}; }}",
         "(".repeat(parens),

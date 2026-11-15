@@ -28,7 +28,10 @@ use crate::types::{FunctionType, Param, PredefinedType, TypeExpr};
 use novella_core::Span;
 
 /// 红区：剩余栈低于该值时切到新分段。
-const RED_ZONE: usize = 256 * 1024;
+///
+/// 与 parser 侧（`novella-parser/src/recursion.rs`）保持同一组参数，
+/// 使解析期与析构期的分段大小一致，内存占用易于推算。
+const RED_ZONE: usize = 512 * 1024;
 
 /// 单段栈字节数（必须显著大于 [`RED_ZONE`]，否则每次进入都会立即再切段）。
 const STACK_SEGMENT: usize = 2 * 1024 * 1024;
