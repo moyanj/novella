@@ -7,17 +7,10 @@ use crate::Parser;
 
 impl Parser {
     pub(crate) fn parse_primary(&mut self) -> Option<Expression> {
-        let depth = self.enter_nesting();
-        let result = if self.nesting_exceeded() {
-            None
-        } else {
-            self.parse_primary_atom()
-        };
-        self.leave_nesting(depth);
-        result
+        self.guarded(|p| p.parse_primary_atom())?
     }
 
-    /// [`Parser::parse_primary`] 的实体（嵌套防护由外层包装负责）。
+    /// [`Parser::parse_primary`] 的实体（分段栈扩展由外层包装负责）。
     ///
     /// 分支顺序与文法一致：字面量 → `new` → lambda → `match` → 标识符 + 对象字面量
     /// （struct 构造）→ 标识符 → 括号 / 元组 → 数组 → 对象 → `this`。
@@ -68,16 +61,35 @@ impl Parser {
                 // 则其 callee 作为构造目标、type_args / args 提升为构造实参
                 // （`new getFoo()()` = 构造 `getFoo()` 的结果，`new (Foo)()` 合法）；
                 // 否则整个表达式是构造目标、实参为空（B-08 / C-04 / D-01）
-                let expr = self.parse_postfix()?;
+                let mut expr = self.parse_postfix()?;
                 let end = expr.span().end;
-                let (target, type_args, args) = match expr {
+                // `Expression` 实现了自定义 `Drop`（见 novella-ast 的 drop_guard），
+                // 直接从枚举里移出字段会触发 E0509；改用占位值替换（`mem::replace`）
+                // 换取内部字段的所有权，占位值随 `expr` 一起释放。
+                let (target, type_args, args) = match &mut expr {
                     Expression::Call {
                         callee,
                         type_args,
                         args,
                         ..
-                    } => (*callee, type_args, args),
-                    other => (other, vec![], vec![]),
+                    } => {
+                        let target = std::mem::replace(
+                            callee.as_mut(),
+                            Expression::This {
+                                span: Span { start: end, end },
+                            },
+                        );
+                        (target, std::mem::take(type_args), std::mem::take(args))
+                    }
+                    other => {
+                        let target = std::mem::replace(
+                            other,
+                            Expression::This {
+                                span: Span { start: end, end },
+                            },
+                        );
+                        (target, vec![], vec![])
+                    }
                 };
                 Some(Expression::New {
                     target: Box::new(target),

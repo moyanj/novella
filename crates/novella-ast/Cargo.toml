@@ -8,3 +8,4 @@ license.workspace = true
 novella-core.workspace = true
 novella-derive = { path = "../novella-derive" }
 serde.workspace = true
+stacker.workspace = true

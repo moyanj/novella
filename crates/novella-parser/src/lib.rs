@@ -15,6 +15,7 @@ use novella_core::{
 
 mod expression;
 mod preprocess;
+mod recursion;
 mod stmt;
 mod types;
 
@@ -35,16 +36,6 @@ pub struct ParserInput {
     pub tokens: Vec<Token>,
 }
 
-/// 表达式嵌套深度上限（括号 / 一元 / 调用链等逐层递归的路径）。
-///
-/// 递归下降在遇到病态输入（如一万个 `(`）时会耗尽栈：debug 构建下每层括号约耗
-/// 几十 KB 栈，主线程 8 MiB 栈在约 140 层就溢出，故这里取一个对 debug 构建也安全的
-/// 保守值；**超限即阻断递归**（返回 `None`），仅报一条诊断。
-pub const MAX_EXPRESSION_NESTING: usize = 128;
-
-/// 嵌套类递归（语句 / 块 / 类型）的统一深度上限。
-pub const MAX_NESTING: usize = 128;
-
 /// Novella手写递归下降解析器：持有 token 流、游标与诊断收集器，逐条解析顶层 item。
 ///
 /// 只消费 [`Token`]/[`TokenKind`]，不接触 lexer 内部类型；
@@ -63,14 +54,14 @@ pub struct Parser {
     file: String,
     /// 解析期间收集的诊断，`parse()` 结束时取出返回。
     diagnostics: Vec<Diagnostic>,
-    /// 当前递归深度（语句 / 表达式 / 类型共用一个计数器）。
+    /// 当前递归链的深度（每次 [`Parser::guarded`] 进出成对增减）。
     ///
-    /// 计数器是**单调**的：每次进入 `enter_nesting` 加一、退出时不会减回去，
-    /// 只按「已解析过的最大嵌套层数」做一次全局闸门，因此漏掉某个 `leave`
-    /// 也只会让上限略偏保守，不会导致计数回退到错误状态。
-    depth: usize,
-    /// `enter_nesting` 是否已经报告过「嵌套过深」，避免同一轮刷屏。
-    depth_reported: bool,
+    /// 深度**不再作为递归闸门**：栈安全由分段栈负责，病态输入由
+    /// `recursion::MAX_STACK_SEGMENTS` 兜底。该计数只反映「此刻嵌套多深」，
+    /// 不跨表达式累计，因此不影响合法输入的解析结果。
+    stack_segments: usize,
+    /// 是否已报告过「嵌套层级超出工程上限」，避免同一轮刷屏。
+    stack_exhausted: bool,
     /// 当前处于 `with (...)` 条件内的层数（>0 时 `as` 优先解释为上下文绑定）。
     pub(crate) with_stack: u32,
     /// 括号 / 实参屏蔽深度：with 表头内嵌套括号中的 `as` 不参与绑定判定（E-02）。
@@ -85,14 +76,13 @@ pub struct Parser {
 
 impl Parser {
     pub fn new(input: ParserInput) -> Self {
-        let input = input;
         Parser {
             tokens: preprocess(input.tokens), // 预处理
             pos: 0,
             file: input.file,
             diagnostics: vec![],
-            depth: 0,
-            depth_reported: false,
+            stack_segments: 0,
+            stack_exhausted: false,
             with_stack: 0,
             with_shield: 0,
             allow_arrow_after_type: false,
@@ -166,48 +156,28 @@ impl Parser {
         }
     }
 
-    // ---------- 递归防护 ----------
-
-    /// 进入一次嵌套：返回进入前的深度。
-    ///
-    /// 超过 [`MAX_NESTING`] 时只报告一次诊断（病态输入如一万个 `(`），
-    /// 后续由各 `parse_xxx` 因「当前 token 不是期望项」自然失败退出。
-    pub(crate) fn enter_nesting(&mut self) -> usize {
-        let depth = self.depth;
-        self.depth += 1;
-        if self.depth > MAX_NESTING && !self.depth_reported {
-            self.depth_reported = true;
-            self.error_here("语法嵌套层级过深");
-        }
-        depth
-    }
-
-    /// 退出一次嵌套（把深度恢复为进入前的值，便于统计「当前链」而非累计次数）。
-    pub(crate) fn leave_nesting(&mut self, depth: usize) {
-        self.depth = depth;
-    }
-
-    /// 当前是否已超出嵌套上限：超限时各 `parse_xxx` 应立即返回 `None` 阻断递归。
-    pub(crate) fn nesting_exceeded(&self) -> bool {
-        self.depth > MAX_NESTING
-    }
-
     // ---------- 试探式解析 ----------
 
-    /// 记录游标、诊断长度与嵌套防护标记的快照，供试探解析回滚（见 [`Parser::rollback`]）。
+    /// 记录游标、诊断长度与递归预算的快照，供试探解析回滚（见 [`Parser::rollback`]）。
     ///
-    /// 必须包含 `depth_reported`：推测分支若在嵌套深处消耗了唯一一次
-    /// 「语法嵌套层级过深」诊断，回滚时不恢复该标记，真正路径上的防护
-    /// 会在**不报诊断**的情况下静默截断解析（审计 A 类的回归）。
-    pub(crate) fn checkpoint(&self) -> (usize, usize, bool) {
-        (self.pos, self.diagnostics.len(), self.depth_reported)
+    /// 必须包含 `stack_segments` / `stack_exhausted`：推测分支若在深处耗尽了
+    /// 分段预算或消耗了唯一一次「超出工程上限」诊断，回滚时不恢复这些状态，
+    /// 真正路径上的解析会在**不报诊断**的情况下静默截断。
+    pub(crate) fn checkpoint(&self) -> (usize, usize, usize, bool) {
+        (
+            self.pos,
+            self.diagnostics.len(),
+            self.stack_segments,
+            self.stack_exhausted,
+        )
     }
 
-    /// 回滚到 [`Parser::checkpoint`] 记录的快照（游标 / 诊断 / 嵌套防护标记）。
-    pub(crate) fn rollback(&mut self, checkpoint: (usize, usize, bool)) {
+    /// 回滚到 [`Parser::checkpoint`] 记录的快照（游标 / 诊断 / 递归预算）。
+    pub(crate) fn rollback(&mut self, checkpoint: (usize, usize, usize, bool)) {
         self.pos = checkpoint.0;
         self.diagnostics.truncate(checkpoint.1);
-        self.depth_reported = checkpoint.2;
+        self.stack_segments = checkpoint.2;
+        self.stack_exhausted = checkpoint.3;
     }
 
     // ---------- 尖括号 ----------

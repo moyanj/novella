@@ -68,31 +68,109 @@ fn function_stmts(result: &ParseResult) -> &[Statement] {
     &block.stmts
 }
 
-// ---------- A 类：递归防护 ----------
+// ---------- A 类：递归防护（stacker 分段栈） ----------
 
-/// A-01/A-02/A-03/A-04：一元 / 三元 / 赋值 / 类型 路径的嵌套上限
-/// （此前无 `nesting_exceeded` 检查，病态输入会爆栈）。
+/// A-01 ~ A-04：一元 / 三元 / 赋值 / 类型路径的深层嵌套**不再是错误**。
+///
+/// 修复前用 `MAX_NESTING = 128` 拒绝这些输入；现改为 `stacker` 分段栈，
+/// 300~500 层的合法输入应零诊断解析，并如数保留嵌套结构（不再被截断）。
 #[test]
-fn a_nesting_guard_blocks_pathological_input() {
-    // A-01：一元 `!` 链
-    let unary = format!("func f() {{ let x = {}1; }}", "!".repeat(500));
-    assert_has_diagnostic(&parse(&unary), "嵌套");
+fn a_deep_nesting_is_parsed_not_rejected() {
+    // A-01：一元 `!` 链（500 层）
+    let unary = format!("func f() {{ let x = {}true; }}", "!".repeat(500));
+    let result = parse_clean(&unary);
+    let Statement::Variable(var) = &function_stmts(&result)[0] else {
+        panic!("期望变量声明");
+    };
+    // 逐层剥开 `Expression::Unary`，断言 500 层全部保留
+    let mut depth = 0usize;
+    let mut current = var.value.as_ref().expect("期望初始值");
+    while let Expression::Unary { operand, .. } = current {
+        depth += 1;
+        current = operand;
+    }
+    assert_eq!(depth, 500, "一元链被截断（实际 {depth} 层）");
 
-    // A-02：三元链（右递归）
+    // A-02：三元链（右递归，300 层）
     let ternary = format!("func f() {{ let x = a{}; }}", "?b:c".repeat(300));
-    assert_has_diagnostic(&parse(&ternary), "嵌套");
+    let result = parse_clean(&ternary);
+    let Statement::Variable(var) = &function_stmts(&result)[0] else {
+        panic!("期望变量声明");
+    };
+    let mut depth = 0usize;
+    let mut current = var.value.as_ref().expect("期望初始值");
+    // `a?b:c?b:c` 的右递归落在 else 分支上（then 分支自成一棵子树）
+    while let Expression::Ternary { else_expr, .. } = current {
+        depth += 1;
+        current = else_expr;
+    }
+    assert_eq!(depth, 300, "三元链被截断（实际 {depth} 层）");
 
-    // A-03：赋值链（右递归）
+    // A-03：赋值链（右递归，300 层）
     let assignment = format!("func f() {{ {} }}", "a = ".repeat(300) + "a;");
-    assert_has_diagnostic(&parse(&assignment), "嵌套");
+    let result = parse_clean(&assignment);
+    let Statement::Expression(expr) = &function_stmts(&result)[0] else {
+        panic!("期望表达式语句");
+    };
+    let mut depth = 0usize;
+    let mut current = expr;
+    while let Expression::Assignment { value, .. } = current {
+        depth += 1;
+        current = value;
+    }
+    assert_eq!(depth, 300, "赋值链被截断（实际 {depth} 层）");
 
-    // A-04：类型括号嵌套
+    // A-04：类型括号嵌套（300 层）
     let ty = format!(
         "func f() {{ let x: {}i32{} = y; }}",
         "(".repeat(300),
         ")".repeat(300)
     );
-    assert_has_diagnostic(&parse(&ty), "嵌套");
+    parse_clean(&ty);
+}
+
+/// A-05：在小栈线程里解析超深输入也不溢出真实栈。
+///
+/// 线程栈刻意压到 256 KiB（远小于 `recursion::STACK_SEGMENT` 的 2 MiB 分段），
+/// 若分段栈失效，50000 层括号会立刻 abort；此用例是分段栈生效的直接证据。
+#[test]
+fn a_deep_nesting_survives_small_thread_stack() {
+    let src = format!(
+        "func f() {{ let x = {}1{}; }}",
+        "(".repeat(50_000),
+        ")".repeat(50_000)
+    );
+    let result = std::thread::Builder::new()
+        .stack_size(256 * 1024)
+        .spawn(move || parse(&src))
+        .expect("创建小栈线程失败")
+        .join()
+        .expect("解析线程 panic");
+    assert!(
+        result.diagnostics.is_empty(),
+        "小栈线程下出现诊断：{:?}",
+        messages(&result)
+    );
+}
+
+/// A-06：超出分段预算的病态输入仍线性终止并报诊断，不无限下钻。
+#[test]
+fn a_excessive_depth_reports_upper_bound() {
+    // 一层括号约消耗 8 次递归守卫，预算为 `MAX_STACK_SEGMENTS`(1 << 20) 次，
+    // 故取 40 万层括号：远超预算，必定触发上限诊断
+    let parens = 400_000usize;
+    let src = format!(
+        "func f() {{ let x = {}1{}; }}",
+        "(".repeat(parens),
+        ")".repeat(parens)
+    );
+    let result = std::thread::Builder::new()
+        .stack_size(256 * 1024)
+        .spawn(move || parse(&src))
+        .expect("创建小栈线程失败")
+        .join()
+        .expect("解析线程 panic");
+    assert_has_diagnostic(&result, "超出工程上限");
 }
 
 // ---------- B 类：合法输入被拒 ----------

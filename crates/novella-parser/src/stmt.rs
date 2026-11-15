@@ -15,7 +15,7 @@ use novella_ast::{
 use novella_core::{
     Span,
     diagnostic::{Diagnostic, DiagnosticCode, DiagnosticLocation},
-    token::TokenKind,
+    token::{Token, TokenKind},
 };
 
 use crate::Parser;
@@ -24,16 +24,14 @@ impl Parser {
     /// 解析块语句 `{ ... }`（对应文法 `block`）。
     pub(crate) fn parse_block(&mut self) -> Option<Block> {
         let open = self.expect(TokenKind::OpenBrace)?;
-        // 块本身算一层嵌套：`parse_statement` 已在块语句处记过一层，这里再进一层，
-        // 使 `{{{...}}}` 这类深层块也能被 `nesting_exceeded` 拦住（否则会耗尽栈）。
-        let depth = self.enter_nesting();
+        // 块本身算一层递归：经分段栈扩展，`{{{...}}}` 这类深层块（每层至少一帧）
+        // 同样不会耗尽真实栈
+        self.guarded(|p| p.parse_block_inner(open))?
+    }
+
+    /// [`Parser::parse_block`] 的实体（分段栈扩展由外层包装负责）。
+    fn parse_block_inner(&mut self, open: Token) -> Option<Block> {
         let mut statements = vec![];
-        // 超出嵌套上限后不再向块内递归：跳过剩余 token 到本块的 `}`，保证必然终止
-        if self.nesting_exceeded() {
-            self.leave_nesting(depth);
-            self.skip_balanced_block(&open);
-            return None;
-        }
         while !self.check(TokenKind::CloseBrace) && !self.at_eof() {
             let before = self.pos;
             match self.parse_statement() {
@@ -46,7 +44,6 @@ impl Parser {
                 }
             }
         }
-        self.leave_nesting(depth);
         let close = self.expect(TokenKind::CloseBrace)?;
         Some(Block {
             stmts: statements,
@@ -59,10 +56,7 @@ impl Parser {
 
     /// 解析一条语句（对应文法 `statement`）。
     pub(crate) fn parse_statement(&mut self) -> Option<Statement> {
-        let depth = self.enter_nesting();
-        let result = self.parse_statement_inner();
-        self.leave_nesting(depth);
-        result
+        self.guarded(|p| p.parse_statement_inner())?
     }
 
     /// `parse_statement` 的实际分发。
@@ -187,7 +181,15 @@ impl Parser {
     }
 
     /// 解析绑定目标（对应文法 `bindingPattern`）：标识符或括号解构（可递归）。
+    ///
+    /// 解构可无限嵌套（`(((a, b)))`），故同样经 [`Parser::guarded`] 扩展分段栈；
+    /// 实体拆到 [`Parser::parse_binding_pattern_inner`]。
     fn parse_binding_pattern(&mut self) -> Option<BindingPattern> {
+        self.guarded(|p| p.parse_binding_pattern_inner())?
+    }
+
+    /// [`Parser::parse_binding_pattern`] 的实体（分段栈扩展由外层包装负责）。
+    fn parse_binding_pattern_inner(&mut self) -> Option<BindingPattern> {
         let open = self.peek()?.clone();
         if open.kind == TokenKind::OpenParen {
             self.advance();
@@ -670,7 +672,8 @@ impl Parser {
 
     /// 按花括号配对跳过当前块剩余部分（吃到最后匹配的 `}`）。
     ///
-    /// 用于嵌套过深时放弃解析块内容：只数括号、不再递归，保证过程线性且必然终止。
+    /// 用于恢复病理输入时的块剩余部分：只数括号、不再递归，保证过程线性且必然终止。
+    #[allow(dead_code)]
     fn skip_balanced_block(&mut self, open: &novella_core::token::Token) {
         let mut level = 1usize;
         while let Some(token) = self.peek() {
@@ -688,7 +691,7 @@ impl Parser {
             }
             self.advance();
         }
-        // 走到流末尾仍未闭合：以块的起始位置补一条诊断（`enter_nesting` 已报过深度问题）
+        // 走到流末尾仍未闭合：以块的起始位置补一条诊断（外层守卫已报过深度问题）
         let mut diag =
             Diagnostic::error("此处缺少与之配对的 `}`").with_code(DiagnosticCode::SyntaxError);
         diag = diag.with_location(DiagnosticLocation {
