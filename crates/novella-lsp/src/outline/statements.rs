@@ -32,7 +32,7 @@ impl Walker<'_> {
                 }
             }
             Statement::Throw { expr, .. } => {
-                if let Some(index) = parent {
+                if let (Some(index), Some(expr)) = (parent, expr) {
                     self.expression(expr, index);
                 }
             }

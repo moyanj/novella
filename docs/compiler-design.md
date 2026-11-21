@@ -42,7 +42,7 @@
   │
   ▼
 ┌─────────────────────────────────────────────────────────────┐
-│ novella-codegen LLVM（inkwell）目标代码（当前占位：JSON 文本） │
+│ novella-codegen LLVM（inkwell）目标代码（x86-64 Linux ELF） │
 └─────────────────────────────────────────────────────────────┘
   │
   ▼
@@ -65,9 +65,9 @@ crates/
 ├── novella-ast/     # AST 节点（expr/ 目录 / stmt / types / program）
 ├── novella-lexer/   # 词法器（logos），RawToken → TokenKind
 ├── novella-parser/  # 手写递归下降（expression/ 目录 + lib/stmt/types）
-├── novella-sema/    # 语义分析第一期（module/ + resolve + symbol + ty + check/ + typecheck/）
+├── novella-sema/    # 语义分析（module/ + resolve/ + symbol + ty/ + check/ + typecheck/）
 ├── novella-hir/     # 高层中间表示：sema 结果 → 定型指令流（ty/body/item/build）
-├── novella-codegen/ # 代码生成（占位 add()，规划接 inkwell 消费 HIR）
+├── novella-codegen/ # 代码生成（经 inkwell 消费 HIR）
 ├── novella-cli/     # 二进制 novella：clap CLI，compile 子命令
 ├── novella-lsp/     # 语言服务器（outline/ + features/ + server/），公开面仅 server::run
 └── novella-syntax-gen/ # TextMate 语法生成器（TokenKind → VS Code 扩展）
@@ -140,17 +140,11 @@ ast ──(构建期)── novella-derive（proc-macro，展开引用 ::novella
 - 恢复辅助：`skip_to_statement_end`（跳到 `;`）/ `skip_to_function_end`
   （跳过到匹配的 `}` 或 `;`），占位实现用于避免误导性连锁报错。
 
-### 4.2 现状（骨架期）
+### 4.2 当前状态
 
-已实现：顶层 item 分发（装饰器/可见性位置校验、`@foo;`/`@foo{}` 独立形态）、
-`parse_statement` 的变量声明（`let`/`const`）、`continue` 语句、语句块、
-`parse_decorator`（自由 token 收集、括号配对）、`parse_function` 占位
-（仅名字 + 跳过剩余）。
-
-尚未实现（`parse_xxx` 骨架返回 None / TODO）：`parse_import`（注意路径别名
-解析不在此层，`prefix` 字段按 `:` 切分）、`parse_type_alias`、
-`parse_trait`、`parse_class`、`parse_extern_function`、表达式与类型表达式
-（`parse_expression` / `parse_type_expr` 占位返回 None）。
+文法中的全部产生式均可产出 AST；声明、表达式、类型与语句均已实现解析，
+不再有 parse_xxx 占位入口。恢复点位于顶层 item 与语句块，递归入口按需扩展
+分段栈。语法可解析不代表静态或运行时已支持，具体边界见覆盖矩阵。
 
 ### 4.3 已确认落地任务
 
@@ -193,12 +187,13 @@ ast ──(构建期)── novella-derive（proc-macro，展开引用 ::novella
 
 ## 6. 语义分析（novella-sema）
 
-现状：第一期可用，规则清单见 [`sema-phase1.md`](sema-phase1.md)。管线为
-模块加载（`module/loader.rs`）→ 声明收集（`resolve.rs`）→ 导入绑定
-（`module/resolve_path.rs` + `resolve.rs`）→ 类型注册（`check/type_defs.rs`）
-→ 逐模块检查（`check/decl.rs` + `typecheck/`）。
+现状与验收以 [sema-coverage.md](sema-coverage.md) 为准，第一期文档仅保留历史。
+analysis.rs 编排模块加载 → collect/imports → 类型签名注册 → 继承/trait →
+显式顶层注解 → 字段/顶层声明依赖定型 → 函数体检查 → 泛型约束复核。
+api.rs 保存公开契约，state.rs 保存内部状态；ty/、resolve/、check/type_defs/
+与 typecheck/ 的私有子模块按职责拆分，原有 crate 依赖方向保持不变。
 
-**公开面**（crate 外可引用）只有三族：输入（`analyze` / `analyze_with`、
+**公开面**（crate 外可引用）只有三族：输入（`analyze` / `analyze_with` / `analyze_with_target`、
 `FileLoader` / `FsLoader` / `OverlayLoader`）、输出（`SemaResult`，内含
 `DiagnosticReport` / `BindingTable` / `TypeHierarchy` / `ModuleOutput` /
 `ExpressionTypes` 五个只读视图）、值类型（`Definition` / `DefinitionKind` /
@@ -215,17 +210,18 @@ codegen）**不得自行再跑 lexer / parser**，否则入口文件会被解析
 
 `AnalyzedModule` 字段：`id` / `path`（调用方原始路径，对外回显）/
 `source` / `tokens`（完整 token 流，含注释）/ `program` /
-`syntax_diagnostics`（词法 + 语法诊断）/ `syntax_failed` / `load_failed`。
-语义诊断在 `SemaResult.diagnostics.modules(id).semantic_diagnostics()`，与
-`syntax_diagnostics` **不重叠**。模块内部的 `key`（规范化路径）只用于去重、
+`syntax_failed` / `load_failed`。
+全部诊断仅存于 `SemaResult.diagnostics.modules[id]`；`syntax_diagnostics()` 与
+`semantic_diagnostics()` 提供不重叠的阶段切片，`ordered()` 提供源码顺序，
+`DiagnosticReport::has_errors()` 覆盖所有阶段及全局加载错误。模块内部的 `key`（规范化路径）只用于去重、
 overlay 查找与相对导入解析，不外泄。
 
 `ExpressionTypes` 是表达式级类型表，键 `(ModuleId, Span)`，值为 `TypeView`
-（内部 `Ty` 的公开投影）。登记点在 `typecheck/expr.rs` 的
-`check_expr` **唯一函数出口**（`check_expr_with_hint` 的两个提示分支另行补记），
-因此新增表达式分支时不会漏记。`Unknown` / `External` / `Error` 三种抑制类型
-统一投影为 `TypeView::Unknown`；匿名 lambda 与占位签名无名义键，同样投影为
-`Unknown`（其覆盖范围随 `check_lambda` 的完善而扩大）。
+（内部 `Ty` 的公开投影）。登记由 typecheck/expr/dispatch.rs 的 check_expr 与 hints.rs 的
+check_expr_with_hint 包装层统一完成，两者共用同一记录键空间，结构下推不漏子节点。
+Unknown（允许的无注解形参等）投影为 `TypeView::Unknown`，
+Error（已报错）独立投影为 `TypeView::Error`；External 已删除，std 必须加载声明；所有函数签名（含匿名 lambda）均投影为
+`TypeView::Function`，名义键只决定实体身份，不决定函数类型投影。
 
 以下为既定规则清单（来自 `design.md` §6.5 / §5 / §4）：
 
@@ -250,12 +246,12 @@ overlay 查找与相对导入解析，不外泄。
 - 类型来源为 sema.expression_types、annotation_types、declaration_types，分别提供
   表达式、已解析注解、声明最终类型；字面量由使用上下文递归定型。
 - build_hir 遇到词法、语法、语义或加载错误立即拒绝，不跳过坏模块。
-  Unknown / External / Error、未定型类型、联合、泛型及未支持语义返回 BuildError。
+  Unknown / Error、未定型类型、联合、泛型及未支持语义返回 BuildError。
 - Binary 携带两侧输入类型和结果类型；TypeTest 携带输入/目标类型。
   地址、间接写入、元组构造/提取、数组构造/长度均有明确指令。
 - 条件用 HirCond { prelude, value }，循环每轮执行 prelude。
   Loop.step 在正常尾部和 continue 后执行，break / return 跳过。
-- 左值只定位一次，复合赋值先读旧值再求 RHS；普通局部读取保存快照。
+- 普通赋值先 RHS 后定位 LHS；复合赋值定位一次后先读旧值再求 RHS；局部读取保存快照。
 - struct self 由 sema 定型为属主，在 HIR 参数槽位以 Pointer(Struct) 传递，
   保证方法能修改原实例；签名的 receiver 不占显式 params。
   方法键为 m{module}::类型::方法，lambda 实体键包含模块和源码位置。
@@ -264,25 +260,26 @@ overlay 查找与相对导入解析，不外泄。
 
 P1 已覆盖数组 for-in、元组/数组与递归解构、短路、默认实参、struct 实例调用、
 match 顺序、无捕获 lambda 和复杂左值。P2 已完成扩展冒烟与 workspace 质量检查。
-异常、异步、new、class 动态派发、闭包捕获、宏/装饰器、静态/弱字段、trait 成员、
+异常、异步、new、class 动态派发、闭包捕获、非 cfg 指令、静态/弱字段、trait 成员、
 动态对象等后续期语义明确拒绝。string/数组布局和运行时 ABI 尚待后端阶段确定。
 具体降级契约、拒绝边界及验证证据见 [hir-handover.md](hir-handover.md)。
 
 ## 8. 代码生成（novella-codegen）
 
-现状：占位 `add()`，CLI 默认输出文件 `output.s` 当前实际写 JSON 文本。
-目标形态（后续阶段）：消费 `novella-hir` 产物（经 inkwell 对接 LLVM）；
+接收 `HirProgram`，用 inkwell 0.11 对接 LLVM 23.1，生成 `x86_64-unknown-linux-gnu`
+ELF 目标文件。先登记整个导入闭包的函数，再发射函数体。局部槽位统一在函数入口分配，
+初始化留在 HIR 指令位置；`continue` 进入 `step`，`break` / `return` 跳过 `step`。
 
-- 输出汇编（.s），面向 x86-64 等目标平台；
-- 指针 = `usize` 宽度；struct 按字段顺序 + 自然对齐布局（C ABI 兼容），
-  无虚表；`&` 取址 → lea/mov 地址、`*p` 解引用 → load/store、指针算术 →
-  元素宽度位移、`as` 指针转换 → 位级重解释或截断/扩展。
+- 支持整数、布尔、标量取址和间接读写、分支、循环与跨模块直接调用。
+- 整数加减乘按位宽回绕；除零、有符号最小值除以 `-1`（含取余）或移位量越界时陷阱，避免发射可执行的 LLVM 未定义操作。
+- `main` 返回 `int` 作为进程状态，`void` 通过入口包装返回 `0`；其他 Novella 符号仅在目标文件内部可见。
+- 浮点、指针算术、聚合、字符串、间接调用、全局与 `extern` ABI 仍未支持；发射时遇到不支持的类型或指令即报错。
 
 ## 9. CLI 与诊断渲染（novella-cli）
 
-- clap CLI，`compile <file> -o <out>` 子命令；
-- 流程：lexer → 过滤注释 token → parser → 汇总词法 + 语法诊断 → JSON 输出
-  （`tokens` + `program` + `diagnostics`）；
+- `check <file>` 只做静态检查，不要求 `main`。`compile <file>` 默认经 HIR 生成目标文件并调用 `clang`，输出 `a.out`；`--emit obj` 输出 `output.o`。
+- `--emit ast` 保留旧 JSON 契约（`tokens` + `program` + `diagnostics`）；`--emit hir` 输出已通过入口检查的 HIR。两者均支持 `-o`。
+- 每个模块只分析一次。任一阶段失败均非零退出，不写入部分输出；链接和写入在输出目录内暂存，成功后才替换目标。
 - 渲染：`render_diagnostic`（`cli/error.rs`）输出 rustc 风格
   `error: <msg>` / `--> 文件:行:列` + 源码行 + caret；展示列号 1-based、
   caret 按字符渲染（中文/emoji 不错位）。
@@ -380,9 +377,22 @@ just test         # cargo test --workspace
 just lint         # clippy --workspace --all-targets -D warnings
 just fmt          # cargo fmt --all
 just doc          # cargo doc --workspace --no-deps --open
-cargo run -p novella -- compile <file> -o out.json
+cargo run -p novella -- compile <file> --emit ast -o out.json
 just lsp-build / lsp-run / lsp-pack
 ```
 
 > 说明：`just book`（mdbook build docs）依赖 mdbook 站点结构，当前 docs 为
 > 平铺 md（本文件 + design.md），如需站点预览需另行充实 `book.toml`。
+
+### 本轮 sema / 消费者契约
+
+TypeView 新增 Applied(base,args)、Future(inner)、Object(fields)，类型参数带声明身份。
+SemaResult.exhaustive_matches 提供 (ModuleId,Span) 的已证明穷尽事实，供返回路径检查
+与 HIR 共用。AnalysisTarget / PointerWidth 只接收 32/64 位，既有入口默认宿主。
+FieldMember / MethodMember 新增 name_span，StructInit 新增 type_args，Throw.expr 改为
+Option；AST 的 serde 输出随之变化，parser、分段 clone/drop、LSP walker 均已同步。
+IntConst / UntypedInt 使用 i128 载荷以保留合法 u64 最大值。开发期契约直接替换，
+无迁移层；下游穷尽匹配须同步新增变体。
+
+sema 不擦除后端尚不支持的类型；HIR 对 Applied/Future/Object、异常展开与挂起等
+逐项返回带位置的 BuildError。静态检查通过不表示 LLVM/运行时实现已经交付。

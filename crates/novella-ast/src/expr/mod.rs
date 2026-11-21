@@ -33,7 +33,7 @@ use crate::{Spanned, types::TypeExpr};
 /// （与词法 token 一一对应，供 parser 直接映射）。
 /// 每个变体携带 `span` 记录表达式覆盖的源码区间（供诊断定位），
 /// 由 `Spanned` 派生统一生成 [`Expression::span`]。
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Spanned)]
+#[derive(Debug, novella_derive::GuardedClone, PartialEq, Serialize, Deserialize, Spanned)]
 pub enum Expression {
     // —— 原子表达式 ——
     /// 字面量：`42`、`"hello"`、`true`、`null` 等（对应 `LiteralExpr`）
@@ -142,6 +142,8 @@ pub enum Expression {
     StructInit {
         /// 被构造的 struct 类型名
         name: String,
+        /// 显式泛型实参（空列表表示非泛型类型或已实例化别名）。
+        type_args: Vec<TypeExpr>,
         /// 字段初始化列表
         properties: Vec<PropertyAssignment>,
         /// 构造表达式覆盖的源码区间
@@ -217,16 +219,6 @@ pub enum Expression {
         /// 构造表达式覆盖的源码区间
         span: Span,
     },
-    /// 宏调用：`print!(x)`（对应 `MacroCallExpr`）
-    MacroCall {
-        /// 宏名表达式
-        callee: Box<Expression>,
-        /// 宏实参列表
-        args: Vec<Expression>,
-        /// 宏调用表达式覆盖的源码区间
-        span: Span,
-    },
-
     // —— 高级表达式 ——
     /// match 表达式：`match x { ... }`（对应 `MatchExpr`）
     Match(Match),

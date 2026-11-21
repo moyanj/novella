@@ -155,7 +155,11 @@ pub(crate) fn collect_statement_calls(statement: &Statement, out: &mut Vec<CallS
                 collect_expression_calls(value, out);
             }
         }
-        Statement::Throw { expr, .. } => collect_expression_calls(expr, out),
+        Statement::Throw { expr, .. } => {
+            if let Some(expr) = expr {
+                collect_expression_calls(expr, out);
+            }
+        }
         Statement::Block(block) => {
             for statement in &block.stmts {
                 collect_statement_calls(statement, out);
@@ -285,12 +289,6 @@ pub(crate) fn collect_expression_calls(expression: &Expression, out: &mut Vec<Ca
         Expression::IndexAccess { target, index, .. } => {
             collect_expression_calls(target, out);
             collect_expression_calls(index, out);
-        }
-        Expression::MacroCall { callee, args, .. } => {
-            collect_expression_calls(callee, out);
-            for arg in args {
-                collect_expression_calls(arg, out);
-            }
         }
         Expression::Match(match_expression) => {
             collect_expression_calls(&match_expression.subject, out);

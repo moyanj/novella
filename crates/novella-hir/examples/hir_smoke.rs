@@ -142,8 +142,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         Some(path) => analyze(Path::new(&path)),
         None => analyze_with(&mut MemoryLoader, Path::new(ENTRY)),
     };
-    for module in &result.modules.modules {
-        for diagnostic in &module.syntax_diagnostics {
+    for (id, module) in result.modules.modules.iter().enumerate() {
+        for diagnostic in result.diagnostics.modules[id].syntax_diagnostics() {
             eprintln!("{}: {}", module.path.display(), diagnostic.message);
         }
     }
@@ -151,7 +151,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         eprintln!("{}", diagnostic.message);
     }
     for module in &result.diagnostics.modules {
-        for diagnostic in &module.diagnostics {
+        for diagnostic in module.semantic_diagnostics() {
             eprintln!("{}: {}", module.path.display(), diagnostic.message);
         }
     }

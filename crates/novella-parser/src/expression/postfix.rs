@@ -1,4 +1,4 @@
-//! 后缀与调用：成员 / 索引 / 调用 / 宏调用 / `new` / 后缀自增、泛型实参扫描。
+//! 后缀与调用：成员 / 索引 / 调用 / `new` / 后缀自增、泛型实参扫描。
 
 use novella_ast::{
     expr::{Expression, Literal, UnaryOp},
@@ -45,27 +45,6 @@ impl Parser {
                     expr = Expression::IndexAccess {
                         target: Box::new(expr),
                         index: Box::new(index),
-                        span,
-                    };
-                }
-                // 宏调用 `f!(a, b)`
-                Some(TokenKind::Not) if self.check_n(TokenKind::OpenParen, 1) => {
-                    let checkpoint = self.checkpoint();
-                    self.advance();
-                    let Some(args) = self.parse_arguments() else {
-                        // 实参失败（如 `f!(x)` 中 `x` 之后不是 `)`）：回退到 `!` 之前，
-                        // 保留已解析的 `expr`，由上层按缺少后续运算符继续
-                        self.rollback(checkpoint);
-                        break;
-                    };
-                    let end = self.last_end();
-                    let span = Span {
-                        start: expr.span().start,
-                        end,
-                    };
-                    expr = Expression::MacroCall {
-                        callee: Box::new(expr),
-                        args,
                         span,
                     };
                 }

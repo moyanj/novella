@@ -46,8 +46,7 @@ antlr4 -lib target/antlr-align/gen/grammar -o target/antlr-align/gen grammar/Nov
 
 ## 已知的代码侧落差点（文法已按代码收紧，代码是否需要补齐由代码侧决定）
 
-- 词法仍保留 `Stream` / `Macro` 关键字，但 AST 与文法都没有对应结构
-  （`Macro` 只有调用侧 `Expression::MacroCall`）；若确认不再支持，应连同词法与高亮映射一并移除。
+- Stream 和宏系统均已删除；对应关键字、宏调用 AST/产生式与高亮映射已同步移除。
 - 标识符是**硬保留字**：`novella-parser` 只接受 `TokenKind::Identifier`
   （`except_identifier` 及各处校验），因此 `func new()`、`obj.type` 这类写法当前不可解析。
   若需要软关键字，应先放宽 parser 侧校验，再放宽文法的 `identifier` 规则。

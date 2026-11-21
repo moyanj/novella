@@ -118,17 +118,26 @@ impl Parser {
                 // `match subject { ... }` 的主体后面同样紧跟 `{`，那里必须留给 match 块；
                 // 无括号 `with` 表头同理——表头顶层的 `{` 是 with 块的起始（B-01），
                 // 括号 / 实参内部（with_shield > 0）的 `{` 仍属于 StructInit。
-                if self.check(TokenKind::OpenBrace)
+                let checkpoint = self.checkpoint();
+                let type_args = if self.check(TokenKind::LessThan) {
+                    self.parse_call_type_args()
+                } else {
+                    Some(vec![])
+                };
+                if let Some(type_args) = type_args
+                    && self.check(TokenKind::OpenBrace)
                     && !self.in_match_subject
                     && !(self.with_stack > 0 && self.with_shield == 0)
                 {
                     let (properties, span) = self.parse_object_body(token.span.start)?;
                     return Some(Expression::StructInit {
                         name: token.slice,
+                        type_args,
                         properties,
                         span,
                     });
                 }
+                self.rollback(checkpoint);
                 // `x => ...`：标识符后紧接 `=>` 是单参数 lambda
                 if self.check(TokenKind::Arrow) {
                     return self.parse_single_param_lambda(&token, token.span.start, false);

@@ -6,7 +6,6 @@ use std::path::{Path, PathBuf};
 use novella_ast::program::{ImportItem, Program};
 use novella_core::Span;
 use novella_core::diagnostic::Diagnostic;
-use novella_core::line_index::LineIndex;
 use novella_core::path::module_key;
 use novella_parser::ParserInput;
 
@@ -22,6 +21,7 @@ pub(crate) fn load_modules(
     loader: &mut dyn FileLoader,
     entry: &Path,
     scopes: &mut crate::symbol::ScopeTree,
+    options: &crate::AnalysisOptions,
 ) -> (Vec<Module>, Vec<Diagnostic>, HashMap<PathBuf, ModuleId>) {
     let mut modules: Vec<Module> = Vec::new();
     let mut by_path: HashMap<PathBuf, ModuleId> = HashMap::new();
@@ -31,6 +31,9 @@ pub(crate) fn load_modules(
     let mut worklist: Vec<(PathBuf, PathBuf)> = vec![(entry.to_path_buf(), module_key(entry))];
 
     while let Some((path, key)) = worklist.pop() {
+        if loader.is_cancelled() {
+            break;
+        }
         if by_path.contains_key(&key) {
             continue;
         }
@@ -55,7 +58,6 @@ pub(crate) fn load_modules(
                         items: vec![],
                         span: Span { start: 0, end: 0 },
                     },
-                    lines: LineIndex::build(""),
                     global_scope: scopes.new_scope(None, crate::symbol::ScopeKind::Module),
                     diagnostics: vec![],
                     syntax_diagnostic_count: 0,
@@ -69,41 +71,51 @@ pub(crate) fn load_modules(
 
         // ---- 词法 / 语法分析（全流程唯一一次：下游一律消费本模块产物）----
         let file = path.display().to_string();
-        let lex = novella_lexer::lexer(&source);
-        let mut diagnostics: Vec<Diagnostic> = lex
-            .errors
-            .iter()
-            .map(|e| {
-                let mut d = e.to_diagnostic(Some(&file));
-                if let Some(loc) = &mut d.location {
-                    loc.file = Some(file.clone());
+        let snapshot = loader
+            .parsed_source(&path)
+            .filter(|snapshot| snapshot.source == source);
+        let (tokens, mut program, diagnostics, syntax_failed) = if let Some(snapshot) = snapshot {
+            (
+                snapshot.tokens,
+                snapshot.program,
+                snapshot.diagnostics,
+                snapshot.syntax_failed,
+            )
+        } else {
+            let lex = novella_lexer::lexer(&source);
+            let mut diagnostics: Vec<Diagnostic> = lex
+                .errors
+                .iter()
+                .map(|error| error.to_diagnostic(Some(&file)))
+                .collect();
+            let tokens = lex.tokens;
+            let mut parsed = novella_parser::Parser::new(ParserInput {
+                file: file.clone(),
+                tokens: tokens.clone(),
+            })
+            .parse();
+            diagnostics.append(&mut parsed.diagnostics);
+            let failed = !diagnostics.is_empty();
+            (tokens, parsed.program, diagnostics, failed)
+        };
+        // 外部缓存可能以编辑器路径装饰诊断；统一为本次模块路径。
+        let diagnostics: Vec<_> = diagnostics
+            .into_iter()
+            .map(|mut diagnostic| {
+                if let Some(location) = &mut diagnostic.location {
+                    location.file = Some(file.clone());
                 }
-                d
+                diagnostic
             })
             .collect();
-        // 保留完整 token 流（含注释，供 JSON / 高亮消费）。注释过滤由 parser
-        // 的 `preprocess` 统一负责（`crates/novella-parser/src/preprocess.rs`），
-        // loader 不再自行过滤——过滤规则只应有一处。
-        let tokens = lex.tokens;
-        let mut parse_result = novella_parser::Parser::new(ParserInput {
-            file: file.clone(),
-            tokens: tokens.clone(),
-        })
-        .parse();
-        for diag in &mut parse_result.diagnostics {
-            if let Some(loc) = &mut diag.location {
-                loc.file = Some(file.clone());
-            }
-        }
-        let syntax_failed = !diagnostics.is_empty() || !parse_result.diagnostics.is_empty();
-        diagnostics.append(&mut parse_result.diagnostics);
         let syntax_diagnostic_count = diagnostics.len();
 
+        // cfg 在声明收集和导入扫描之前生效，关闭的声明不参与名称解析。
+        let cfg_errors = crate::cfg::configure(&mut program, &options.cfg);
         let mut module = Module {
-            lines: LineIndex::build(&source),
             source,
             tokens,
-            program: parse_result.program,
+            program,
             key,
             path,
             global_scope: scopes.new_scope(None, crate::symbol::ScopeKind::Module),
@@ -114,6 +126,9 @@ pub(crate) fn load_modules(
             crate_root: None,
         };
 
+        for (span, message) in cfg_errors {
+            module.error(span, message);
+        }
         // ---- 扫描导入语句，扩展 worklist ----
         let imports: Vec<ImportItem> = module
             .program
@@ -135,12 +150,17 @@ pub(crate) fn load_modules(
                 .parent()
                 .map(|p| p.to_path_buf())
                 .unwrap_or_default();
-            match resolve_import(import, &importer_dir, module.crate_root.as_deref()) {
+            match resolve_import(
+                import,
+                &importer_dir,
+                module.crate_root.as_deref(),
+                options.std_root.as_deref(),
+            ) {
                 Ok(ResolvedImport::File(target)) => {
                     let target_key = module_key(&target);
                     worklist.push((target, target_key));
                 }
-                Ok(ResolvedImport::StdExternal) => {}
+                Ok(ResolvedImport::ExceptionBuiltin) => {}
                 Err(message) => module.error(import.span, message),
             }
         }

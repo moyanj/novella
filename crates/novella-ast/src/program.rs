@@ -148,6 +148,8 @@ pub struct MemberModifiers {
 /// 类字段成员（对应文法 `fieldDeclaration`：`decorator* accessModifier? Static? identifier typeAnnotation? (Assign expression)? SemiColon`）
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Spanned)]
 pub struct FieldMember {
+    /// 字段标识符位置（成员绑定与重命名使用）。
+    pub name_span: Span,
     /// 字段装饰器列表（对应文法 `fieldDeclaration` 的 `decorator*`）
     pub attributes: Vec<Decorator>,
     /// 可见性与静态修饰符
@@ -169,6 +171,8 @@ pub struct FieldMember {
 /// `accessModifier?` / `Static?` 与顶层 `is_extern` 语义并不互通。
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Spanned)]
 pub struct MethodMember {
+    /// 方法标识符位置（不覆盖参数列表与函数体）。
+    pub name_span: Span,
     /// 方法装饰器列表（对应文法 `methodDeclaration` 的 `decorator*`）
     pub attributes: Vec<Decorator>,
     /// 可见性与静态修饰符

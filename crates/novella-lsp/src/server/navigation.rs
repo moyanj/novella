@@ -10,8 +10,6 @@ use lsp_types::{
 };
 use serde_json::{Value, json};
 
-use crate::source::SemanticIndex;
-
 use crate::server::Server;
 
 impl Server {
@@ -20,16 +18,16 @@ impl Server {
         let Some((doc, offset)) = self.document_and_offset::<GotoDefinitionParams>(params) else {
             return Value::Null;
         };
-        let Some(analysis) = self.analysis.as_ref() else {
+        let Some(analysis) = self.analysis_for(doc) else {
             return Value::Null;
         };
-        let Some(module) = self.module_of(doc) else {
+        let Some(module) = self.module_of(analysis, doc) else {
             return Value::Null;
         };
         let Some(definition) = crate::nav::definition_at(analysis, module, offset) else {
             return Value::Null;
         };
-        match self.location_of(definition.module, definition.span) {
+        match self.location_of(analysis, definition.module, definition.span) {
             Some(location) => serde_json::to_value(GotoDefinitionResponse::Scalar(location))
                 .unwrap_or(Value::Null),
             None => Value::Null,
@@ -50,21 +48,18 @@ impl Server {
         else {
             return empty;
         };
-        let Some(analysis) = self.analysis.as_ref() else {
+        let Some(analysis) = self.analysis_for(doc) else {
             return empty;
         };
-        let Some(module) = self.module_of(doc) else {
+        let Some(module) = self.module_of(analysis, doc) else {
             return empty;
         };
         let offset = doc.index.offset_of(params.text_document_position.position);
         let Some(target) = crate::nav::definition_at(analysis, module, offset) else {
             return empty;
         };
-        let locations: Vec<_> =
-            crate::nav::references_of(analysis, &target, params.context.include_declaration)
-                .into_iter()
-                .filter_map(|(module, span)| self.location_of(module, span))
-                .collect();
+        let locations =
+            self.reference_locations(analysis, &target, params.context.include_declaration);
         serde_json::to_value(locations).unwrap_or(empty)
     }
 
@@ -95,10 +90,10 @@ impl Server {
         else {
             return Value::Null;
         };
-        let Some(analysis) = self.analysis.as_ref() else {
+        let Some(analysis) = self.analysis_for(doc) else {
             return Value::Null;
         };
-        let Some(module) = self.module_of(doc) else {
+        let Some(module) = self.module_of(analysis, doc) else {
             return Value::Null;
         };
         let offset = doc.index.offset_of(params.text_document_position.position);
@@ -108,28 +103,66 @@ impl Server {
         // `lsp_types::Uri` 内含 String，用途是普通 map 键（从不修改），显式豁免
         #[allow(clippy::mutable_key_type)]
         let mut changes: HashMap<lsp_types::Uri, Vec<lsp_types::TextEdit>> = HashMap::new();
-        for (module, span) in crate::nav::rename_edits(analysis, &target) {
-            let Some(analysis_path) = analysis
-                .diagnostics
-                .modules
-                .get(module)
-                .map(|m| m.path.clone())
-            else {
-                continue;
-            };
-            let Some((uri, text)) = self.module_view(&analysis_path) else {
-                continue;
-            };
-            let index = SemanticIndex::new(&text);
-            changes.entry(uri).or_default().push(lsp_types::TextEdit {
-                range: index.range(span),
-                new_text: params.new_name.clone(),
-            });
+        for location in self.reference_locations(analysis, &target, true) {
+            changes
+                .entry(location.uri)
+                .or_default()
+                .push(lsp_types::TextEdit {
+                    range: location.range,
+                    new_text: params.new_name.clone(),
+                });
         }
         serde_json::to_value(WorkspaceEdit {
             changes: Some(changes),
             ..Default::default()
         })
         .unwrap_or(Value::Null)
+    }
+    /// 不同入口的 ModuleId 可不同，先以定义文件和名字位置匹配，再合并全部引用。
+    fn reference_locations(
+        &self,
+        owner: &novella_sema::SemaResult,
+        target: &novella_sema::Definition,
+        include_declaration: bool,
+    ) -> Vec<lsp_types::Location> {
+        let Some(module) = owner.modules.get(target.module) else {
+            return Vec::new();
+        };
+        let mut locations = Vec::new();
+        let mut seen = std::collections::HashSet::new();
+        for analysis in &self.analyses {
+            let Some(defining_module) = analysis.modules.find_by_path(&module.path) else {
+                continue;
+            };
+            let mut resolved = target.clone();
+            resolved.module = defining_module.id;
+            let references = if include_declaration {
+                crate::nav::rename_edits(analysis, &resolved)
+            } else {
+                crate::nav::references_of(analysis, &resolved, false)
+            };
+            for (module, span) in references {
+                if let Some(location) = self.location_of(analysis, module, span) {
+                    let range = location.range;
+                    if seen.insert((
+                        location.uri.as_str().to_owned(),
+                        range.start.line,
+                        range.start.character,
+                        range.end.line,
+                        range.end.character,
+                    )) {
+                        locations.push(location);
+                    }
+                }
+            }
+        }
+        locations.sort_by_key(|location| {
+            (
+                location.uri.as_str().to_owned(),
+                location.range.start.line,
+                location.range.start.character,
+            )
+        });
+        locations
     }
 }

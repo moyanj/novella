@@ -23,7 +23,7 @@ pub struct KeywordEntry {
 /// 全部关键字（含 `null` / `true` / `false`）。
 ///
 /// 顺序与 lexer 中 `RawToken` 的声明顺序一致，便于对照维护。
-pub const KEYWORDS: [KeywordEntry; 47] = [
+pub const KEYWORDS: [KeywordEntry; 46] = [
     KeywordEntry {
         kind: TokenKind::From,
         literal: "from",
@@ -187,10 +187,6 @@ pub const KEYWORDS: [KeywordEntry; 47] = [
     KeywordEntry {
         kind: TokenKind::Yield,
         literal: "yield",
-    },
-    KeywordEntry {
-        kind: TokenKind::Macro,
-        literal: "macro",
     },
     KeywordEntry {
         kind: TokenKind::Extern,

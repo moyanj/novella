@@ -99,13 +99,11 @@ novella 是一门类 TS/Rust 混合风格、面向系统编程的语言：TS 的
 | 上下文 | `with` `as` |
 | 类型 | `type` `is` |
 | 异步 | `async` `await` `yield` |（`stream` 已确认砍掉，关键字已移除）
-| 宏 | `macro` |
 | 外部 | `extern` |
 | unsafe | `unsafe` |
 | 弱引用 | `weak`（字段修饰） |
 
-> 已知残留：`macro` 词法层仍是关键字，但语言无对应结构（`Macro` 只有
-> 调用侧表达式 `print!(...)`）；stream 已确认砍掉并连同关键字移除。
+> 宏系统和 stream 均已删除。`macro` 不再是保留关键字，`f!(...)` 不属于语言语法。
 
 #### 内置符号（已确认）
 
@@ -158,6 +156,20 @@ AST 根：`Program { items: Vec<Item>, span }`。
 （`@`）只允许修饰 `@foo;` / `@foo { }` / `func` / `class` / `struct` /
 `trait` 声明与 class/struct 成员（含字段）。
 
+#### 条件编译指令（2026-11-15）
+
+`@cfg(predicate)` 可修饰函数、class/struct/trait、字段、方法及顶层装饰块。
+多个 cfg 按 and 合并；false 的节点在导入扫描、声明收集前剔除，不参与名称和类型检查，
+但词法/语法错误仍报告。已处理的 cfg 不继续交给 HIR。独立 `@cfg(...);` 无修饰目标，报错。
+
+predicate 支持 `true` / `false` / `unix` / `windows`，
+`target_os = "linux"`、`target_arch = "x86_64"`、`target_family = "unix"`、
+`feature = "name"`，以及递归 `all(...)` / `any(...)` / `not(...)`。
+not 恰有一个参数；all/any 可为空（分别为 true/false）。所有参数都解析，
+未知键、未知组合及多余 token 均报错，不因其他条件 false 而掩盖错误。
+目标和 feature 由 AnalysisOptions 提供，默认宿主平台且 feature 集合为空。
+`@packed` / `@align` / `@extern` / `@deprecated` 等示例不构成已实现指令。
+
 ### 4.3 导入
 
 ```
@@ -183,8 +195,8 @@ from "std:exception" import ValueError, ZeroDivisionError;
   - **`@`** —— 当前 crate 根（等价 Rust 的 `crate`），
     `from "@:sub/mod" import ...` 从本 crate 根（最近的 `nov.toml` 所在目录）
     出发的绝对路径；
-  - **`std`** —— 标准库（`"std:exception"` → `std` 库的 `exception` 模块；
-    也可写作 `"std"` 直引）；
+  - **`std`** —— 标准库路径别名；`"std:io"` 对应显式 std_root 下的 `io.nov`。
+    未配置或缺少声明时报错，不从文档示例合成 API；`std:exception` 仅保留编译器的 Exception 静态根；
   - **`super`** —— 当前作用域的父级（类似相对 import 的 `..` 语义，
     `from "super:xxx" import ...`）。
 - 路径语法：`:` 仅作别名分隔符且**最多一个**（`alias:path`）；别名之后的
@@ -227,11 +239,14 @@ typeParameter: identifier (Colon typeExpression)?;
 
 - **可见性限制（本期）**：别名**不可跨模块导入**（文法上 `type` 前无
   `pub`，`pub` 清单不含类型别名），仅模块内可见；
-- **浅泛型**：使用点检查泛型实参个数（arity），实参不代入定义体做深度
-  展开检查；别名目标在使用点按需解析；
+- **泛型代入**：使用点检查实参数量并递归代入字段、方法、数组、指针、元组、
+  函数与别名；具名实例保留实参身份，不擦除为原始类型。别名在定义环境解析，
+  定义位置的类型投影保留符号形参，不被不同实例覆盖；
 - **循环检测**：`type A = B; type B = A;` 类循环在展开点报「类型别名
   循环」；
-- `typeParameters` 的 `T: Bound` 约束本期仅记录、不校验。
+- `T: Trait` 约束参与成员查找与实参检查，包括 trait 的泛型实参。类型参数用
+  模块和声明位置区分；调用可从实参递归推导，不从期望返回类型反推，冲突或
+  无法推导时报错。后端单态化是独立阶段。
 
 ### 4.5 编译器指令 `@`（attribute 语义）
 
@@ -290,7 +305,7 @@ AST：`ClassItem { attributes, name, type_parameters, members, parent, scope }`�
 
 **命名以双下划线 `__` 开头即可（结尾 `__` 不强制）**，如 `__init`、
 `__destroy`、`__str` 等（写 `__init__` 风格亦可，语义一致）；由编译器在
-特定时机自动调用，用户不直接调用。
+特定时机由编译器自动调用；用户也可以显式调用，仍须通过可见性、接收者和签名检查。
 
 - 词法零改动：`__xxx` 本就匹配 `Identifier`（`_` 可为首字符）；`__` 前缀的
   识别在语义阶段按名字判定；
@@ -399,7 +414,7 @@ statement: variableStatement | returnStatement | breakStatement | continueStatem
 | 原子 | `literal` / `identifier` / `(expr)` / 数组 / 对象 / `this` | `Literal` / `Identifier` / `Paren` / `ArrayLiteral` / `ObjectLiteral` / `This` |
 | 元组 | `(a, b, ...)`（≥2 元素；`()` 与单元素 `(a,)` 均非法——`()` 报「空元组不是合法表达式」、`(a,)` 报「单元素元组不受支持」） | `Tuple` |
 | match | `match x { case ... }` | `Match` |
-| 后缀 | `.` 成员 / `[ ]` 索引 / 调用 / `!()` 宏调用 / `new` 构造 / `++` `--` | `MemberAccess` / `IndexAccess` / `Call` / `MacroCall` / `New` / `Unary(PostInc/Dec)` |
+| 后缀 | `.` 成员 / `[ ]` 索引 / 调用 / `new` 构造 / `++` `--` | `MemberAccess` / `IndexAccess` / `Call` / `New` / `Unary(PostInc/Dec)` |
 | 前缀 | `+ - ~ ! not` **`& *`（新增）** / `await` | `Unary` / `Await` |
 | 类型判断 | `expr is Type` | `Is` |
 | 乘除 | `* / %` | `Binary` |
@@ -427,7 +442,7 @@ statement: variableStatement | returnStatement | breakStatement | continueStatem
 
 `Expression` 变体：`Literal` `Identifier` `Paren` `Tuple` `ArrayLiteral`
 `ObjectLiteral` `This` `Unary` `Await` `Binary` `Is` `Ternary` `Assignment`
-`MemberAccess` `IndexAccess` `Call` `New` `MacroCall` `Match` `Lambda`
+`MemberAccess` `IndexAccess` `Call` `New` `Match` `Lambda`
 **`Cast`（新增）** 及 **struct 构造**（§5.4）。
 
 运算符枚举：
@@ -494,7 +509,7 @@ statement: variableStatement | returnStatement | breakStatement | continueStatem
   （unsafe）；
 - 元组 / 数组同形后逐元素递归适用以上规则；联合类型：目标是联合时
   源可赋任一成员即可，源是联合时全部成员可赋目标才可赋（保守）；
-- 类型参数 `T`、std 外部符号、错误恢复产生的未知类型按「不透明」放行
+- 类型参数 `T` 与错误恢复类型按各自规则处理；std 符号必须来自真实声明，不能按不透明外部符号放行
   （不再追加诊断）。
 
 ### 5.3 指针类型（已确认新增）
@@ -720,15 +735,16 @@ with openFile("data.txt") as f: File {
 
 - `T[]`（class 元素）= 引用数组：元素 retain/release，数组本身由语言管理；
 - `T[]`（struct / 标量元素）= 连续内存（已定）；
-- `std` 容器（List / Map）基于以上语义实现（标准库文档待补，当前搁置）。
+- `std` 容器（List / Map）基于以上语义实现；包级 API 草案见
+  [`stdlib-design.md`](stdlib-design.md)（状态：待评审，未实现）。
 
 ### 7.8 待确认决策点
 
 1. `weak` 语法：已定案为**字段修饰符**（与 `static` 同位），已入文法与词法；
 2. ~~弱引用读取是否做「临时强引用」保证~~ —— **不做**（无空安全保证，访问
    过期对象未定义）；
-3. `with` 的 `__enter` 返回值是否绑定到 `as` 名（本稿：`as` 绑定原始 expr，
-   `__enter` 返回值仅作初始化，绑定规则待定）；
+3. `with as` 已确认绑定原始资源。可选 `__enter` / `__exit` 无显式形参并返回
+   void；`__init` / `__destroy` 返回 void，`__str` 返回 string；
 4. 是否提供 `@arc` / 配置项切到 tracing GC（本稿：不做，ARC 唯一）。
 
 
@@ -819,7 +835,10 @@ func demo() {
 
 #### 9.1.4 错误对象模型
 
-`std:exception` 提供：
+编译器为 `std:exception` 的具名/命名空间导入提供 `Exception` 静态名义根。
+当前根构造器无实参，throw/catch 只接受该根或子类；`throw;` 仅 catch 内可用，
+catch 不得被前面的异常类型覆盖。以下字段与标准派生异常是标准库的后续实现示意，
+不代表它们已由外部符号自动获得相同的静态身份：
 
 ```
 class Exception {
@@ -836,7 +855,8 @@ class ZeroDivisionError (Exception) { ... }
 
 - 表达式求值：二元运算按**左操作数先于右操作数**求值；`&&` / `||` 短路
   （右侧可能不求值）；`??` 短路；`?.`（若未来引入）短路；
-- 赋值：先求 RHS，再求 LHS 目标（`a[i] = f()` 中 `f()` 先于 `a[i]` 定位）；
+- 普通赋值：先求 RHS，再定位 LHS，最后写回（`a[i] = f()` 中 `f()` 先执行）；
+- 复合赋值：定位 LHS 一次、读取旧值、求 RHS、计算并写回；
 - 函数 / 方法实参：**从左到右**求值；
 - 返回值：`return expr;` 先求 expr；`return;` 返回默认值（void）。
 
@@ -858,6 +878,7 @@ await expr;         // 仅 async 上下文
 #### 9.3.2 语义约束
 
 - `await` 只能出现在 async 函数（或异步 lambda）体；
+- `Future<T>` 为可写的内建类型；async 调用始终得到 Future<T>，await 只接受 Future。
 - async 函数返回值可以是 `T` 或 `void`：调用方 `await f()` 得到 `T`；
   不 await 时得到 `Future<T>`（句柄，可存储 / 传递）；
 - async 块内可嵌套 await；同步代码不可 await（报错）。
@@ -874,7 +895,7 @@ async func main_async() {
 }
 ```
 
-> `v1` 是否提供顶层 `await`（直接在 `main` 内 await）见 §9.6；
+> main 保持同步，不能直接使用 await；
 > 上例用 `async func main_async` 演示将其包在 async 上下文中的写法。
 
 ### 9.4 stream 已砍 / yield 保留
@@ -901,11 +922,10 @@ stream func fib(n: i64) { ... }   // 已砍，不再支持
   块内可允许（不改变内存语义）；unwind 后的裸指针视为悬垂（未定义）——
   `声明：抛异常/await 挂起期间跨作用域持有裸指针是未定义行为`。
 
-### 9.6 待确认决策点
+### 9.6 运行时后续决策点
 
 1. 调度模型：单线程协作（本稿）vs 线程池并行（后续扩展是否预留接口）；
-2. 顶层 await：`func main()` 是否可 `await`（本稿倾向允许，内部包一层
-   async 状态机）；
+2. 顶层 await 已确认不支持：`main` 同步；await 仅用于 async 上下文；
 3. 异常实现的运行时选型：栈展开表（unwind）vs 方案式（返回值）；v1 需要
    unwind，成本在 codegen；
 4. `yield` 的空值语义与 `Option` 的关系（本稿先不引入 `Option`，用
@@ -917,11 +937,12 @@ stream func fib(n: i64) { ... }   // 已砍，不再支持
   符合文法）；均**可恢复**——记录后继续分析同一文件其余部分；
 - 语义错误（类型不符、unsafe 违规、未知路径别名、缺少 `main` 等）由语义
   分析阶段产出；
-- **sema 第一期未覆盖**（后续期补全，见 `docs/sema-phase1.md`）：match
-  穷尽性、函数返回路径完整性、未使用符号 warning、按目标位宽的字面量
-  溢出检查、多级限定名 `a.b.T`、限定名 struct 初始化 `mod.Type{ ... }`
-  （parser 未支持）、泛型实参代入定义体的深度检查、class 实现 trait 的
-  一致性检查；
+- 当前静态覆盖以 [sema-coverage.md](sema-coverage.md) 和
+  [设计对照备忘](sema-design-todo.md) 为准。宏语法已删除；@cfg 在声明收集前生效，
+  其他未定义指令及 yield 明确报 error；std 需要真实模块声明并执行完整检查。
+  多级限定模块、限定名 struct 初始化仍受既有 parser 范围约束；未使用符号
+  warning 不是本轮完成标准。异常展开、异步状态机、ARC 与泛型单态化尚不属于
+  本轮运行时交付。
 - 诊断渲染为 rustc 风格（`error: ...` + `--> 文件:行:列` + 源码行 + caret，
   列号 1-based 展示、caret 按字符不错位）——渲染细节属编译器设计。
 
@@ -967,3 +988,22 @@ func main() {
     demo();
 }
 ```
+
+## 12. 静态语义补全的已确认规则（2026-11-15）
+
+- class 括号列表按解析到的符号区分唯一父类和 trait，不按排列位置猜测。trait
+  只有方法声明，不允许字段与默认方法体。实现签名、继承覆写与抽象类实例化
+  均在静态阶段检查；构造器不继承。子类字段不能遮蔽继承成员，方法不能遮蔽字段。
+- 成员默认/pri 可在同模块、所属类型及已确认的子类内部访问；跨模块类型外需 pub。
+  static 成员通过类型访问，实例成员通过实例访问。self 仅实例方法首参，
+  显式注解须为所属类型（含符号泛型实参）；static 无 self/this。
+- 匿名对象按字段名和类型作结构检查，允许宽对象赋给窄对象；局部变量仅在
+  所有可达路径赋值后读取。未标注普通形参继续容错，不启动普通形参类型推导。
+- 值 match 须穷尽：布尔 true/false、可判定联合类型模式可省 default，其他情况
+  需 default。块分支为 void，禁止与值分支混合；重复常量、被前项覆盖的类型
+  模式拒绝。void match 允许部分覆盖。
+- b 字符串为 u8[]，只允许单字节字符和字节转义；f-string 使用 {expr}、
+  {{/}}，不支持格式说明符。f16 为 IEEE binary16，f8 为 E4M3FN，按最近偶数
+  舍入的有限范围检查；usize/isize 使用显式 32/64 位分析配置，缺省为宿主。
+
+最小正反例、类型投影与 LSP/HIR 验证见覆盖矩阵的本轮验收记录。

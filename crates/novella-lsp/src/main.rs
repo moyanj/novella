@@ -10,10 +10,10 @@ fn main() -> ExitCode {
     // 锁定标准流，避免多次加锁与拷贝
     let stdin = io::stdin();
     let stdout = io::stdout();
-    let mut reader = BufReader::new(stdin.lock());
+    let reader = BufReader::new(stdin);
     let mut writer = BufWriter::new(stdout.lock());
 
-    match novella_lsp::server::run(&mut reader, &mut writer) {
+    match novella_lsp::server::run(reader, &mut writer) {
         // 退出码遵循 LSP 规范：经 shutdown 正常退出为 0，异常退出为非 0
         Ok(code) => ExitCode::from(u8::try_from(code).unwrap_or(1)),
         Err(e) => {

@@ -79,12 +79,6 @@ impl Walker<'_> {
                     self.type_expr(type_arg, parent);
                 }
             }
-            Expression::MacroCall { callee, args, .. } => {
-                self.expression(callee, parent);
-                for argument in args {
-                    self.expression(argument, parent);
-                }
-            }
             Expression::Match(match_expression) => {
                 self.expression(&match_expression.subject, parent);
                 for case in &match_expression.cases {

@@ -34,21 +34,16 @@ impl<'a> BodyBuilder<'a> {
         }
         let definition = self
             .sema
-            .modules
-            .get(*module)
-            .and_then(|module| {
-                module.program.items.iter().find_map(|item| match item {
-                    Item::Struct(item) if item.name == *name => Some(item),
-                    _ => None,
-                })
-            })
+            .declarations
+            .named(*module, name)
+            .and_then(|id| self.sema.declarations.members(&self.sema.modules, id))
             .ok_or_else(|| {
                 BuildError::at(BuildErrorKind::MissingType {
                     what: "struct 定义",
                 })
                 .with_site(self.module, span)
             })?;
-        for member in &definition.members {
+        for member in definition {
             if let ClassMember::Field(field) = member {
                 let (index, field_ty) = self.field_slot(&ty, &field.name, field.span)?;
                 if slots.iter().any(|(slot, _)| *slot == index) {
@@ -104,7 +99,11 @@ impl<'a> BodyBuilder<'a> {
                 init: None,
             }));
         }
-        if dst.is_some() && node.default.is_none() {
+        let exhaustive = self
+            .sema
+            .exhaustive_matches
+            .contains(&(self.module, node.span));
+        if dst.is_some() && node.default.is_none() && !exhaustive {
             return Err(BuildError::at(BuildErrorKind::Unimplemented {
                 node: "value match without default",
             })
@@ -117,7 +116,15 @@ impl<'a> BodyBuilder<'a> {
             .as_ref()
             .map(|body| self.match_body_block(body, dst, &result_ty))
             .transpose()?;
-        for case in node.cases.iter().rev() {
+        let mut cases = node.cases.as_slice();
+        if exhaustive
+            && node.default.is_none()
+            && let Some((last, rest)) = cases.split_last()
+        {
+            tail = Some(self.match_body_block(&last.body, dst, &result_ty)?);
+            cases = rest;
+        }
+        for case in cases.iter().rev() {
             let mut prelude = HirBlock::new();
             let test = self.fresh_local(HirType::Boolean);
             match &case.pattern {
@@ -245,6 +252,8 @@ impl<'a> BodyBuilder<'a> {
         let params = inner.parameter_slots();
         let lambdas = std::mem::take(&mut inner.lambdas);
         self.lambdas.push(HirFunction {
+            source_module: self.module,
+            is_lambda: true,
             id: signature.id.clone(),
             signature: (*signature).clone(),
             params,
@@ -265,11 +274,20 @@ impl<'a> BodyBuilder<'a> {
             Literal::Null => Ok(HirOperand::Null),
             Literal::Boolean(value) => Ok(HirOperand::BoolConst(*value)),
             Literal::String(raw) => {
-                decode_string(raw)
+                if raw.starts_with('f') || raw.starts_with('b') {
+                    return Err(BuildError::at(BuildErrorKind::Unimplemented {
+                        node: "格式化或字节字符串",
+                    })
+                    .with_site(self.module, span));
+                }
+                // 解码表在 `novella_core::string`（sema 校验非法转义时用同一份实现），
+                // 此处只负责把解码失败转成降级错误
+                novella_core::string::decode_string_literal(raw)
                     .map(HirOperand::StringConst)
-                    .ok_or_else(|| {
+                    .map_err(|_error| {
+                        // 语义阶段已校验过转义；走到这里说明 sema 与 core 解码表不一致
                         BuildError::at(BuildErrorKind::Unimplemented {
-                            node: "formatted / byte string or unsupported escape",
+                            node: "string literal with unsupported escape",
                         })
                         .with_site(self.module, span)
                     })

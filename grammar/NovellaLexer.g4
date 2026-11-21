@@ -143,8 +143,6 @@ Async: 'async';
 Await: 'await';
 Yield: 'yield';
 
-// 宏系统
-Macro: 'macro';
 
 // 外部函数
 Extern: 'extern';

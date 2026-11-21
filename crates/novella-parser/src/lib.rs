@@ -760,6 +760,7 @@ impl Parser {
                 None
             };
             return Some(ClassMember::Method(MethodMember {
+                name_span: name.span,
                 attributes,
                 modifiers,
                 name: name.slice,
@@ -788,6 +789,7 @@ impl Parser {
             self.error_here("字段声明末尾应为 `;`");
         }
         Some(ClassMember::Field(FieldMember {
+            name_span: name.span,
             attributes,
             modifiers,
             name: name.slice,

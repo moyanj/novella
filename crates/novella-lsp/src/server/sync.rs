@@ -25,6 +25,7 @@ impl Server {
         let document = params.text_document;
         let uri = document.uri.as_str().to_owned();
         eprintln!("[novella-lsp] 打开文档：{uri}");
+        self.versions.insert(uri.clone(), document.version);
         self.documents.insert(
             uri.clone(),
             SourceDoc::new(document.text, crate::document::file_path_of(&uri)),
@@ -44,6 +45,15 @@ impl Server {
             return Vec::new();
         };
         let uri = params.text_document.uri.as_str().to_owned();
+        if self
+            .versions
+            .get(&uri)
+            .is_some_and(|version| *version >= params.text_document.version)
+        {
+            return Vec::new();
+        }
+        self.versions
+            .insert(uri.clone(), params.text_document.version);
         let path = match self.documents.get(&uri) {
             Some(doc) => doc.path.clone(),
             None => crate::document::file_path_of(&uri),
@@ -64,53 +74,70 @@ impl Server {
             return Vec::new();
         };
         self.documents.remove(uri);
+        self.versions.remove(uri);
         eprintln!("[novella-lsp] 关闭文档：{uri}");
         // 文档关闭后旧诊断必须显式清空，否则客户端会一直显示残留错误
-        vec![publish_diagnostics(uri, Vec::new(), None)]
+        let mut messages = self.publish(uri);
+        messages.push(publish_diagnostics(uri, Vec::new(), None));
+        messages
     }
 
-    /// 为一篇文档生成 `publishDiagnostics` 报文的参数。
-    pub(crate) fn publish(&mut self, uri: &str) -> Vec<Value> {
-        let Some(doc) = self.documents.get(uri) else {
+    /// 一次重建所有打开工程，依赖文件的诊断也随之刷新。
+    pub(crate) fn publish(&mut self, _uri: &str) -> Vec<Value> {
+        self.generation = self.generation.wrapping_add(1);
+        self.analyses.clear();
+        if self.background {
+            self.analysis_requested = true;
             return Vec::new();
-        };
-        let mut published = diagnostics::convert_all(&doc.index, &doc.text, &doc.lex_diagnostics());
+        }
+        let job = self.analysis_job(Default::default());
+        self.analyses = job.execute();
+        self.diagnostic_messages()
+    }
 
-        // 语法 / 语义诊断需要完整模块图（导入闭包），仅 `file://` 文档可触发；
-        // `untitled:` 文档没有路径，只推送词法诊断。
-        let Some(path) = doc.path.clone() else {
-            return vec![publish_diagnostics(uri, published, None)];
-        };
-
-        // C2：所有打开文档的内存缓冲经 OverlayLoader 参与分析——
-        // 入口文档的未保存修改直接进入模块图，诊断位置换算可复用文档自身的
-        // SemanticIndex（overlay 保证分析文本与缓冲一致）。
-        let overlay = self
-            .documents
-            .values()
-            .filter_map(|d| {
-                d.path
-                    .clone()
-                    .map(|path| (std::path::PathBuf::from(path), d.text.clone()))
-            })
-            .collect();
-        let mut loader = novella_sema::OverlayLoader::new(overlay);
-        let result = novella_sema::analyze_with(&mut loader, Path::new(&path));
-
-        let entry_key = novella_core::path::module_key(Path::new(&path));
-        if let Some(module) = result
-            .diagnostics
-            .modules
-            .iter()
-            .find(|module| module.path == entry_key)
-        {
-            published.extend(diagnostics::convert_all(
-                &doc.index,
-                &doc.text,
-                &module.diagnostics,
+    /// 只从当前已提交快照发布诊断，不在此路径触发计算。
+    pub(super) fn diagnostic_messages(&self) -> Vec<Value> {
+        let mut messages = Vec::new();
+        for (uri, doc) in &self.documents {
+            let mut published = Vec::new();
+            if let Some(path) = doc.path.as_deref() {
+                let mut seen = std::collections::HashSet::new();
+                for analysis in &self.analyses {
+                    if let Some(module) = analysis.modules.find_by_path(Path::new(path)) {
+                        let mut module_diagnostics =
+                            analysis.diagnostics.modules[module.id].ordered();
+                        if module.id == 0 {
+                            module_diagnostics.extend(&analysis.diagnostics.global);
+                        }
+                        for diagnostic in module_diagnostics {
+                            let key = serde_json::to_string(diagnostic).expect("诊断可序列化");
+                            if seen.insert(key) {
+                                published.extend(diagnostics::convert_all(
+                                    &doc.index,
+                                    &doc.text,
+                                    std::slice::from_ref(diagnostic),
+                                ));
+                            }
+                        }
+                    }
+                }
+            } else {
+                let mut diagnostics = doc.lex_diagnostics();
+                diagnostics.extend(doc.parsed.diagnostics.clone());
+                published = diagnostics::convert_all(&doc.index, &doc.text, &diagnostics);
+            }
+            messages.push(publish_diagnostics(
+                uri,
+                published,
+                self.versions.get(uri).copied(),
             ));
         }
-        self.analysis = Some(result);
-        vec![publish_diagnostics(uri, published, None)]
+        messages.sort_by_key(|message| {
+            message["params"]["uri"]
+                .as_str()
+                .unwrap_or_default()
+                .to_owned()
+        });
+        messages
     }
 }

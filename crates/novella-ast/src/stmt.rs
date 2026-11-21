@@ -216,7 +216,7 @@ pub struct WithStmt {
 ///
 /// 每个变体携带自身位置：变体若内嵌自带 `span` 的节点（如 `Block` / `IfStmt`）
 /// 则直接取用，否则由变体自身的 `span` 字段承载，统一经 [`Statement::span`] 访问。
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Spanned)]
+#[derive(Debug, novella_derive::GuardedClone, PartialEq, Serialize, Deserialize, Spanned)]
 pub enum Statement {
     /// 单条变量声明语句（对应 `variableStatement` 的单声明形态）
     Variable(VariableStmt),
@@ -258,7 +258,7 @@ pub enum Statement {
     /// 抛出异常：`throw expr;`（对应 `throwStatement`）
     Throw {
         /// 被抛出的表达式
-        expr: Expression,
+        expr: Option<Expression>,
         /// 语句覆盖的源码区间
         span: Span,
     },

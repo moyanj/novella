@@ -50,7 +50,7 @@ pub fn token_type_index(kind: novella_core::token::TokenKind) -> Option<u32> {
         From | Import | Pub | Pri| Pkg | Const | Let | Static | Weak | Func | Class | Struct | Trait
         | New | This | If | Else | Elif | While | For | In | Break | Continue | Return | Default
         | Match | Case | KeyAnd | KeyOr | KeyNot | Try | Catch | Finally | Throw | With | As
-        | Type | Is | Async | Await | Yield | Macro | Extern | Unsafe | Null | BooleanLiteral => KEYWORD,
+        | Type | Is | Async | Await | Yield | Extern | Unsafe | Null | BooleanLiteral => KEYWORD,
 
         // ---------- 数字字面量 ----------
         HexIntegerLiteral | OctalIntegerLiteral | BinaryIntegerLiteral | DecimalLiteral => NUMBER,

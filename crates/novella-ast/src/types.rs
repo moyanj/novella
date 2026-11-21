@@ -150,7 +150,7 @@ pub struct FunctionType {
 /// 类型表达式（对应 `typeExpression` / `primaryType`）。
 ///
 /// 每个变体携带 `span` 记录类型表达式覆盖的源码区间，统一经 [`TypeExpr::span`] 访问。
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Spanned)]
+#[derive(Debug, novella_derive::GuardedClone, PartialEq, Serialize, Deserialize, Spanned)]
 pub enum TypeExpr {
     /// 预定义基础类型
     Predefined {

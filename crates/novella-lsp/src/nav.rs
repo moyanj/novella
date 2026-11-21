@@ -31,7 +31,7 @@ pub fn definition_at(result: &SemaResult, module: ModuleId, offset: usize) -> Op
     // 2) 光标在声明上：定义即自身
     result
         .bindings
-        .references
+        .definitions
         .values()
         .filter(|d| {
             d.module == module

@@ -31,8 +31,8 @@ pub(crate) enum ScopeKind {
 pub(crate) enum NsTarget {
     /// 已解析到具体模块
     Module(ModuleId),
-    /// `std:` 前缀——std 库尚未落地，成员一律为不透明外部符号
-    StdExternal,
+    /// std:exception 的编译器静态名义根；不代表任意 std 成员
+    ExceptionBuiltin,
 }
 
 /// 符号种类。
@@ -50,7 +50,7 @@ pub(crate) enum SymbolKind {
     /// 命名空间导入绑定（`import "mod";`）
     NamespaceImport { target: NsTarget },
     /// 具名导入绑定（`from "mod" import a as b;`）：
-    /// `target` 为 None 表示 std 外部符号（不透明，调用不查）
+    /// `target` 为 None 只用于编译器 Exception 根，值访问和未知成员仍报错
     NamedImport {
         target: Option<ModuleId>,
         imported: String,

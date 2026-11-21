@@ -1,4 +1,4 @@
-//! 导入路径解析：导入语句 → 文件路径 / 外部符号 stub。
+//! 导入路径解析：导入语句 → 真实文件路径 / 编译器 Exception 根。
 //!
 //! 纯路径运算，不触发加载；也负责 crate 根（`nov.toml`）的懒查找。
 //! 绑定阶段再把文件路径映射为模块 id（[`resolve_import_path`]）。
@@ -25,14 +25,14 @@ pub(crate) fn find_crate_root(loader: &mut dyn FileLoader, file: &Path) -> Optio
 pub(crate) enum ResolvedImport {
     /// 解析到文件路径（待加载 / 已加载模块）
     File(PathBuf),
-    /// `std:` 前缀——外部符号 stub
-    StdExternal,
+    /// std:exception 的编译器静态 Exception 根
+    ExceptionBuiltin,
 }
 
 /// 导入绑定阶段的解析结果（文件路径已映射为模块 id）。
 pub(crate) enum NsResolution {
     Module(ModuleId),
-    StdExternal,
+    ExceptionBuiltin,
 }
 
 /// 解析导入语句到目标模块（加载阶段完成后调用；路径→id 映射见
@@ -50,7 +50,12 @@ pub(crate) fn resolve_import_path(
         .parent()
         .map(|p| p.to_path_buf())
         .unwrap_or_default();
-    match resolve_import(import, &dir, importer.crate_root.as_deref())? {
+    match resolve_import(
+        import,
+        &dir,
+        importer.crate_root.as_deref(),
+        sema.std_root.as_deref(),
+    )? {
         ResolvedImport::File(path) => {
             let key = module_key(&path);
             sema.module_by_path
@@ -59,7 +64,7 @@ pub(crate) fn resolve_import_path(
                 .map(NsResolution::Module)
                 .ok_or_else(|| format!("模块文件未加载：{}", path.display()))
         }
-        ResolvedImport::StdExternal => Ok(NsResolution::StdExternal),
+        ResolvedImport::ExceptionBuiltin => Ok(NsResolution::ExceptionBuiltin),
     }
 }
 
@@ -70,6 +75,7 @@ pub(crate) fn resolve_import(
     import: &ImportItem,
     importer_dir: &Path,
     crate_root: Option<&Path>,
+    std_root: Option<&Path>,
 ) -> Result<ResolvedImport, String> {
     // `:` 仅作别名分隔符且最多一个：parser 已在第一个 `:` 处切分，
     // path 内残留的 `:` 即第二个分隔符
@@ -90,7 +96,20 @@ pub(crate) fn resolve_import(
             Some(parent) => parent.to_path_buf(),
             None => return Err("`super:` 导入已超出文件系统根".to_string()),
         },
-        Some("std") => return Ok(ResolvedImport::StdExternal),
+        Some("std") if import.path == "exception" => return Ok(ResolvedImport::ExceptionBuiltin),
+        Some("std") => {
+            if segments.iter().any(|s| matches!(*s, "." | "..")) {
+                return Err("std 模块路径不允许 . 或 .. 路径段".to_owned());
+            }
+            std_root
+                .ok_or_else(|| {
+                    format!(
+                        "标准库模块 `{}` 缺少声明：请配置 std_root，不能跳过类型检查",
+                        import.path
+                    )
+                })?
+                .to_path_buf()
+        }
         Some(other) => return Err(format!("未知路径别名 `{other}`")),
     };
     for segment in &segments {

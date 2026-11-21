@@ -12,9 +12,10 @@ novella 语言编译器。Rust workspace（edition 2024，Apache-2.0）。
 |------|-------|------|
 | 词法分析 | `novella-lexer` | ✅ 可用：产出 token 流与结构化词法错误 |
 | AST | `novella-ast` | ✅ 可用：文法全部产生式均能产出节点 |
-| 语法分析 | `novella-parser` | ✅ 可用：`examples/novella-syntax-demo.nov` 零诊断 |
+| 语法分析 | `novella-parser` | ✅ 可用；完整语法演示含尚未实现的语义 |
 | 语义分析 | `novella-sema` | ✅ 第一期：导入系统 / 名称解析 / 基本类型检查 / unsafe 规则 |
-| 代码生成 | `novella-codegen` | ⬜ 占位（`add()` 待替换） |
+| HIR | `novella-hir` | ✅ 将已通过静态检查的程序降级为定型指令 |
+| 代码生成 | `novella-codegen` | 可生成 Linux x86-64 原生程序（标量、控制流、直接调用） |
 
 ## 目录结构
 
@@ -27,7 +28,8 @@ crates/
 ├── novella-lexer/    # 词法器（logos）
 ├── novella-parser/   # 手写递归下降解析器（expression/ 目录）
 ├── novella-sema/     # 语义分析（第一期；module/ check/ typecheck/）
-├── novella-codegen/  # 代码生成（占位）
+├── novella-hir/      # 定型中间表示
+├── novella-codegen/  # 代码生成（LLVM）
 ├── novella-cli/      # 命令行入口（二进制名 `novella`）
 ├── novella-lsp/      # 语言服务器（outline/ features/ server/）
 └── novella-syntax-gen/ # TextMate 语法生成器（TokenKind → vscode 扩展）
@@ -35,7 +37,7 @@ editors/vscode/       # VS Code 扩展
 grammar/              # ANTLR4 文法参考
 ```
 
-依赖链自上而下单向：`core ← ast ← parser ← sema ← codegen ← cli`，
+依赖链自上而下单向：`core ← ast ← parser ← sema ← hir ← codegen ← cli`，
 `core ← lexer ← parser`。
 
 ## 常用命令
@@ -47,9 +49,18 @@ just test        # cargo test --workspace
 just lint        # clippy --workspace --all-targets -D warnings
 just fmt         # cargo fmt --all
 
-# 编译源文件（当前产出 tokens / AST / 诊断 的 JSON）
-cargo run -p novella -- compile <file> -o out.json
+# 不需要标准库；运行 ./a.out，退出码为 42
+cargo run -p novella -- compile examples/native-main.nov
+cargo run -p novella -- check examples/native-main.nov
+cargo run -p novella -- compile examples/native-main.nov --emit hir -o out.hir.json
+cargo run -p novella -- compile examples/native-main.nov --emit obj -o out.o
 ```
+
+构建 `novella` 需 LLVM 23.1（`llvm-config` 可见，或通过 `LLVM_SYS_231_PREFIX`
+指向安装前缀）；链接可执行文件还需 `clang` 和 Linux x86-64 GNU 链接工具链。
+旧 JSON 消费者改用 `compile <file> --emit ast -o out.json`，成功时仍是
+`tokens`、`program`、`diagnostics` 三个字段；失败时退出非零并保留已有输出。
+`check` 不要求 `main`，通过检查不代表能生成 HIR 或原生代码。
 
 ## 编辑器支持
 

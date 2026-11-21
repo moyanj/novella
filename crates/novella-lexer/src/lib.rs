@@ -198,8 +198,6 @@ pub enum RawToken {
     Await,
     #[token("yield")]
     Yield,
-    #[token("macro")]
-    Macro,
     #[token("extern")]
     Extern,
     #[token("unsafe")]
@@ -357,7 +355,6 @@ impl From<RawToken> for TokenKind {
             RawToken::Async => Async,
             RawToken::Await => Await,
             RawToken::Yield => Yield,
-            RawToken::Macro => Macro,
             RawToken::Extern => Extern,
             RawToken::Unsafe => Unsafe,
 
@@ -382,7 +379,7 @@ impl From<RawToken> for TokenKind {
     }
 }
 
-/// 词法错误种类（结构化，消息由 [`Display`] 生成）。
+/// 词法错误种类（结构化，消息由 [`std::fmt::Display`] 生成）。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum LexError {
     /// 非法字符（无法匹配任何词法规则）。
@@ -440,6 +437,16 @@ pub struct LexerResult {
     pub errors: Vec<TokenError>,
 }
 
+/// 把片段坐标的 token 平移到父源码坐标系（见 [`lexer_at`]）。
+#[inline]
+fn rebase(token: &mut Token, base: usize) {
+    if base == 0 {
+        return;
+    }
+    token.span.start += base;
+    token.span.end += base;
+}
+
 #[inline]
 fn to_token(t: Option<RawToken>, lexer: &Lexer<'_, RawToken>, lines: &LineIndex) -> Token {
     let span = Span {
@@ -467,6 +474,19 @@ fn to_token(t: Option<RawToken>, lexer: &Lexer<'_, RawToken>, lines: &LineIndex)
 /// - EOF token 的 span 指向输入末尾，line/column 为末尾处的行列；
 /// - 行号 1-based、列号 0-based（字节偏移）。
 pub fn lexer(input: &str) -> LexerResult {
+    lexer_at(input, 0)
+}
+
+/// 与 [`lexer`] 相同，但所有 span / 行列以 `base` 为原点（`base` 是该片段在
+/// 完整源码中的起始字节偏移）。
+///
+/// 供 f-string 插值等**源码片段**复用同一套词法：片段的 token 直接落在父文件
+/// 坐标系，调用方无需再手工平移关键位置；`base = 0` 时与 [`lexer`] 等价。
+///
+/// 行列只能由 token 自身无法携带的「前文行数」补偿——片段的 `LineIndex` 只知道
+/// 片段内的换行，故行列按 `(片段行列 + 基线行列)` 平移；`base` 落在行中间时
+/// 列偏移等于 `base` 减所在行行首。
+pub fn lexer_at(input: &str, base: usize) -> LexerResult {
     let lines = LineIndex::build(input);
     let mut lexer = RawToken::lexer(input);
     let mut tokens = vec![];
@@ -474,7 +494,9 @@ pub fn lexer(input: &str) -> LexerResult {
     while let Some(t) = lexer.next() {
         match t {
             Ok(token) => {
-                tokens.push(to_token(Some(token), &lexer, &lines));
+                let mut token = to_token(Some(token), &lexer, &lines);
+                rebase(&mut token, base);
+                tokens.push(token);
             }
             Err(_) => {
                 let slice = lexer.slice();
@@ -488,10 +510,9 @@ pub fn lexer(input: &str) -> LexerResult {
                     Some(ch) => LexError::InvalidCharacter { ch },
                     None => LexError::InvalidCharacter { ch: '\0' },
                 };
-                errors.push(TokenError {
-                    token: to_token(None, &lexer, &lines),
-                    error,
-                });
+                let mut token = to_token(None, &lexer, &lines);
+                rebase(&mut token, base);
+                errors.push(TokenError { token, error });
             }
         }
     }

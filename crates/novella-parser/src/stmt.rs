@@ -621,7 +621,11 @@ impl Parser {
     /// 解析 `throw expr;`（对应文法 `throwStatement`）。
     fn parse_throw(&mut self) -> Option<Statement> {
         let keyword = self.expect(TokenKind::Throw)?;
-        let expr = self.parse_expression()?;
+        let expr = if self.check(TokenKind::SemiColon) {
+            None
+        } else {
+            Some(self.parse_expression()?)
+        };
         if self.eat(TokenKind::SemiColon).is_none() {
             self.error_here("语句末尾应为 `;`");
         }

@@ -23,7 +23,7 @@ impl Server {
     /// 位置编码固定按 UTF-16 回协商结果：`source.rs` 的行表就是 UTF-16 码元前缀和，
     /// 换成 utf-8 / utf-32 需要另一套换算表，目前不提供。客户端未声明
     /// `general.positionEncodings` 时按规范默认 utf-16，同样不报错。
-    pub(crate) fn initialize(&self, params: Option<&Value>) -> Value {
+    pub(crate) fn initialize(&mut self, params: Option<&Value>) -> Value {
         // 客户端若声明了 positionEncodings 但不含 utf-16，是能力不匹配：
         // 规范要求 utf-16 必须被支持，出现这种情况按协议违约记录并继续用 utf-16
         let client_encodings = params
@@ -40,6 +40,36 @@ impl Server {
             }
         }
 
+        if let Some(config) = params.and_then(|p| p.get("initializationOptions")) {
+            self.options.std_root = config
+                .get("stdRoot")
+                .and_then(Value::as_str)
+                .map(Into::into);
+            for (key, value) in [
+                ("targetOs", &mut self.options.cfg.target_os),
+                ("targetArch", &mut self.options.cfg.target_arch),
+                ("targetFamily", &mut self.options.cfg.target_family),
+            ] {
+                if let Some(text) = config.get(key).and_then(Value::as_str) {
+                    *value = text.to_owned();
+                }
+            }
+            if let Some(features) = config.get("features").and_then(Value::as_array) {
+                self.options.cfg.features = features
+                    .iter()
+                    .filter_map(Value::as_str)
+                    .map(str::to_owned)
+                    .collect();
+            }
+            self.entries = config
+                .get("entryPaths")
+                .and_then(Value::as_array)
+                .into_iter()
+                .flatten()
+                .filter_map(Value::as_str)
+                .map(Into::into)
+                .collect();
+        }
         let capabilities = ServerCapabilities {
             position_encoding: Some(PositionEncodingKind::UTF16),
             text_document_sync: Some(TextDocumentSyncCapability::Options(

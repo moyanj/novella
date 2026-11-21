@@ -38,47 +38,55 @@ impl Server {
         Some((doc, doc.index.offset_of(params.position())))
     }
 
-    /// 取某模块的文本与偏移索引：打开中的文档用缓存，否则读磁盘。
-    ///
-    /// 供 definition / references / rename / 类型层级把 `(模块, span)`
-    /// 换算成 LSP Location。
-    pub(crate) fn module_view(&self, module_path: &Path) -> Option<(lsp_types::Uri, String)> {
-        let key = novella_core::path::module_key(module_path);
-        for doc in self.documents.values() {
-            let Some(path) = doc.path.as_deref() else {
-                continue;
-            };
-            if novella_core::path::module_key(Path::new(path)) == key {
-                let uri = format!("file://{path}").parse().ok()?;
-                return Some((uri, doc.text.clone()));
-            }
-        }
-        let text = std::fs::read_to_string(module_path).ok()?;
-        let uri = format!("file://{}", module_path.display()).parse().ok()?;
-        Some((uri, text))
+    /// 位置换算只能使用产生语义 span 时的源码，绝不重新读磁盘。
+    pub(crate) fn module_view(
+        &self,
+        analysis: &novella_sema::SemaResult,
+        module_path: &Path,
+    ) -> Option<(lsp_types::Uri, String)> {
+        let module = analysis.modules.find_by_path(module_path)?;
+        let uri = format!(
+            "file://{}",
+            novella_core::path::module_key(module_path).display()
+        )
+        .parse()
+        .ok()?;
+        Some((uri, module.source.clone()))
+    }
+
+    /// 多入口快照共存；优先采用包含当前模块且覆盖范围最大的工程。
+    pub(crate) fn analysis_for(&self, doc: &SourceDoc) -> Option<&novella_sema::SemaResult> {
+        let path = Path::new(doc.path.as_deref()?);
+        self.analyses
+            .iter()
+            .filter(|analysis| analysis.modules.find_by_path(path).is_some())
+            .max_by_key(|analysis| analysis.modules.modules.len())
     }
 
     /// 光标所在文档对应的模块 id（无分析结果或文档无路径时为 None）。
-    pub(crate) fn module_of(&self, doc: &SourceDoc) -> Option<ModuleId> {
+    pub(crate) fn module_of(
+        &self,
+        analysis: &novella_sema::SemaResult,
+        doc: &SourceDoc,
+    ) -> Option<ModuleId> {
         let path = doc.path.as_deref()?;
         let key = novella_core::path::module_key(Path::new(path));
-        self.analysis
-            .as_ref()?
+        analysis
             .diagnostics
             .modules
             .iter()
-            .position(|module| module.path == key)
+            .position(|module| novella_core::path::module_key(&module.path) == key)
     }
 
     /// `(模块, span)` → LSP Location。
     pub(crate) fn location_of(
         &self,
+        analysis: &novella_sema::SemaResult,
         module: ModuleId,
         span: novella_core::Span,
     ) -> Option<lsp_types::Location> {
-        let analysis = self.analysis.as_ref()?;
         let path = &analysis.diagnostics.modules.get(module)?.path;
-        let (uri, text) = self.module_view(path)?;
+        let (uri, text) = self.module_view(analysis, path)?;
         let index = SemanticIndex::new(&text);
         Some(lsp_types::Location {
             uri,

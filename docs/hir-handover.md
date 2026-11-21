@@ -1,7 +1,7 @@
 # novella-hir 交接文档
 
 > 更新：2026-11-15。P0、P1 覆盖补全及 P2 检查完成；改动尚未提交。
-> 本期交付为具有明确拒绝边界的 HIR，不包含 LLVM 后端或运行时实现。
+> 本文记录 HIR 交接时的状态。后续 Linux x86-64 原生后端与 CLI 的现状见 [编译器设计](compiler-design.md) 第 8、9 节。
 
 ## 1. 已确认的架构与语义
 
@@ -9,7 +9,7 @@
 - `HirBlock` → `HirStmt` → `HirInstr` 表示控制流与顺序指令，不保留待求值表达式树。
 - `build_hir(&SemaResult)` 遇到词法、语法、语义或加载错误即返回 `BuildError`，不跳过坏模块、不返回残缺程序。
 - 类型读取 sema 的 `expression_types`、`annotation_types`、`declaration_types`，键均为 `(ModuleId, Span)`。分别提供表达式、已解析注解、变量最终绑定类型与顶层函数签名。HIR 不重新解析类型名或用初始化表达式冒充声明类型。
-- Unknown / External / Error、联合、泛型以及无上下文的未定型类型明确拒绝；字面量可由声明、返回值、实参等上下文定型，数组与元组递归传递期望类型。
+- Unknown / Error、联合、泛型以及无上下文的未定型类型明确拒绝；字面量可由声明、返回值、实参等上下文定型，数组与元组递归传递期望类型。
 - 用户确认：`p ?? backup` 非空时返回指针 `p`，为空才执行并返回 `backup`；不隐式解引用，读取内容另写 `*`。sema 已同步保留指针结果并检查备用值类型。
 - codegen 后续消费 HIR，不直连 AST。后端选型为 inkwell；此前记录的 LLVM 为 21.1.8，接入前重新核验。string 与数组的具体布局、分配和 ABI 仍须在后端开工前确定。
 
@@ -21,7 +21,7 @@
 | 指针 | 地址与间接读写、指针 ± 整数、整数 + 指针、指针差；保留两侧类型，指针差使用 PtrDiff |
 | 短路 | and/or、三元、`??` 用分支及明确分配的结果槽位，备用分支仅按条件执行 |
 | 身份比较 | 标量、指针、class 的 `===` / `!==` 映射 Eq / Ne；聚合与 string 身份比较明确拒绝 |
-| 左值与副作用 | 先定位一次；复合赋值在 RHS 前读取旧值；自增自减返回旧值；局部读取生成快照，避免后续实参修改先前读值 |
+| 左值与副作用 | 普通赋值先 RHS、后定位 LHS；复合赋值定位一次、在 RHS 前读取旧值；自增自减返回旧值；局部读取生成快照，避免后续实参修改先前读值 |
 | 元组、数组、解构 | Tuple / Array / TupleExtract；递归嵌套解构，初始化只求一次；数组长度与索引访问有独立指令 |
 | 循环 | while / C-for / 数组 for-in 统一为 Loop；条件 prelude 每轮执行；step 是 Loop 的字段，正常尾部和 continue 都执行，break / return 跳过 |
 | with | 接收者只求一次；绑定位于块作用域内，支持注解与递归元组解构；不添加资源进入/退出钩子 |
@@ -48,8 +48,8 @@
 | 动态对象字面量 | 尚无定型对象布局 |
 | 非数组 for-in | 尚无迭代器协议 |
 | 静态字段、weak 字段 | 静态存储与弱引用生命周期协议 |
-| 有成员的 trait | sema 类型摘要尚未完整携带成员，不能静默输出空 trait |
-| 无 default 的值 match、值/块混合 match | 不允许返回未初始化结果；本期未做穷尽性与块结果推导 |
+| 有成员的 trait | sema 已携带方法签名；HIR 尚未实现 trait 派发，明确拒绝 |
+| 未证明穷尽的无 default 值 match、值/void 混合 | sema 拒绝；合法布尔穷尽 match 可由 exhaustive_matches 供 HIR 降级 |
 | 格式化串、字节串、未定义转义、聚合/string 身份比较 | 尚无对应展开或值表示契约 |
 | 无实体声明的间接函数默认实参 | 函数值签名不携带默认表达式定义 |
 
@@ -94,3 +94,23 @@ git diff --check
 ## 6. 交付与迁移
 
 保持未提交、未推送；未接入 inkwell，未修改 CLI 输出行为。开发期 HIR 无既有下游消费者，直接替换：删除冗余 Operand::Cond 和 LoopStep；Loop 增加 step；Binary 增加输入类型；TypeTest 增加输入类型；新增地址、元组和数组指令；SemaResult 新增两份类型投影表。后端实现必须按这些字段执行，不能把 continue 直接跳至条件从而漏掉 step。
+
+## 2026-11-15 补全同步
+
+- 普通赋值的双方副作用实测为 value() → index()；复合赋值为 index() → value()，
+  地址只求一次，旧值读取仍在 RHS 前。详见 sema-coverage.md 本轮验收记录。
+- IntConst 与 UntypedInt 改为 i128，JSON 中 18446744073709551615 保持精确；
+  消费 JSON 时不要经 JavaScript Number 再序列化该数。
+- 泛型实例、Future 与匿名结构对象保留公开类型身份，HIR 暂无对应布局/运行时则
+  带位置拒绝；b/f 字符串仍明确拒绝。Exception 静态根不代表标准库/异常展开已实现。
+- 新增 AST type_args/name_span 与可选 Throw.expr，开发期直接替换旧契约，无迁移层。
+
+## 2026-11-15 声明与诊断契约修订
+
+全部诊断唯一存于 DiagnosticReport，HIR 入口通过完整 has_errors 拒绝错误输入。
+TypeView::Error 与 Unknown 分离，std 不再产生 External。
+默认实参与字段初值通过 DeclarationIndex 和分析内 DeclarationId 定位，保留定义模块环境；
+不再遍历全部 AST 或解释函数 id 字符串。HirFunction.source_module/is_lambda 显式记录 lambda 属主。
+宏关键字、调用 AST 和降级分支已删除；已求值 @cfg 不进入 HIR。
+
+这些公开 API/serde 改动无迁移，直接替换；所有定义身份仅对本次分析快照有效。

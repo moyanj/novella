@@ -92,3 +92,37 @@ pub fn derive_spanned(input: TokenStream) -> TokenStream {
         Err(err) => err.to_compile_error().into(),
     }
 }
+
+/// AST 递归节点专用 Clone：每层进入既有分段栈守卫，不改变字段克隆语义。
+#[proc_macro_derive(GuardedClone)]
+pub fn derive_guarded_clone(input: TokenStream) -> TokenStream {
+    let input = syn::parse_macro_input!(input as DeriveInput);
+    let name = &input.ident;
+    let Data::Enum(data) = &input.data else {
+        return syn::Error::new_spanned(name, "GuardedClone 仅用于 AST 递归枚举")
+            .to_compile_error()
+            .into();
+    };
+    let arms = data.variants.iter().map(|variant| {
+        let ident = &variant.ident;
+        match &variant.fields {
+            Fields::Named(fields) => {
+                let names: Vec<_> = fields.named.iter().map(|f| f.ident.as_ref().expect("具名字段")).collect();
+                quote! { Self::#ident { #(#names),* } => Self::#ident { #(#names: ::core::clone::Clone::clone(#names)),* } }
+            }
+            Fields::Unnamed(fields) => {
+                let names: Vec<_> = (0..fields.unnamed.len()).map(|i| quote::format_ident!("field_{i}")).collect();
+                quote! { Self::#ident(#(#names),*) => Self::#ident(#(::core::clone::Clone::clone(#names)),*) }
+            }
+            Fields::Unit => quote! { Self::#ident => Self::#ident },
+        }
+    });
+    quote! {
+        impl ::core::clone::Clone for #name {
+            fn clone(&self) -> Self {
+                crate::drop_guard::with_stack(|| match self { #(#arms),* })
+            }
+        }
+    }
+    .into()
+}

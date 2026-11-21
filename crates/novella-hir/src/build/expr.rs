@@ -205,6 +205,7 @@ impl<'a> BodyBuilder<'a> {
                 name,
                 properties,
                 span,
+                ..
             } => self.build_struct_init(name, properties, *span, block),
             Expression::Lambda(node) => self.build_lambda(node),
             Expression::New { span, .. } => {
@@ -273,10 +274,6 @@ impl<'a> BodyBuilder<'a> {
                     _ => Ok(HirOperand::Local(id)),
                 }
             }
-            Expression::MacroCall { span, .. } => Err(BuildError::at(
-                BuildErrorKind::Unimplemented { node: "macro call" },
-            )
-            .with_site(self.module, *span)),
         }
     }
 }

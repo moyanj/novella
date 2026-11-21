@@ -211,6 +211,13 @@ impl HirType {
         preferred: Option<&HirType>,
     ) -> Result<Self, BuildError> {
         match view {
+            TypeView::Applied(_, _) => Err(BuildError::at(BuildErrorKind::GenericUnsupported)),
+            TypeView::Future(_) => Err(BuildError::at(BuildErrorKind::Unimplemented {
+                node: "Future 类型",
+            })),
+            TypeView::Object(_) => Err(BuildError::at(BuildErrorKind::Unimplemented {
+                node: "匿名对象类型",
+            })),
             TypeView::Void => Ok(HirType::Void),
             TypeView::Boolean => Ok(HirType::Boolean),
             TypeView::String => Ok(HirType::String),
@@ -257,6 +264,7 @@ impl HirType {
             TypeView::Trait(module, name) => Ok(HirType::Trait(*module, name.clone())),
             // —— 以下投影不能作为 codegen 输入，一律 fail-fast ——
             TypeView::Unknown => Err(BuildError::at(BuildErrorKind::OpaqueType)),
+            TypeView::Error => Err(BuildError::at(BuildErrorKind::InvalidInput)),
             TypeView::Null => match preferred {
                 Some(ty @ (HirType::Pointer(_) | HirType::Class(..))) => Ok(ty.clone()),
                 _ => Err(BuildError::at(BuildErrorKind::UntypedLiteral {

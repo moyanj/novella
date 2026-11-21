@@ -129,6 +129,8 @@ impl<'a> ModuleBuilder<'a> {
                 self.pending.push(lambdas);
                 let params = body_builder.parameter_slots();
                 out.push(HirItem::Function(HirFunction {
+                    source_module: self.module,
+                    is_lambda: false,
                     id: signature.id.clone(),
                     signature,
                     params,

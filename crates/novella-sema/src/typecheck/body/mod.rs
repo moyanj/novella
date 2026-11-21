@@ -1,14 +1,15 @@
 //! 语句与声明检查：控制流语句、变量声明与绑定模式、局部符号定义；
 //! 以及所有检查共享的上下文 [`BodyCtx`]。
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 use novella_ast::expr::{BinaryOp, Expression, UnaryOp};
 use novella_ast::stmt::{
     BindingPattern, Block, ForInit, ForKind, Statement, VariableStmt, VariableType,
 };
-use novella_ast::types::TypeExpr;
 use novella_core::Span;
+
+type InferredReturns = std::rc::Rc<std::cell::RefCell<Vec<(Span, Ty)>>>;
 
 use crate::Sema;
 use crate::module::ModuleId;
@@ -18,12 +19,27 @@ use crate::ty::Ty;
 use super::expr::{check_expr, check_expr_with_hint};
 
 /// 函数体 / 语句序列的检查上下文。
+#[derive(Default)]
+pub(crate) struct LoopAssignments {
+    breaks: Vec<HashSet<Span>>,
+    continues: Vec<HashSet<Span>>,
+}
+
 pub(crate) struct BodyCtx {
+    /// 仅无返回注解的块体 lambda 收集自身可达 return 的类型。
+    pub inferred_returns: Option<InferredReturns>,
+    pub return_states: Option<std::rc::Rc<std::cell::RefCell<Vec<HashSet<Span>>>>>,
+    pub exception_states: Option<std::rc::Rc<std::cell::RefCell<Vec<HashSet<Span>>>>>,
+    pub reachable: bool,
+    pub loop_assignments: Option<std::rc::Rc<std::cell::RefCell<LoopAssignments>>>,
+    /// 按定义位置追踪尚未赋值的局部，避免同名遮蔽污染外层。
+    pub uninitialized: HashSet<Span>,
     pub(crate) module: ModuleId,
     pub scope: ScopeId,
     pub in_unsafe: bool,
     pub in_async: bool,
     pub in_loop: bool,
+    pub in_catch: bool,
     /// 方法内的 `this` 类型（非方法上下文为 None）
     pub this_ty: Option<Ty>,
     /// 期望返回类型（顶层语句为 None，`return` 即报错）
@@ -36,21 +52,51 @@ pub(crate) struct BodyCtx {
 impl BodyCtx {
     pub(crate) fn base(module: ModuleId, scope: ScopeId) -> Self {
         BodyCtx {
+            inferred_returns: None,
+            return_states: None,
+            exception_states: None,
+            reachable: true,
+            loop_assignments: None,
+            uninitialized: HashSet::new(),
             module,
             scope,
             in_unsafe: false,
             in_async: false,
             in_loop: false,
+            in_catch: false,
             this_ty: None,
             expected_return: None,
             type_env: HashMap::new(),
             fill_existing: false,
         }
     }
+    pub(crate) fn record_possible_exception(&self) {
+        if self.reachable
+            && let Some(states) = &self.exception_states
+        {
+            states.borrow_mut().push(self.uninitialized.clone());
+        }
+    }
 }
 
 // ---------- 语句 ----------
 pub(crate) fn check_stmt(sema: &mut Sema, ctx: &mut BodyCtx, stmt: &Statement) {
+    stacker::maybe_grow(128 * 1024, 2 * 1024 * 1024, || {
+        check_stmt_inner(sema, ctx, stmt);
+        if ctx.reachable {
+            if matches!(stmt, Statement::Return { .. })
+                && let Some(states) = &ctx.return_states
+            {
+                states.borrow_mut().push(ctx.uninitialized.clone());
+            }
+            if matches!(stmt, Statement::Throw { .. }) {
+                ctx.record_possible_exception();
+            }
+        }
+    })
+}
+
+fn check_stmt_inner(sema: &mut Sema, ctx: &mut BodyCtx, stmt: &Statement) {
     match stmt {
         Statement::Variable(decl) => check_variable_decl(sema, ctx, decl),
         Statement::VariableList { declarations, .. } => {
@@ -65,6 +111,11 @@ pub(crate) fn check_stmt(sema: &mut Sema, ctx: &mut BodyCtx, stmt: &Statement) {
                 None => sema.type_error(ctx.module, *span, "`return` 只能出现在函数内"),
                 Some(expected) => match value {
                     None => {
+                        if ctx.reachable
+                            && let Some(returns) = &ctx.inferred_returns
+                        {
+                            returns.borrow_mut().push((*span, Ty::Void));
+                        }
                         if !matches!(expected, Ty::Void) && !expected.is_opaque() {
                             sema.type_error(
                                 ctx.module,
@@ -74,7 +125,13 @@ pub(crate) fn check_stmt(sema: &mut Sema, ctx: &mut BodyCtx, stmt: &Statement) {
                         }
                     }
                     Some(value) => {
-                        let value_ty = check_expr(sema, ctx, value);
+                        // 期望类型下推：`return [];` 在 `-> i32[]` 里合法
+                        let value_ty = check_expr_with_hint(sema, ctx, value, &expected);
+                        if ctx.reachable
+                            && let Some(returns) = &ctx.inferred_returns
+                        {
+                            returns.borrow_mut().push((value.span(), value_ty.clone()));
+                        }
                         if !sema.is_assignable(&expected, &value_ty) {
                             sema.type_error(
                                 ctx.module,
@@ -87,31 +144,46 @@ pub(crate) fn check_stmt(sema: &mut Sema, ctx: &mut BodyCtx, stmt: &Statement) {
             }
         }
         Statement::Break { span } => {
+            if ctx.reachable
+                && let Some(flow) = &ctx.loop_assignments
+            {
+                flow.borrow_mut().breaks.push(ctx.uninitialized.clone());
+            }
             if !ctx.in_loop {
                 sema.type_error(ctx.module, *span, "`break` 只能出现在循环内");
             }
         }
         Statement::Continue { span } => {
+            if ctx.reachable
+                && let Some(flow) = &ctx.loop_assignments
+            {
+                flow.borrow_mut().continues.push(ctx.uninitialized.clone());
+            }
             if !ctx.in_loop {
                 sema.type_error(ctx.module, *span, "`continue` 只能出现在循环内");
             }
         }
-        Statement::Throw { expr, .. } => {
+        Statement::Throw { expr: None, span } => {
+            if !ctx.in_catch {
+                sema.type_error(ctx.module, *span, "throw; 仅能在 catch 内重抛");
+            }
+        }
+        Statement::Throw {
+            expr: Some(expr), ..
+        } => {
             let ty = check_expr(sema, ctx, expr);
-            // design.md §9.1.1：throw 的操作数必须是 class 引用
-            // （Exception 子类校验待 std:exception 落地后收紧）
-            if !matches!(ty, Ty::Class(..)) && !ty.is_opaque() {
+            // 异常对象使用编译器提供的 Exception 名义身份。
+            if !sema.is_subclass(&crate::ty::exception_type(), &ty) && !ty.is_opaque() {
                 sema.type_error(
                     ctx.module,
                     expr.span(),
-                    format!("`throw` 的操作数必须是 class 引用，实为 `{ty}`"),
+                    format!("`throw` 的操作数必须是 Exception 子类，实为 `{ty}`"),
                 );
             }
         }
         Statement::Yield { span, value, .. } => {
-            // design.md §9.4：语法保留，语义未支持。语法展示文件需要完整覆盖
-            // 语句族，故降为 warning（可编译通过），值照常检查避免漏查副作用。
-            sema.warning(
+            // 语法保留但尚无 yield 语义，明确报错并检查子表达式。
+            sema.type_error(
                 ctx.module,
                 *span,
                 "`yield` 语义尚未支持（语法保留，检查跳过）",
@@ -122,23 +194,48 @@ pub(crate) fn check_stmt(sema: &mut Sema, ctx: &mut BodyCtx, stmt: &Statement) {
         }
         Statement::Block(block) => check_block(sema, ctx, block),
         Statement::If(if_stmt) => {
+            let mut merged = HashSet::new();
+            let mut has_else = false;
+            let mut remaining = true;
             for branch in &if_stmt.branches {
                 match branch {
                     novella_ast::stmt::IfBranch::ElseIf {
                         condition, block, ..
                     } => {
+                        let reachable = ctx.reachable;
+                        ctx.reachable &= remaining;
                         expect_boolean(sema, ctx, condition, "if 条件");
+                        ctx.reachable = reachable;
                         let scope = sema.scopes.new_scope(Some(ctx.scope), ScopeKind::Block);
                         let mut branch_ctx = fork_scope(ctx, scope);
+                        branch_ctx.reachable &=
+                            remaining && super::flow::constant_bool(condition) != Some(false);
                         check_stmt(sema, &mut branch_ctx, block);
+                        if remaining
+                            && super::flow::constant_bool(condition) != Some(false)
+                            && super::flow::falls_through(sema, ctx.module, block)
+                        {
+                            merged.extend(branch_ctx.uninitialized);
+                        }
+                        remaining &= super::flow::constant_bool(condition) != Some(true);
                     }
                     novella_ast::stmt::IfBranch::Else { block, .. } => {
+                        has_else = true;
                         let scope = sema.scopes.new_scope(Some(ctx.scope), ScopeKind::Block);
                         let mut branch_ctx = fork_scope(ctx, scope);
+                        branch_ctx.reachable &= remaining;
                         check_stmt(sema, &mut branch_ctx, block);
+                        if remaining && super::flow::falls_through(sema, ctx.module, block) {
+                            merged.extend(branch_ctx.uninitialized);
+                        }
                     }
                 }
             }
+            if !has_else && remaining {
+                // 未命中任何分支也已经求值了所有条件，保留条件中的赋值。
+                merged.extend(ctx.uninitialized.iter().copied());
+            }
+            ctx.uninitialized = merged;
         }
         Statement::While {
             condition, body, ..
@@ -147,12 +244,27 @@ pub(crate) fn check_stmt(sema: &mut Sema, ctx: &mut BodyCtx, stmt: &Statement) {
             let scope = sema.scopes.new_scope(Some(ctx.scope), ScopeKind::Block);
             let mut body_ctx = fork_scope(ctx, scope);
             body_ctx.in_loop = true;
+            body_ctx.loop_assignments = Some(Default::default());
+            body_ctx.reachable &= super::flow::constant_bool(condition) != Some(false);
             check_stmt(sema, &mut body_ctx, body);
+            if super::flow::constant_bool(condition) == Some(true) {
+                ctx.uninitialized = body_ctx
+                    .loop_assignments
+                    .as_ref()
+                    .expect("循环上下文")
+                    .borrow()
+                    .breaks
+                    .iter()
+                    .flatten()
+                    .copied()
+                    .collect();
+            }
         }
         Statement::For(for_stmt) => {
             let scope = sema.scopes.new_scope(Some(ctx.scope), ScopeKind::Block);
             let mut loop_ctx = fork_scope(ctx, scope);
             loop_ctx.in_loop = true;
+            loop_ctx.loop_assignments = Some(Default::default());
             match &for_stmt.condition {
                 ForKind::ForIn(cond) => {
                     let iter_ty = check_expr(sema, &mut loop_ctx, &cond.right);
@@ -185,51 +297,60 @@ pub(crate) fn check_stmt(sema: &mut Sema, ctx: &mut BodyCtx, stmt: &Statement) {
                     }
                     if let Some(condition) = &cond.condition {
                         expect_boolean(sema, &mut loop_ctx, condition, "for 条件");
-                    }
-                    if let Some(update) = &cond.update {
-                        check_expr(sema, &mut loop_ctx, update);
+                        loop_ctx.reachable &= super::flow::constant_bool(condition) != Some(false);
                     }
                 }
             }
+            let entry = loop_ctx.uninitialized.clone();
             check_stmt(sema, &mut loop_ctx, &for_stmt.block);
-        }
-        Statement::Try(try_stmt) => {
-            check_block(sema, ctx, &try_stmt.block);
-            for catch in &try_stmt.catches {
-                let scope = sema.scopes.new_scope(Some(ctx.scope), ScopeKind::Block);
-                let mut catch_ctx = fork_scope(ctx, scope);
-                let catch_ty = match &catch.ty {
-                    Some(ty) => {
-                        let ty = sema.resolve_type(ctx.module, ctx.scope, ty, &ctx.type_env);
-                        if !matches!(ty, Ty::Class(..)) && !ty.is_opaque() {
-                            sema.type_error(
-                                ctx.module,
-                                ty_span(ty_expr_of(catch)),
-                                format!("catch 类型必须是 class，实为 `{ty}`"),
-                            );
-                        }
-                        ty
-                    }
-                    None => Ty::Unknown,
-                };
-                define_local(
-                    sema,
-                    &catch_ctx,
-                    &catch.name,
-                    SymbolKind::Variable {
-                        is_const: true,
-                        ty: Some(catch_ty),
-                    },
-                    catch.span,
-                );
-                check_block(sema, &mut catch_ctx, &catch.block);
-            }
-            if let Some(finally) = &try_stmt.finally {
-                check_block(sema, ctx, finally);
+            if let ForKind::ForLoop(cond) = &for_stmt.condition {
+                let flow = loop_ctx
+                    .loop_assignments
+                    .as_ref()
+                    .expect("循环上下文")
+                    .clone();
+                if !super::flow::falls_through(sema, ctx.module, &for_stmt.block) {
+                    loop_ctx.uninitialized.clear();
+                }
+                for state in &flow.borrow().continues {
+                    loop_ctx.uninitialized.extend(state.iter().copied());
+                }
+                // 更新段只由正常尾部或 continue 到达，return/break 不经过这里。
+                loop_ctx.reachable &= super::flow::falls_through(sema, ctx.module, &for_stmt.block)
+                    || !flow.borrow().continues.is_empty();
+                if let Some(update) = &cond.update {
+                    check_expr(sema, &mut loop_ctx, update);
+                }
+                let always = cond
+                    .condition
+                    .as_ref()
+                    .is_none_or(|c| super::flow::constant_bool(c) == Some(true));
+                ctx.uninitialized = flow.borrow().breaks.iter().flatten().copied().collect();
+                if !always {
+                    ctx.uninitialized.extend(entry);
+                }
+            } else {
+                // for-in 的迭代表达式必执行一次；循环体可能执行零次。
+                ctx.uninitialized = entry;
             }
         }
+        Statement::Try(try_stmt) => check_try(sema, ctx, try_stmt),
         Statement::With(with_stmt) => {
             let resource_ty = check_expr(sema, ctx, &with_stmt.expr);
+            let base = match &resource_ty {
+                Ty::Applied(base, _) => &**base,
+                ty => ty,
+            };
+            if matches!(base, Ty::Class(..) | Ty::Struct(..)) {
+                let key = crate::typecheck::this_ty_key(base);
+                for name in ["__enter", "__exit"] {
+                    if let Some(hit) =
+                        crate::typecheck::member::lookup_member_chain(sema, &key, name, false)
+                    {
+                        hit.check_visible(sema, ctx, name, with_stmt.expr.span());
+                    }
+                }
+            }
             let scope = sema.scopes.new_scope(Some(ctx.scope), ScopeKind::Block);
             let mut with_ctx = fork_scope(ctx, scope);
             if let Some(binding) = &with_stmt.binding {
@@ -252,32 +373,35 @@ pub(crate) fn check_stmt(sema: &mut Sema, ctx: &mut BodyCtx, stmt: &Statement) {
                 bind_pattern(sema, &mut with_ctx, &binding.pattern, &bound_ty);
             }
             check_block(sema, &mut with_ctx, &with_stmt.block);
+            ctx.uninitialized = with_ctx.uninitialized;
         }
         Statement::Unsafe { block, .. } => {
             let scope = sema.scopes.new_scope(Some(ctx.scope), ScopeKind::Block);
             let mut unsafe_ctx = fork_scope(ctx, scope);
             unsafe_ctx.in_unsafe = true;
             check_block(sema, &mut unsafe_ctx, block);
+            ctx.uninitialized = unsafe_ctx.uninitialized;
         }
         Statement::Expression(expr) => {
             check_expr(sema, ctx, expr);
         }
     }
 }
-pub(crate) fn ty_expr_of(catch: &novella_ast::stmt::CatchClause) -> &TypeExpr {
-    catch.ty.as_ref().expect("仅在 Some 时调用")
-}
-pub(crate) fn ty_span(ty: &TypeExpr) -> Span {
-    ty.span()
-}
 /// 以新作用域派生上下文（其余标志继承）。
 pub(crate) fn fork_scope(ctx: &BodyCtx, scope: ScopeId) -> BodyCtx {
     BodyCtx {
+        inferred_returns: ctx.inferred_returns.clone(),
+        return_states: ctx.return_states.clone(),
+        exception_states: ctx.exception_states.clone(),
+        reachable: ctx.reachable,
+        loop_assignments: ctx.loop_assignments.clone(),
+        uninitialized: ctx.uninitialized.clone(),
         module: ctx.module,
         scope,
         in_unsafe: ctx.in_unsafe,
         in_async: ctx.in_async,
         in_loop: ctx.in_loop,
+        in_catch: ctx.in_catch,
         this_ty: ctx.this_ty.clone(),
         expected_return: ctx.expected_return.clone(),
         type_env: ctx.type_env.clone(),
@@ -289,7 +413,9 @@ pub(crate) fn check_block(sema: &mut Sema, ctx: &mut BodyCtx, block: &Block) {
     let mut block_ctx = fork_scope(ctx, scope);
     for stmt in &block.stmts {
         check_stmt(sema, &mut block_ctx, stmt);
+        block_ctx.reachable &= super::flow::falls_through(sema, ctx.module, stmt);
     }
+    ctx.uninitialized = block_ctx.uninitialized;
 }
 /// 一元运算符的源码文本（诊断消息用；UnaryOp 不实现 Display）。
 pub(crate) fn unary_op_text(op: UnaryOp) -> &'static str {
@@ -341,145 +467,9 @@ pub(crate) fn expect_boolean(sema: &mut Sema, ctx: &mut BodyCtx, expr: &Expressi
         );
     }
 }
-// ---------- 变量声明与绑定模式 ----------
-pub(crate) fn check_variable_decl(sema: &mut Sema, ctx: &mut BodyCtx, decl: &VariableStmt) {
-    let is_const = matches!(decl.r#type, VariableType::Const);
-    let annotated_ty = decl
-        .ty
-        .as_ref()
-        .map(|ty| sema.resolve_type(ctx.module, ctx.scope, ty, &ctx.type_env));
-    // 带类型标注时把标注作为期望类型下推（双向检查）：空数组字面量、未定型
-    // 字面量等需要上下文才能定型的表达式（design.md §5.2「数组字面量取首元素
-    // 为基准」的空情形）由标注给出元素类型，而不是直接报「无法推断」。
-    let value_ty = decl.value.as_ref().map(|value| match &annotated_ty {
-        Some(annotated) => check_expr_with_hint(sema, ctx, value, annotated),
-        None => check_expr(sema, ctx, value),
-    });
-    let bound_ty = match (&annotated_ty, &value_ty) {
-        (Some(annotated), Some(value_ty)) => {
-            if !sema.is_assignable(annotated, value_ty) {
-                sema.type_error(
-                    ctx.module,
-                    decl.span,
-                    format!("初始化类型 `{value_ty}` 与标注 `{annotated}` 不兼容"),
-                );
-            }
-            annotated.clone()
-        }
-        (Some(annotated), None) => {
-            if is_const {
-                sema.type_error(ctx.module, decl.span, "`const` 声明必须初始化");
-            }
-            annotated.clone()
-        }
-        (None, Some(value_ty)) => {
-            if matches!(value_ty, Ty::Null) {
-                sema.type_error(
-                    ctx.module,
-                    decl.span,
-                    "无法用 `null` 推断变量类型，请添加类型标注",
-                );
-                Ty::Unknown
-            } else {
-                concrete(value_ty)
-            }
-        }
-        (None, None) => {
-            sema.type_error(
-                ctx.module,
-                decl.span,
-                "变量声明需要类型标注或初始值（无法推断类型）",
-            );
-            Ty::Unknown
-        }
-    };
-    sema.declaration_types
-        .insert((ctx.module, decl.span), bound_ty.clone());
-    bind_pattern_typed(sema, ctx, &decl.pattern, &bound_ty, is_const);
-}
-/// 按类型绑定模式（元组解构校验结构与 arity）。
-pub(crate) fn bind_pattern(sema: &mut Sema, ctx: &mut BodyCtx, pattern: &BindingPattern, ty: &Ty) {
-    bind_pattern_impl(sema, ctx, pattern, ty, false);
-}
-pub(crate) fn bind_pattern_typed(
-    sema: &mut Sema,
-    ctx: &mut BodyCtx,
-    pattern: &BindingPattern,
-    ty: &Ty,
-    is_const: bool,
-) {
-    bind_pattern_impl(sema, ctx, pattern, ty, is_const);
-}
-pub(crate) fn bind_pattern_impl(
-    sema: &mut Sema,
-    ctx: &mut BodyCtx,
-    pattern: &BindingPattern,
-    ty: &Ty,
-    is_const: bool,
-) {
-    match pattern {
-        BindingPattern::Ident { name, span } => {
-            let kind = SymbolKind::Variable {
-                is_const,
-                ty: Some(ty.clone()),
-            };
-            if ctx.fill_existing {
-                // 顶层变量：回填声明收集阶段登记的符号
-                if let Some(symbol) = sema.scopes.lookup_mut(ctx.scope, name) {
-                    symbol.kind = kind;
-                    return;
-                }
-            }
-            define_local(sema, ctx, name, kind, *span);
-        }
-        BindingPattern::Tuple { elements, span } => {
-            let element_tys: Vec<Ty> = match ty {
-                Ty::Tuple(elements_ty) if elements_ty.len() == elements.len() => {
-                    elements_ty.clone()
-                }
-                Ty::Tuple(_) => {
-                    sema.type_error(ctx.module, *span, "元组解构的元素个数不匹配");
-                    vec![Ty::Unknown; elements.len()]
-                }
-                _ if ty.is_opaque() => vec![Ty::Unknown; elements.len()],
-                _ => {
-                    sema.type_error(ctx.module, *span, format!("不能用 `{ty}` 做元组解构"));
-                    vec![Ty::Unknown; elements.len()]
-                }
-            };
-            for (element, element_ty) in elements.iter().zip(element_tys) {
-                bind_pattern_impl(sema, ctx, element, &element_ty, is_const);
-            }
-        }
-    }
-}
-/// 在当前作用域定义局部符号（重定义报诊断）。
-pub(crate) fn define_local(
-    sema: &mut Sema,
-    ctx: &BodyCtx,
-    name: &str,
-    kind: SymbolKind,
-    span: Span,
-) {
-    let symbol = Symbol {
-        name: name.to_string(),
-        kind,
-        visibility: None,
-        span,
-        name_span: span,
-        module: ctx.module,
-    };
-    if sema.scopes.define(ctx.scope, symbol).is_err() {
-        sema.type_error(ctx.module, span, format!("重复定义 `{name}`"));
-    }
-}
-/// 字面量归一化：未定型字面量落到默认类型（`int` ≡ `i32`，`float` ≡ `f32`）。
-pub(crate) fn concrete(ty: &Ty) -> Ty {
-    match ty {
-        Ty::IntLiteral => Ty::Int(crate::ty::IntKind::I32),
-        Ty::FloatLiteral => Ty::Float(crate::ty::FloatKind::F32),
-        Ty::Tuple(elements) => Ty::Tuple(elements.iter().map(concrete).collect()),
-        Ty::Array(element) => Ty::Array(Box::new(concrete(element))),
-        other => other.clone(),
-    }
-}
+
+mod bindings;
+pub(crate) use bindings::*;
+
+mod try_flow;
+use try_flow::check_try;

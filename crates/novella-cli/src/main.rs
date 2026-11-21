@@ -1,126 +1,203 @@
-use crate::error::render_diagnostic;
+use std::fs;
+use std::path::{Path, PathBuf};
+use std::process::{Command, ExitCode};
+
 use clap::Parser;
-use novella_core::diagnostic::{Diagnostic, Severity};
-use std::{fs, process::exit};
+use novella_core::diagnostic::{Diagnostic, DiagnosticLocation};
+use novella_core::line_index::LineIndex;
+use novella_hir::{HirProgram, build_hir};
+use novella_sema::{AnalysisOptions, FsLoader, SemaResult, analyze_with_options};
+
+use crate::cli::{AnalysisArgs, Emit};
+use crate::error::render_diagnostic;
 
 mod cli;
 mod error;
 
-fn main() {
-    let args = cli::Cli::parse();
-    match args.command {
-        cli::Command::Compile { file, output } => {
-            println!("Compiling...");
-            // ---------- 词法 / 语法 / 语义分析 ----------
-            // 三个阶段统一由 `novella_sema::analyze` 编排：它内部对每个模块只做
-            // 一次「读文件 → 词法 → 语法」，产物（源码、token 流、AST、诊断）
-            // 经 `SemaResult.modules` 交还。CLI 只负责渲染与序列化，
-            // 不得自行再跑 lexer / parser（否则入口文件会被解析两次）。
-            let sema_result = novella_sema::analyze(std::path::Path::new(&file));
-
-            let mut error_count = 0usize;
-
-            // 无模块归属的错误（入口读取失败等）
-            for diag in &sema_result.diagnostics.global {
-                eprintln!("{}", render_diagnostic(diag, None));
-                if diag.severity == Severity::Error {
-                    error_count += 1;
-                }
-            }
-
-            // 逐模块渲染词法 / 语法诊断：入口在前（下标 0），与模块编号一致
-            for module in &sema_result.modules.modules {
-                for diag in &module.syntax_diagnostics {
-                    eprintln!("{}", render_diagnostic(diag, Some(&module.source)));
-                    if diag.severity == Severity::Error {
-                        error_count += 1;
-                    }
-                }
-            }
-            // 零错误时不打印汇总（`共 0 个错误` 无信息量）
-            if error_count > 0 {
-                eprintln!("共 {error_count} 个错误");
-            }
-
-            // 语义诊断：`diagnostics.modules` 与 `modules` 下标一一对应，
-            // 渲染所需的源码直接取同一份产物，不再回盘重读。
-            let mut sema_error_count = 0usize;
-            for (id, module_diagnostics) in sema_result.diagnostics.modules.iter().enumerate() {
-                let source = sema_result
-                    .modules
-                    .get(id)
-                    .map(|module| module.source.as_str());
-                for diag in module_diagnostics.semantic_diagnostics() {
-                    eprintln!("{}", render_diagnostic(diag, source));
-                    if diag.severity == Severity::Error {
-                        sema_error_count += 1;
-                    }
-                }
-            }
-            if sema_error_count > 0 {
-                eprintln!("检测到 {sema_error_count} 个语义错误");
-            }
-
-            // ---------- 输出：tokens + AST + 诊断（JSON） ----------
-            // 入口模块按规范化路径定位（`analyze` 收到的 entry 未规范化，
-            // 形如 `./a.nov` 时直接取下标 0 会混淆）。
-            let entry = sema_result.modules.find_entry(std::path::Path::new(&file));
-            let (tokens, program) = match entry {
-                Some(module) => (
-                    serde_json::to_value(&module.tokens).unwrap_or(serde_json::Value::Null),
-                    serde_json::to_value(&module.program).unwrap_or(serde_json::Value::Null),
-                ),
-                None => (
-                    serde_json::Value::Array(Vec::new()),
-                    serde_json::Value::Null,
-                ),
-            };
-
-            // 诊断只有一棵树：`diagnostics` 下 `global` 放无模块归属的诊断，
-            // `modules` 按模块归组并按**源码顺序**合并词法 / 语法 / 语义诊断
-            // （同一处只出现一次，不再分成 `diagnostics` + `sema_diagnostics` 两份）。
-            let modules_json: Vec<_> = sema_result
-                .diagnostics
-                .modules
-                .iter()
-                .enumerate()
-                .map(|(id, module_diagnostics)| {
-                    let mut merged: Vec<&Diagnostic> = sema_result
-                        .modules
-                        .get(id)
-                        .map(|module| module.syntax_diagnostics.iter().collect())
-                        .unwrap_or_default();
-                    merged.extend(module_diagnostics.semantic_diagnostics());
-                    // 语法诊断与语义诊断各自有序，合并后按源码位置重排
-                    merged.sort_by_key(|diag| {
-                        diag.location
-                            .as_ref()
-                            .and_then(|loc| loc.span)
-                            .map(|span| span.start)
-                            .unwrap_or(0)
-                    });
-                    serde_json::json!({
-                        "id": id,
-                        "path": module_diagnostics.path,
-                        "diagnostics": merged,
-                    })
-                })
-                .collect();
-            let output_json = serde_json::json!({
-                "tokens": tokens,
-                "program": program,
-                "diagnostics": {
-                    "global": sema_result.diagnostics.global,
-                    "modules": modules_json,
-                },
-            });
-            fs::write(&output, serde_json::to_string_pretty(&output_json).unwrap()).unwrap_or_else(
-                |e| {
-                    let diag = Diagnostic::error(format!("无法写入文件 '{output}'：{e}"));
-                    eprintln!("{}", render_diagnostic(&diag, None));
-                    exit(1);
-                },
+fn main() -> ExitCode {
+    match run(cli::Cli::parse().command) {
+        Ok(true) => ExitCode::SUCCESS,
+        Ok(false) => ExitCode::FAILURE,
+        Err(error) => {
+            eprintln!(
+                "{}",
+                render_diagnostic(&Diagnostic::error(error.to_string()), None)
             );
+            ExitCode::FAILURE
         }
     }
+}
+
+fn run(command: cli::Command) -> Result<bool, Box<dyn std::error::Error>> {
+    let (args, output) = match command {
+        cli::Command::Check(args) => (args, None),
+        cli::Command::Compile {
+            analysis,
+            output,
+            emit,
+        } => (
+            analysis,
+            Some((
+                emit,
+                output.unwrap_or_else(|| PathBuf::from(emit.default_output())),
+            )),
+        ),
+    };
+    let native = output.as_ref().is_some_and(|(emit, _)| emit.is_native());
+    let module_only = output
+        .as_ref()
+        .is_none_or(|(emit, _)| matches!(emit, Emit::Ast));
+    let result = analyze(&args, module_only, native)?;
+    for diagnostic in &result.diagnostics.global {
+        eprintln!("{}", render_diagnostic(diagnostic, None));
+    }
+    for (id, diagnostics) in result.diagnostics.modules.iter().enumerate() {
+        let source = result.modules.get(id).map(|module| module.source.as_str());
+        for diagnostic in diagnostics.ordered() {
+            eprintln!("{}", render_diagnostic(diagnostic, source));
+        }
+    }
+    if result.diagnostics.has_errors() {
+        return Ok(false);
+    }
+    let Some((emit, output)) = output else {
+        return Ok(true);
+    };
+    if matches!(emit, Emit::Ast) {
+        write_output(&output, &ast_json(&result, &args.file)?, false)?;
+        return Ok(true);
+    }
+    let Some(hir) = lower(&result) else {
+        return Ok(false);
+    };
+    match emit {
+        Emit::Hir => {
+            write_output(&output, &serde_json::to_vec_pretty(&hir)?, false)?;
+        }
+        Emit::Obj | Emit::Exe => {
+            let object = novella_codegen::emit_object(&hir)?;
+            write_output(&output, &object, matches!(emit, Emit::Exe))?;
+        }
+        Emit::Ast => unreachable!("AST 在 HIR 降级前处理"),
+    }
+    Ok(true)
+}
+
+fn analyze(
+    args: &AnalysisArgs,
+    module_only: bool,
+    native: bool,
+) -> Result<SemaResult, Box<dyn std::error::Error>> {
+    let mut options = AnalysisOptions {
+        std_root: args.std_root.clone(),
+        module_only,
+        ..Default::default()
+    };
+    options.cfg.features.extend(args.features.iter().cloned());
+    if native {
+        options.target.pointer_width = novella_sema::PointerWidth::Bits64;
+        for (flag, value, expected) in [
+            ("target-os", args.target_os.as_deref(), "linux"),
+            ("target-arch", args.target_arch.as_deref(), "x86_64"),
+            ("target-family", args.target_family.as_deref(), "unix"),
+        ] {
+            if let Some(value) = value.filter(|value| *value != expected) {
+                return Err(format!(
+                    "原生后端只支持 x86_64-unknown-linux-gnu，不能指定 --{flag}={value}"
+                )
+                .into());
+            }
+        }
+        options.cfg.target_os = "linux".into();
+        options.cfg.target_arch = "x86_64".into();
+        options.cfg.target_family = "unix".into();
+    }
+    if let Some(value) = &args.target_os {
+        options.cfg.target_os.clone_from(value);
+    }
+    if let Some(value) = &args.target_arch {
+        options.cfg.target_arch.clone_from(value);
+    }
+    if let Some(value) = &args.target_family {
+        options.cfg.target_family.clone_from(value);
+    }
+    Ok(analyze_with_options(&mut FsLoader, &args.file, options))
+}
+
+fn lower(result: &SemaResult) -> Option<HirProgram> {
+    match build_hir(result) {
+        Ok(hir) => Some(hir),
+        Err(error) => {
+            let mut diagnostic = Diagnostic::error(error.to_string());
+            let module = error.module.and_then(|id| result.modules.get(id));
+            if let Some(module) = module {
+                let (line, column) = error.span.map_or((1, 0), |span| {
+                    LineIndex::build(&module.source).locate(span.start)
+                });
+                diagnostic = diagnostic.with_location(DiagnosticLocation {
+                    file: Some(module.path.display().to_string()),
+                    line,
+                    column,
+                    span: error.span,
+                });
+            }
+            eprintln!(
+                "{}",
+                render_diagnostic(&diagnostic, module.map(|module| module.source.as_str()))
+            );
+            None
+        }
+    }
+}
+
+fn ast_json(result: &SemaResult, file: &Path) -> Result<Vec<u8>, Box<dyn std::error::Error>> {
+    let entry = result
+        .modules
+        .find_entry(file)
+        .ok_or("找不到入口模块的语法产物")?;
+    let modules: Vec<_> = result.diagnostics.modules.iter().enumerate().map(|(id, module)| {
+        serde_json::json!({"id": id, "path": module.path, "diagnostics": module.ordered()})
+    }).collect();
+    let output = serde_json::json!({
+        "tokens": entry.tokens,
+        "program": entry.program,
+        "diagnostics": {"global": result.diagnostics.global, "modules": modules},
+    });
+    Ok(serde_json::to_vec_pretty(&output)?)
+}
+
+fn write_output(path: &Path, bytes: &[u8], link: bool) -> Result<(), Box<dyn std::error::Error>> {
+    let parent = path
+        .parent()
+        .filter(|parent| !parent.as_os_str().is_empty())
+        .unwrap_or(Path::new("."));
+    let result = (|| -> Result<(), Box<dyn std::error::Error>> {
+        // 临时目录与输出同文件系统；只在生成或链接成功后替换最终文件。
+        let staging = tempfile::tempdir_in(parent)?;
+        let artifact = staging.path().join("artifact");
+        if link {
+            let object = staging.path().join("program.o");
+            fs::write(&object, bytes)?;
+            let result = Command::new("clang")
+                .arg("--target=x86_64-unknown-linux-gnu")
+                .arg(&object)
+                .arg("-o")
+                .arg(&artifact)
+                .output()
+                .map_err(|error| format!("无法运行链接驱动 clang：{error}"))?;
+            if !result.status.success() {
+                return Err(format!(
+                    "clang 链接失败（{}）：{}",
+                    result.status,
+                    String::from_utf8_lossy(&result.stderr).trim()
+                )
+                .into());
+            }
+        } else {
+            fs::write(&artifact, bytes)?;
+        }
+        fs::rename(artifact, path)?;
+        Ok(())
+    })();
+    result.map_err(|error| format!("无法生成 '{}'：{error}", path.display()).into())
 }

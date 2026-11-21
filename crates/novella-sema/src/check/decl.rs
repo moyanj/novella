@@ -19,11 +19,21 @@ pub(crate) fn check_module(sema: &mut Sema, module: ModuleId) {
     let items = sema.modules[module].program.items.clone();
 
     // main 入口检查（仅入口模块，design.md §4.8.1）
-    if module == 0 {
+    if module == 0 && !sema.module_only {
         check_main_entry(sema, &items);
     }
 
     for item in &items {
+        let attributes = match item {
+            Item::Function(f) => f.attributes.as_slice(),
+            Item::Class(c) => c.attributes.as_slice(),
+            Item::Struct(s) => s.attributes.as_slice(),
+            Item::Trait(t) => t.attributes.as_slice(),
+            _ => &[],
+        };
+        for attribute in attributes {
+            sema.type_error(module, attribute.span, "装饰器展开尚未实现");
+        }
         match item {
             Item::Function(function) => {
                 typecheck::check_function_defaults(sema, module, function);
@@ -43,10 +53,21 @@ pub(crate) fn check_module(sema: &mut Sema, module: ModuleId) {
                     check_member_body(sema, module, member, &this_ty);
                 }
             }
-            Item::Statement(stmt) => typecheck::check_toplevel_statement(sema, module, stmt),
+            Item::Statement(stmt) => {
+                if !matches!(
+                    &**stmt,
+                    novella_ast::stmt::Statement::Variable(_)
+                        | novella_ast::stmt::Statement::VariableList { .. }
+                ) {
+                    typecheck::check_toplevel_statement(sema, module, stmt);
+                }
+            }
             // 装饰块：指令解释（@cfg 等）属后续期，块内跳过检查并提示
             Item::DecoratorBlock { span, .. } => {
-                sema.warning(module, *span, "装饰块暂不展开，块内代码未做语义检查");
+                sema.type_error(module, *span, "装饰块展开尚未实现，不能完成语义检查");
+            }
+            Item::Decorator(decorator) => {
+                sema.type_error(module, decorator.span, "装饰器展开尚未实现")
             }
             _ => {}
         }
@@ -55,12 +76,15 @@ pub(crate) fn check_module(sema: &mut Sema, module: ModuleId) {
 
 /// 字段初始化 / 方法体检查。
 fn check_member_body(sema: &mut Sema, module: ModuleId, member: &ClassMember, this_ty: &Ty) {
+    let attributes = match member {
+        ClassMember::Field(f) => &f.attributes,
+        ClassMember::Method(m) => &m.attributes,
+    };
+    for attribute in attributes {
+        sema.type_error(module, attribute.span, "成员装饰器展开尚未实现");
+    }
     match member {
-        ClassMember::Field(field) => {
-            if let Some(initializer) = &field.initializer {
-                typecheck::check_field_initializer(sema, module, this_ty, field, initializer);
-            }
-        }
+        ClassMember::Field(_) => {} // 已在字段定型阶段检查，不能再次登记初值。
         ClassMember::Method(method) => {
             typecheck::check_method_defaults(sema, module, this_ty, method);
             if let Some(block) = &method.block {
@@ -96,7 +120,9 @@ fn check_main_entry(sema: &mut Sema, items: &[Item]) {
         }
         let global_scope = sema.modules[0].global_scope;
         let ret = sema.resolve_type(0, global_scope, &function_type.return_type, &HashMap::new());
-        if !matches!(ret, Ty::Void | Ty::Int(_)) {
+        // design.md §4.8.1：退出码语义只定义在 `void` / `int` 上；`int` 已归一化为 i32，
+        // 别名（`type Code = int;`）经 expand_alias 展开后同样命中，其余整数宽度一律拒绝。
+        if !is_main_return_type(&ret) {
             sema.decl_error(
                 0,
                 main.span,
@@ -106,5 +132,18 @@ fn check_main_entry(sema: &mut Sema, items: &[Item]) {
     }
     if main.is_async {
         sema.decl_error(0, main.span, "`main` 不能声明为 async");
+    }
+}
+
+/// `main` 允许的返回类型：`void` 或 `int`（≡ `i32`，design.md §4.8.1 / §5.2）。
+///
+/// 不用 `Ty::Int(_)` 通配——那样 `i64` / `u8` / `usize` 也会被放行，而退出码
+/// 语义只定义在 32 位有符号整数上；`Ty::Unknown`（已由别处报错）放行不追加诊断。
+fn is_main_return_type(ty: &Ty) -> bool {
+    match ty {
+        Ty::Void => true,
+        Ty::Int(kind) => *kind == crate::ty::IntKind::I32,
+        Ty::Unknown => true,
+        _ => false,
     }
 }

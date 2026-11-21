@@ -391,7 +391,6 @@ fn variant_name(kind: novella_core::token::TokenKind) -> &'static str {
         TokenKind::Async => "Async",
         TokenKind::Await => "Await",
         TokenKind::Yield => "Yield",
-        TokenKind::Macro => "Macro",
         TokenKind::Extern => "Extern",
         TokenKind::Unsafe => "Unsafe",
         TokenKind::Null => "Null",

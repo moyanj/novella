@@ -104,60 +104,25 @@ pub(super) fn compound_op_of(op: AssignOp) -> Option<HirBinaryOp> {
 }
 
 /// 整数文本解析：支持 `0x` / `0o` / `0b` 前缀与负号（下划线已在调用方剥离）。
-pub(super) fn parse_int_literal(text: &str) -> Option<i64> {
+pub(super) fn parse_int_literal(text: &str) -> Option<i128> {
     let (negative, body) = match text.strip_prefix('-') {
         Some(rest) => (true, rest),
         None => (false, text),
     };
     let lower = body.to_ascii_lowercase();
     let value = if let Some(hex) = lower.strip_prefix("0x") {
-        i64::from_str_radix(hex, 16).ok()?
+        i128::from_str_radix(hex, 16).ok()?
     } else if let Some(oct) = lower.strip_prefix("0o") {
-        i64::from_str_radix(oct, 8).ok()?
+        i128::from_str_radix(oct, 8).ok()?
     } else if let Some(bin) = lower.strip_prefix("0b") {
-        i64::from_str_radix(bin, 2).ok()?
+        i128::from_str_radix(bin, 2).ok()?
     } else {
-        lower.parse::<i64>().ok()?
+        lower.parse::<i128>().ok()?
     };
     Some(if negative { -value } else { value })
 }
 
 /// 普通字符串解码；格式化和字节串需要专属降级，不得剥前缀冒充字符串。
-pub(super) fn decode_string(raw: &str) -> Option<String> {
-    let (raw_mode, text) = if raw.starts_with(['r', 'R']) {
-        (true, &raw[1..])
-    } else {
-        (false, raw)
-    };
-    let quote = text.chars().next()?;
-    if !matches!(quote, '\'' | '"') {
-        return None;
-    }
-    let text = text.strip_prefix(quote)?.strip_suffix(quote)?;
-    if raw_mode {
-        return Some(text.to_string());
-    }
-    let mut result = String::new();
-    let mut chars = text.chars();
-    while let Some(ch) = chars.next() {
-        if ch != '\\' {
-            result.push(ch);
-            continue;
-        }
-        result.push(match chars.next()? {
-            'n' => '\n',
-            'r' => '\r',
-            't' => '\t',
-            '0' => '\0',
-            '\\' => '\\',
-            '\'' => '\'',
-            '"' => '"',
-            _ => return None,
-        });
-    }
-    Some(result)
-}
-
 pub(super) fn binary_node_name(op: BinaryOp) -> &'static str {
     match op {
         BinaryOp::Multiply => "multiply",

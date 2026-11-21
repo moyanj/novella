@@ -4,7 +4,7 @@
 
 ## OVERVIEW
 
-novella 语言编译器。Rust workspace（edition 2024，Apache-2.0，8 个 crate），ANTLR4 文法与代码对齐（词法↔`TokenKind`，语法↔AST）。**词法、语法、语义分析（第一期）均可用**：文法全部产生式均可产出 AST（`examples/novella-syntax-demo.nov` 零诊断），sema 覆盖完整导入系统（模块=文件、`@:/super:/std:` 别名、nov.toml crate 根）、名称解析、基本类型检查、extern、unsafe 规则（详见 `docs/sema-phase1.md`）；codegen 仍为空壳占位。
+novella 语言编译器。Rust workspace（edition 2024，Apache-2.0），ANTLR4 文法与代码对齐（词法↔`TokenKind`，语法↔AST）。sema 覆盖导入、名称解析与类型检查（详见 `docs/sema-coverage.md`）。HIR 和 LLVM 后端可将标量程序编译为 Linux x86-64 原生程序，最小示例见 `examples/native-main.nov`。
 
 ## STRUCTURE
 
@@ -19,8 +19,8 @@ novella/
 │   ├── novella-parser/  # 手写递归下降解析器（含 token 预处理与上下文消歧）
 │   ├── novella-sema/    # 语义分析：module/ + resolve + symbol + ty + check/ + typecheck/
 │   ├── novella-hir/     # 高层中间表示：sema 结果 → 定型指令流（ty/body/item/build）
-│   ├── novella-codegen/ # 空壳（占位 add()，规划接 inkwell 消费 HIR）
-│   ├── novella-cli/     # 二进制（包名 novella）：clap CLI，仅 compile 子命令
+│   ├── novella-codegen/ # LLVM 目标文件发射，仅消费 HIR
+│   ├── novella-cli/     # 二进制（包名 novella）：check、compile、导出与链接
 │   ├── novella-lsp/     # 语言服务器（lib + 二进制）：outline/ + features/ + server/
 │   └── novella-syntax-gen/ # TextMate 语法生成器（TokenKind → editors/vscode 的 tmLanguage）
 ├── editors/vscode/      # VS Code 扩展（esbuild 打包；启动 novella-lsp，不含语法规则）
@@ -52,9 +52,10 @@ ast ──(构建期)── novella-derive（proc-macro，展开引用 ::novella
 | 加一项 LSP 能力 | `crates/novella-lsp/src/features/`（转换层）+ `server/syntax.rs` 或 `server/lexical.rs`（挂到分发） | `features/` 按能力一文件；`server/` 只做参数解码与 JSON 包装 |
 | 调整高亮类别 | `crates/novella-lsp/src/semantic.rs` | `token_type_index` 为穷尽 match；改动映射须同步 `TOKEN_TYPES`（数组顺序即 legend 下标） |
 | 打包 VS Code 扩展 | `editors/vscode/` | `just lsp-pack`；源码 `src/extension.js` 经 esbuild 打入 `dist/`，vsix 自包含无需 node_modules |
-| 占用位 crates | codegen | `pub fn add(u64, u64) -> u64` 待替换 |
+| 原生后端 | `crates/novella-codegen/src/` | `emit_object` 只消费 HIR；目标为 Linux x86-64 |
 | HIR 降级入口 | `crates/novella-hir/src/build.rs`（`build_hir`） | AST → `HirProgram`；类型取自 `sema.expression_types` / `annotation_types` / `declaration_types`，无法定型即 `BuildError` |
 | 语义分析入口 | `crates/novella-sema/src/lib.rs`（`analyze` / `analyze_with`） | 五阶段管线：模块加载→声明收集→导入绑定→类型注册→逐模块检查；实现在 `module/`（mod/loader/resolve_path）、`resolve.rs`、`symbol.rs`、`ty.rs`、`check/`（mod/type_defs/decl）、`typecheck/`（mod/body/expr/member/call/unsafe_rules）。**词法/语法只在 loader 内各跑一次**，产物经 `SemaResult.modules`（`ModuleOutput`）交还下游 |
+| sema 规则覆盖状态 | `docs/sema-coverage.md` | 唯一权威矩阵：每条 design 规则 / 每个 AST 变体一行，标注 已实现/部分/缺失/待决策；补全计划见 `docs/sema-completion-plan.md`，`docs/sema-phase1.md` 为历史计划 |
 
 ## CODE MAP
 
@@ -62,14 +63,14 @@ ast ──(构建期)── novella-derive（proc-macro，展开引用 ::novella
 |------|------|------|
 | `Span`, `Spanned<T>` | `novella-core/src/lib.rs` | 源码位置区间（字节偏移）/ 通用位置包装（AST 已改为节点内嵌 span，`Spanned` 暂保留备用） |
 | `Spanned`（derive 宏） | `novella-derive/src/lib.rs` | 为携带 `span` 字段的节点生成 `span()` 方法；struct 取字段、enum 具名变体取字段、newtype 变体委托内部节点 |
-| `AnalyzedModule` / `ModuleOutput` | `novella-sema/src/lib.rs` | 每模块产物（`id`/`path`/`source`/`tokens`/`program`/`syntax_diagnostics`/`syntax_failed`/`load_failed`）；`get`/`entry`/`find_by_path`/`find_entry`（路径两侧经 `module_key` 规范化） |
-| `TypeView` / `ExpressionTypes` | `novella-sema/src/lib.rs`（投影在 `ty.rs` 的 `Ty::view`） | 表达式类型表，键 `(ModuleId, Span)`；`Unknown`/`External`/`Error` 投影为 `TypeView::Unknown`，函数类型投影为 `TypeView::Function(Box<FunctionView>)`（含 `params`/`ret`/`receiver`，不再因 `name: None` 退化） |
+| `AnalyzedModule` / `ModuleOutput` | `novella-sema/src/lib.rs` | 每模块产物（`id`/`path`/`source`/`tokens`/`program`/`syntax_failed`/`load_failed`）；`get`/`entry`/`find_by_path`/`find_entry`（路径两侧经 `module_key` 规范化） |
+| `TypeView` / `ExpressionTypes` | `novella-sema/src/lib.rs`（投影在 `ty.rs` 的 `Ty::view`） | 表达式类型表，键 `(ModuleId, Span)`；`Unknown` 与 `Error` 分别投影为 `TypeView::Unknown` / `TypeView::Error`，External 已删除，函数类型投影为 `TypeView::Function(Box<FunctionView>)`（含 `params`/`ret`/`receiver`，不再因 `name: None` 退化） |
 | `Diagnostic` / `Severity` / `DiagnosticLocation` | `novella-core/src/diagnostic.rs` | 与阶段无关的通用诊断结构（serde），各阶段产出、CLI 渲染 |
-| `TokenKind`（107 变体） | `novella-core/src/token.rs` | 词法单元种类，纯数据投影，带 `Display`（输出 Debug 文本）；含 `LineComment`（行注释） |
+| `TokenKind` | `novella-core/src/token.rs` | 词法单元种类，纯数据投影，带 `Display`（输出 Debug 文本）；含 `LineComment`（行注释） |
 | `Token` | `novella-core/src/token.rs` | kind + span + slice + line + column |
 | `RawToken` | `novella-lexer/src/lib.rs` | logos 私有枚举；`From<RawToken> for TokenKind` 穷尽映射 |
 | `lexer(&str) -> LexerResult` | `novella-lexer/src/lib.rs` | 入口：产出含 EOF 的 token 流与词法错误列表；错误仅入 `errors` |
-| `Expression` / `Literal` | `novella-ast/src/expr/`（mod/literal/ops/lambda/match_node） | 完整表达式节点集（字面量/标识符/括号/元组/数组/对象/this/一元/二元/赋值/成员/索引/调用/构造/宏调用/await/is/三元/lambda/match），运算符由 `UnaryOp`/`BinaryOp`/`AssignOp` 集中定义 |
+| `Expression` / `Literal` | `novella-ast/src/expr/`（mod/literal/ops/lambda/match_node） | 完整表达式节点集（字面量/标识符/括号/元组/数组/对象/this/一元/二元/赋值/成员/索引/调用/构造/await/is/三元/lambda/match），运算符由 `UnaryOp`/`BinaryOp`/`AssignOp` 集中定义 |
 | `Statement` / `IfStmt` / `ForStmt` | `novella-ast/src/stmt.rs` | 含 `BindingPattern`（标识符/元组解构递归）、`Continue`；`TryStmt` / `WithStmt` 亦在此 |
 | `TypeExpr` / `PredefinedType` | `novella-ast/src/types.rs` | 类型表达式（Predefined/Reference/Array/Tuple/Function/Union）；`Param` 含 `default` 默认值 |
 | `Program` / `Item` / `Scope` | `novella-ast/src/program.rs` | 顶层 item；`Scope` = `Public` / `Private` / `Package`（`from_token` 认 `Pub` / `Pri` / `Pkg`） |
@@ -95,8 +96,8 @@ ast ──(构建期)── novella-derive（proc-macro，展开引用 ::novella
 - **类型全量 serde**：AST / token 均派生 `Serialize, Deserialize`，用于 JSON 输出。
 - **for 循环 init 语义**：文法中 init 段声明不带 `const/let`，统一按 `Let` 承载（见 `ForInit` 注释）。
 - **值语义延后**：AST 字面量保留源码原文（含 `f/r/b`、进制前缀），解析在语义分析阶段。
-- **空壳 crate 用占位**：codegen 目前允许 `add()` 占位（含义不明确的结构一律报诊断而非静默兜底）。
-- **sema 诊断定位**：`Module::error/warning` 由 span 经 `LineIndex` 回推行列；词法/语法诊断在组装 `SemaResult` 时由 `split_off(syntax_diagnostic_count)` 切进 `AnalyzedModule.syntax_diagnostics`，`ModuleDiagnostics.syntax_diagnostic_count` 归零，两处**不重叠**。
+- **后端边界**：无法发射的 HIR 报错，不做静默兜底。
+- **sema 诊断定位**：`Module::error/warning` 由 span 经 `LineIndex` 回推行列；全部诊断唯一存储于 `DiagnosticReport.modules`；`ModuleDiagnostics` 保留真实 `syntax_diagnostic_count`，通过 `syntax_diagnostics()` / `semantic_diagnostics()` 分阶段读取，通过 `ordered()` 统一排序。
 - **注释在语法层透明**：`LineComment` 是正式 token（供高亮等消费），由 `novella-parser/src/preprocess.rs` 的 `retain` **一处**过滤；`Module.tokens` 保留完整流（含注释），sema/loader 不得再过滤一次。parser 不感知注释。
 - **LSP 偏移一律 UTF-16**：novella 内部用字节偏移，LSP 语义 token 要求 UTF-16 码元；换算集中在 `novella-lsp/src/semantic.rs`，新增 LSP 能力时须复用该换算而不要另写一套。
 - **高亮规则不重复维护**：编辑器的染色类别映射以 `TokenKind` 为唯一来源，禁止在插件侧另写词法/关键字表。
@@ -130,7 +131,8 @@ just lint         # clippy --workspace --all-targets -D warnings
 just fmt          # cargo fmt --all        （CI 用 just fmt-check）
 just doc          # cargo doc --workspace --no-deps --open
 just book         # mdbook build docs      （book-serve 预览）
-cargo run -p novella -- compile <file> -o <out.s>   # 单次 analyze（内部 lexer→parser→sema）→ JSON（tokens + program + diagnostics{global,modules}）
+cargo run -p novella -- compile examples/native-main.nov   # 单次 analyze → HIR → LLVM → a.out
+cargo run -p novella -- compile <file> --emit ast -o <out.json>   # tokens + program + diagnostics
 
 just lsp-build    # cargo build --release -p novella-lsp
 just lsp-run      # cargo run -p novella-lsp（stdio 通道，等待编辑器连接）
@@ -140,7 +142,7 @@ just lsp-pack     # 打包 VS Code 扩展（esbuild 打包 + vsce 产出 vsix）
 ## NOTES
 
 - 错误显示为 rustc 风格：`error: <msg>` + `--> 文件:行:列` + 源码行 + caret 指示，由 cli `render_diagnostic` 统一渲染；展示列号 1-based，caret 按字符渲染（多字节字符不错位）。
-- `novella-codegen` 输出默认 `output.s`（CLI 默认值），当前实际写 JSON 文本。
+- CLI 默认链接生成 `a.out`；`--emit obj` 写 ELF 目标文件，`--emit ast` / `--emit hir` 写 JSON。
 - lexer 的 `TokenError` / `LexerResult` 已启用：`lexer()` 返回 token 流与错误列表，可恢复错误（非法字符、未闭合字符串）只进 `errors`，不中断后续分析；错误种类结构化（`LexError` 枚举），消息由 `Display` 生成，经 `TokenError::to_diagnostic` 转通用诊断。
 - EOF token 的 span 指向输入末尾 `{start:len, end:len}`，line/column 为末尾处行列；行号 1-based、列号 0-based（字节偏移），对齐 ANTLR `getLine()` / `getCharPositionInLine()`。
 - `TokenKind::Error` 保留为非法字符 / 未闭合字符串的占位（`to_token` 的 None 分支），随错误记录进 `errors`。
@@ -163,3 +165,19 @@ just lsp-pack     # 打包 VS Code 扩展（esbuild 打包 + vsce 产出 vsix）
 - **函数签名名义键**：`ty::FunctionSig` 有 `module` + `name: Option<String>`；顶层函数使用原名，方法在 `build_method_sig` 中使用 `类型::方法`，lambda 与占位签名保持 `None`。`name` 用于合成 HIR 符号键，**不决定类型投影**：`Ty::view()` 对任何 `FunctionSig` 都产出 `TypeView::Function(Box<FunctionView>)`。匿名签名键不能直接作为 lambda 实体的唯一键（实体键使用模块与源码位置，见 `docs/hir-handover.md`）。
 - **实例方法的 `self`**：`build_method_sig` 将实例方法首个无注解的 `self` 定型为所属 Struct / Class，并置 `is_method`；`FunctionSig::view()` 跳过该形参并置 `FunctionView::receiver = true`。HIR 成员访问统一查表达式类型表，不用局部类型兜底。
 - **HIR 降级边界**：实现按职责拆在 novella-hir/src/build/；条件使用 HirCond，循环 prelude 每轮执行，Loop.step 在正常尾部和 continue 后执行，break/return 跳过。Binary 必须携带两侧类型，TypeTest 必须携带输入类型；复杂左值先定位一次，复合赋值先读旧值再求 RHS。struct 接收者槽位为 Pointer(Struct)。默认实参与字段初值在定义环境展开；?? 保留非空指针而不解引用。入口拒绝任何阶段错误；运行时未定义的异常、挂起、动态派发等明确 fail-fast。覆盖与验证见 docs/hir-handover.md。
+
+## 2026-11-15 sema 补全后的定位与契约
+
+- 当前覆盖以 docs/sema-coverage.md 为准，sema-phase1.md 仅为历史。已确认决策与
+  本轮跨层授权不再重复询问；宏能力已删除；@cfg 已实现，其他未定义指令/yield 明确 error，不以 warning 放行。
+- sema 的公开数据在 api.rs，阶段编排在 analysis.rs，内部状态在 state.rs；
+  ty/、resolve/、check/type_defs/、typecheck/expr/、body/、unsafe_rules/ 按职责拆分。
+  公开入口仍从 novella_sema 根导出，新增 analyze_with_target 接收 32/64 位配置。
+- Applied/Future/Object 的公开类型身份不得擦除；类型参数含模块与声明位置。
+  SemaResult.exhaustive_matches 供返回路径与 HIR 共用，别名定义位置保留符号类型。
+- FieldMember/MethodMember.name_span 仅覆盖成员名字；StructInit.type_args 保留显式
+  实参；Throw.expr 为 Option；AST/serde 的消费者须同步。
+- 普通赋值 RHS→定位 LHS→写回；复合赋值定位→读旧值→RHS→写回。sema 与 HIR
+  均遵循该顺序。HIR 整数常量为 i128 载荷，保留 u64 最大值。
+- AST GuardedClone 与既有 Drop 共用分段栈；新增递归字段仍须同步 clone/drop。
+  try/finally 的确定赋值同时追踪正常、返回、循环跳转与调用可能抛异常的状态。

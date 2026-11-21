@@ -200,8 +200,6 @@ pub enum TokenKind {
     Await,
     /// `yield`
     Yield,
-    /// `macro`
-    Macro,
     /// `extern`
     Extern,
     /// `unsafe`

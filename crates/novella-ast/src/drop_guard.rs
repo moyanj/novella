@@ -138,7 +138,7 @@ impl Expression {
                 out.push(take_boxed(target, no_expr()));
                 out.push(take_boxed(index, no_expr()));
             }
-            Expression::Call { callee, args, .. } | Expression::MacroCall { callee, args, .. } => {
+            Expression::Call { callee, args, .. } => {
                 out.push(take_boxed(callee, no_expr()));
                 out.append(args);
             }
@@ -232,7 +232,11 @@ impl Statement {
                     exprs.push(v);
                 }
             }
-            Statement::Throw { expr, .. } => exprs.push(std::mem::replace(expr, no_expr())),
+            Statement::Throw { expr, .. } => {
+                if let Some(expr) = expr.take() {
+                    exprs.push(expr);
+                }
+            }
             Statement::Block(block) => stmts.append(&mut block.stmts),
             Statement::Expression(e) => exprs.push(std::mem::replace(e, no_expr())),
             Statement::While {

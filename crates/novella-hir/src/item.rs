@@ -55,6 +55,9 @@ pub enum HirItem {
 /// 后者是**值类型**，二者共用 [`crate::FunctionSignature`] 以免两套结构走散。
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct HirFunction {
+    /// 定义模块；lambda 在默认表达式展开后仍归属此模块。
+    pub source_module: ModuleId,
+    pub is_lambda: bool,
     /// 稳定符号键（codegen 用它作 LLVM 符号名）
     pub id: HirFunctionId,
     /// 完整签名

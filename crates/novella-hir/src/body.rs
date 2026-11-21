@@ -33,12 +33,12 @@ pub enum HirOperand {
     /// 读局部变量
     Local(LocalId),
     /// 整数常量（字面量已在构造期定型并求值，含进制前缀与下划线剥离）
-    IntConst(i64),
+    IntConst(i128),
     /// 未定型整数常量：值实施上下文定型（如 `let x: i64 = 1;` 的 `1`）。
     ///
     /// 携带源码区间是为了让 codegen 能报出确切位置 —— 值一旦被要求给出
     /// 具体类型而仍未定型，就是构造期的疏漏，必须 fail-fast 而不是猜。
-    UntypedInt { value: i64, span: Span },
+    UntypedInt { value: i128, span: Span },
     /// 浮点常量
     FloatConst(f64),
     /// 未定型浮点常量（同 [`HirOperand::UntypedInt`]）

@@ -15,19 +15,15 @@ parser grammar NovellaParser;
 // 与旧参考文的差异（这些结构在代码中已被砍掉，故同步移除）：
 //   - `typeExpression` 的 `&` 交叉类型：AST 仅 `TypeExpr::Union`（`|`），无交叉类型节点；
 //   - `objectType` / `objectTypeMember`：`TypeExpr` 无对象类型变体（`ObjectMember` 已随之删除）；
-//   - `macroDeclaration`：AST 无宏声明节点，只有调用侧 `Expression::MacroCall`；
 //   - `asyncStatement` / `streamStatement`：`async func ...` 并入 `FunctionItem.is_async`，
-//     异步 lambda 由 `Lambda.is_async` 承载；`stream` 在 AST 中已无任何承载（只剩关键字）；
+//     异步 lambda 由 `Lambda.is_async` 承载；`stream` 的 AST 与关键字均已删除；
 //   - 字面量形态的 `predefinedType`（`BooleanLiteral | StringLiteral | NullLiteral`）：
 //     `PredefinedType` 是一组类型名（int / float / u8 / ...），词法层并无这些保留字。
 //
-// 残留未引用的关键字（词法层仍是关键字，见 `TokenKind`，但当前无对应语法结构）：
-//   Stream / Macro。它们保留在词法层是为了不动 `TokenKind` 这个唯一事实源
-//   （`Macro` 只有调用侧 `Expression::MacroCall`）；若后续确认不再支持，
-//   应连同词法与语言服务器的高亮映射一并移除。
+// 宏系统已删除：不再保留 Macro 关键字或宏调用表达式。
 //
-// 行注释在语法层透明：`LineComment` 是正式 token（供高亮等消费），调用方（CLI / LSP）
-// 在喂给 parser 之前过滤掉它，故本文件不引用该 token。
+// 行注释在语法层透明：`LineComment` 是正式 token（供高亮等消费），由 parser
+// preprocess 一处过滤，CLI / LSP 不另行过滤，故本文件不引用该 token。
 // =============================================================================
 
 options {
@@ -152,8 +148,10 @@ traitMember: methodDeclaration | fieldDeclaration;
 classDeclaration:
 	decorator* (Pub | Pri | Pkg)? Class identifier typeParameters? classHeritage? classBody;
 
-// 继承列表：文法只允许单个父类引用（`ClassItem.parent` 为 `Vec`，按多继承预留）
-classHeritage: '(' typeReference ')';
+// 继承子句 = 「父类 / trait」混合列表（以代码为准：parser 支持逗号分隔多项）。
+// 各项语义由 sema 按符号表分类——class 项是父类（仅首项生效，多于一个报多继承），
+// trait 项是实现的 trait（D04，见 docs/sema-coverage.md）。
+classHeritage: '(' typeReference (',' typeReference)* ')';
 
 classBody: '{' classMember* '}';
 
@@ -304,7 +302,7 @@ breakStatement: Break SemiColon;
 
 continueStatement: Continue SemiColon;
 
-throwStatement: Throw expression SemiColon;
+throwStatement: Throw expression? SemiColon;
 
 yieldStatement: Yield expression? SemiColon;
 
@@ -317,7 +315,6 @@ expression:
 	| expression '.' identifier								# MemberAccessExpr
 	| expression '[' expression ']'							# IndexAccessExpr
 	| expression typeGeneric? '(' argumentList? ')'			# CallExpr
-	| expression '!' '(' argumentList? ')'					# MacroCallExpr
 	// 对象构造（对应 `Expression::New{target, type_args, args}`）：`new` 之后是整条
 	// 后缀表达式；若其顶层是调用表达式，构建 AST 时把该 `Call` 的 `type_args` /
 	// `args` 提到 `New` 上、`callee` 作为 `target`（`new Vec<int>(1)` 的泛型实参
@@ -373,7 +370,7 @@ expression:
 // 置于 identifier 之前、靠更长备选分流；语义层负责名字→类型绑定）。
 primaryExpression:
 	literal					# LiteralExpr
-	| identifier objectLiteral	# StructInitExpr
+	| identifier typeGeneric? objectLiteral	# StructInitExpr
 	| identifier			# IdentifierExpr
 	| '(' expression ')'	# ParenExpr
 	| arrayLiteral			# ArrayLiteralExpr
@@ -383,7 +380,7 @@ primaryExpression:
 // 元组表达式：至少两个元素（对应 `Expression::Tuple`，单元素 `(a)` 是 Paren）
 tupleExpression: '(' expression ',' expression (',' expression)* ','? ')';
 
-// 实参列表（允许尾随逗号，对应 `Call.args` / `New.args` / `MacroCall.args`）
+// 实参列表（允许尾随逗号，对应 `Call.args` / `New.args`）
 argumentList: expression (',' expression)* ','?;
 
 // ====================== 字面量和数据结构 ======================

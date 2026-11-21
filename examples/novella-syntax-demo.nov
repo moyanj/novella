@@ -14,10 +14,9 @@
 //   - 词法：grammar/NovellaLexer.g4（与 novella-core 的 TokenKind ⽕条对齐）
 //   - AST：crates/novella-ast（本文件不超出其可承载结构）
 //
-// 校验方式：`novella compile examples/novella-syntax-demo.nov -o out.json`
-// 语义分析要能「跑通」：零 error；预期保留 3 条 warning（yield 语义未实现、
-// @cfg 装饰块不展开），它们不是错误，只标记语法已收录但语义留待后续期。
-// JSON 中的 tokens 字段保留行注释 token（parser 输入前已在 CLI 层过滤）。
+// 本文件是语法参考，不是可执行示例。`novella check examples/novella-syntax-demo.nov`
+// 会报告缺少标准库声明及尚未支持的语义；`yield` 和未定义指令会报错。
+// 可直接编译的最小程序见 `examples/native-main.nov`。
 //
 // 写作约束（sema 已落地的硬规则，示例需遵守而非绕过）：
 //   1. 标识符必须先定义后使用（按作用域链解析到声明）；
@@ -41,31 +40,25 @@ let $dollarvar = 2;
 let _private = 3;
 // 特殊关键字（词法层存在，本文件不引入其语法结构，故仅在注释中声明）：
 //   - pkg：第三可见性（包级），token.rs / lexer 已有，grammar 未显式记录；
-//   - macro：无对应语法结构（仅表达式侧的宏调用 `f!(x)`，见第 11 节），
-//     token.rs 保留它是为了不动 TokenKind 这一唯一事实源。
 
 // ============ 第 1 节  模块系统 ============
 // 导入语义（docs/sema-phase1.md §1.3 / §1.4）：
 //   - 无前缀：相对当前文件所在目录解析（`"utils"` → `<本文件目录>/utils.nov`）；
 //   - `@:`：crate 根（由向上查找最近的 nov.toml 确定）；
 //   - `super:`：当前文件目录的父目录；
-//   - `std:`：std 库根（库尚未落地 → 全部按外部符号 stub 处理，不检查成员存在性）。
-// ⽰例文件位于 examples/ 下，也没有 nov.toml，所以只能用 `std:` 前缀：
-// 写成 `"novella.std"` 会被当成相对路径 `examples/novella.std.nov` → 文件不存在。
+//   - `std:`：标准库声明根，由 `--std-root` 指定；被导入模块和成员必须真实存在。
 // moduleImport: fromImport | directImport
-// 具名导入：from "mod" import a, b as c;（println / print 由 std 外部符号 stub 承载）
+// 具名导入：from "mod" import a, b as c;
 from "std:io" import println, print as log;
 // 命名空间导入：import "mod";（命名空间成员经 MemberAccess 访问，如 math.abs(x)）
 import "std:math";
 
 // ============ 第 2 节  装饰器 ============
 // decoratorStatement：`@name;`（独立装饰器语句）与 `@name(...) { ... }`（装饰块）。
-// 装饰块内是自由的 token 流，块内代码不参与语义检查（sema 报 warning），
-// 因此可以放心用任意标识符演示。
+// `@cfg` 为已支持的条件编译指令；未定义指令仅演示语法。
 @marker;
-@cfg(target_os = "linux", feature = "demo") {
-    println("满载运行");
-}
+@cfg(all(target_os = "linux", feature = "demo"))
+func fullLoad() { println("满载运行"); }
 // 声明前缀形态：装饰器可叠加（decorator*），分发到 func / class / trait
 @deprecated
 @info(author = "蓝汐")
@@ -103,11 +96,11 @@ type Nested = Box<Box<int>>;
 trait Drawable {
     // 方法成员（methodDeclaration，可用 pub / pri / static 修饰）
     pub func draw(x: int, y: int) -> void;
-    // 字段成员（fieldDeclaration，可带修饰与初始化）
-    pri static layer: int = 0;
-    // 无返回注解的字段：类型为 `color`（示例展示用法，语义上要求已定义——
-    // 这里改成了声明好的类型 `string`，避免「未定义的类型」）。
-    pub weak fill: string;
+    // 字段成员（traitMember 文法允许 fieldDeclaration，但语义上 trait 只承载方法：
+    // trait 字段会要求 class 侧绑定布局，语言尚未定义该规则，sema 报
+    // 「trait 不能声明字段」。这里给出等价的方法声明形态。）
+    pub func layer(self) -> int;
+    pub func fill(self) -> string;
 }
 // trait 泛型
 trait Comparator<T> {
@@ -142,8 +135,10 @@ class Shape(Base) {
     func moveTo(x: int, y: int) {
         this.name = "{x},{y}";
     }
-    // 抽象/占位方法：以 `;` 结束（block 为 None）
-    func serialize(): string;
+    // 抽象/占位方法：以 `;` 结束（block 为 None）。
+    // 含未实现抽象方法的类是抽象类，不能 `new`（D02）；本示例要构造 Shape，
+    // 故改为给出实现。子类覆写时返回类型允许协变。
+    func serialize(): string { return this.name; }
 }
 // 泛型类
 class Box<T> {
@@ -258,7 +253,7 @@ pub func main(): int {
     // main 的合法返回是正常的 `return 0;`。
     if (x == 0) { return 0; }            // return（可带表达式）
     if (x < 0) { throw new Shape("negative"); }   // throw 必须是 class 引用
-    yield;                                // yield（可带表达式；语义尚未支持的 warning）
+    yield;                                // yield（可带表达式；语义暂不支持）
     yield x;
 
     // --- 表达式语句 / 块 ---
@@ -301,6 +296,7 @@ pub func exprs() -> int {
     // --- 字面量（literal）---
     // `null` 无法推断类型（只能赋值给指针 / class），故显式标注为 int*。
     let n0: int* = null;
+    let n5: int* = null;              // `??` 右侧须与左侧同类型（指针类可空，design §9.2）
     let t0 = true;
     let f0 = false;
     let s1 = "双引号";
@@ -338,10 +334,7 @@ pub func exprs() -> int {
     let m1 = obj.name;                // 成员访问（MemberAccess）
     let e1 = arr[0];                  // 索引访问（IndexAccess）
     let m2 = add(1, 2);               // 调用（Call）
-    // 宏调用须在同一作用域里先定义同名变量（宏名参与名称解析）
-    let x: int = 1;
-    let m3 = f!(x);                   // 宏调用（macroCall，展开属后续期）
-    // 命名空间导入的成员访问：std 外部符号不做成员检查
+    // 命名空间导入的成员访问：abs 必须由 std:math 声明。
     let m4 = math.abs(-3);
 
     // —— 一元运算 ——
@@ -369,7 +362,7 @@ pub func exprs() -> int {
     let r6 = i & j ^ n | 1;           // 位与 / 异或 / 或（整数）
     let r7 = t && f || t;             // 逻辑与或（两侧 boolean）
     let r8 = t and f or t;            // 关键字逻辑运算符
-    let r9 = n0 ?? 5;                 // 空合并（左操作数须可空）
+    let r9 = n0 ?? n5;                // 空合并（左操作数须可空，右侧同类型）
     let r10 = cond ? i : j;           // 三目条件
     let r11 = me is Shape;            // is 类型测试
     let r12 = fa as int;              // as 类型转换（数值互转安全）
@@ -457,5 +450,12 @@ pub func ternaryDemo() -> int {
     let c: boolean = true;
     let r = c ? a : b;
     let n: int* = null;
-    return n ?? a;
+    let m: int* = null;
+    // 空合并的结果类型取左操作数类型：右侧须可赋给 `int*`（design §9.2），
+    // 因此 `n ?? a`（a 为 int）不合法，这里两侧都是可空指针。
+    let p: int* = n ?? m;
+    if (p == null) {
+        return a;
+    }
+    return a;
 }

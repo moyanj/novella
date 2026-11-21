@@ -267,7 +267,7 @@ impl<'a> BodyBuilder<'a> {
                 return Ok(HirOperand::FloatConst(*value));
             }
             (HirOperand::UntypedFloat { value, .. }, HirType::Int(_)) => {
-                return Ok(HirOperand::IntConst(*value as i64));
+                return Ok(HirOperand::IntConst(*value as i128));
             }
             _ => {}
         }

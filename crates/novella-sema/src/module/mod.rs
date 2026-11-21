@@ -5,7 +5,7 @@
 //! - `:` 仅作**别名分隔符**且最多一个：`"@:sub/mod"` → 前缀 `@` + 路径 `sub/mod`；
 //!   路径内再出现 `:` 报「路径段分隔符只支持 `/`」；
 //! - 无前缀：相对当前文件所在目录；`@`：crate 根（最近的 `nov.toml` 所在目录）；
-//!   `super`：当前文件目录的父目录；`std`：外部符号 stub（库尚未落地）；
+//!   `super`：当前文件目录的父目录；`std`：显式 std_root 下的真实模块（Exception 根由编译器提供）；
 //! - 段分隔只认 `/`；空段报「非法模块路径」。
 
 use std::collections::HashMap;
@@ -15,15 +15,33 @@ use std::path::{Path, PathBuf};
 use novella_ast::program::Program;
 use novella_core::Span;
 use novella_core::diagnostic::{Diagnostic, DiagnosticCode, DiagnosticLocation};
-use novella_core::line_index::LineIndex;
 use novella_core::path::module_key;
 use novella_core::token::Token;
 
 /// 模块标识：语义分析结果中模块列表（[`crate::DiagnosticReport::modules`]）的下标。
 pub type ModuleId = usize;
 
-/// 文件读取抽象（测试可注入内存文件系统）。
+/// 同一源码的不可变语法快照；cfg 在副本上应用，原始 AST 可供编辑器查询。
+#[derive(Clone)]
+pub struct ParsedSource {
+    pub source: String,
+    pub tokens: Vec<Token>,
+    pub program: Program,
+    pub diagnostics: Vec<Diagnostic>,
+    pub syntax_failed: bool,
+}
+
+/// 文件读取抽象；编辑器可复用解析快照并提供协作取消信号。
 pub trait FileLoader {
+    /// 协作取消检查；已取消的产物不可用于编译或导航。
+    fn is_cancelled(&self) -> bool {
+        false
+    }
+    /// 可选的已解析快照；必须与本次读取的 source 完全相同才会复用。
+    fn parsed_source(&mut self, _path: &Path) -> Option<ParsedSource> {
+        None
+    }
+
     fn read_to_string(&mut self, path: &Path) -> io::Result<String>;
     /// 路径是否存在（nov.toml 查找用）
     fn exists(&mut self, path: &Path) -> bool;
@@ -58,14 +76,12 @@ pub(crate) struct Module {
     pub(crate) tokens: Vec<Token>,
     /// 抽象语法树
     pub(crate) program: Program,
-    /// 源码行索引
-    pub(crate) lines: LineIndex,
     /// 模块全局作用域（声明收集阶段建立）
     pub(crate) global_scope: crate::symbol::ScopeId,
     /// 本模块产出的诊断（词法 / 语法 / 语义，按产生顺序）
     pub(crate) diagnostics: Vec<Diagnostic>,
     /// `diagnostics` 前缀中词法 / 语法诊断的条数；其后的才是语义诊断
-    ///（CLI 借此只渲染语义部分，避免与自身的 lexer/parser 输出重复）
+    ///（所有诊断保留一份，CLI / LSP 通过公开查询接口读取）
     pub(crate) syntax_diagnostic_count: usize,
     /// 词法或语法阶段已有错误：语义检查跳过该模块（避免误导性级联报错），
     /// 其导入方在导入语句处收到提示
@@ -118,7 +134,7 @@ impl Module {
     /// 把「仅有 span」的诊断补齐成本模块的行列与文件路径。
     ///
     /// 行列换算统一走 [`novella_core::decor::decorate`]，本模块只提供上下文
-    /// （路径 + 源码 + 行索引），避免各阶段重复实现 span → 行/列。
+    /// （路径 + 源码），避免各阶段重复实现 span → 行/列。
     fn decorated(&self, span: Span, diagnostic: Diagnostic) -> Diagnostic {
         let located = diagnostic.with_location(DiagnosticLocation {
             file: None,
@@ -144,6 +160,7 @@ impl Module {
 /// 因此符号链接 / `..` 等写法不会绕过 overlay。
 pub struct OverlayLoader {
     overlay: HashMap<PathBuf, String>,
+    parsed: HashMap<PathBuf, ParsedSource>,
 }
 
 impl OverlayLoader {
@@ -153,11 +170,29 @@ impl OverlayLoader {
             .into_iter()
             .map(|(path, text)| (module_key(&path), text))
             .collect();
-        OverlayLoader { overlay }
+        OverlayLoader {
+            overlay,
+            parsed: HashMap::new(),
+        }
+    }
+}
+
+impl OverlayLoader {
+    /// 注入调用方已有的解析结果，避免 LSP 对相同缓冲重复词法/语法分析。
+    pub fn with_parsed(mut self, parsed: HashMap<PathBuf, ParsedSource>) -> Self {
+        self.parsed = parsed
+            .into_iter()
+            .map(|(path, snapshot)| (module_key(&path), snapshot))
+            .collect();
+        self
     }
 }
 
 impl FileLoader for OverlayLoader {
+    fn parsed_source(&mut self, path: &Path) -> Option<ParsedSource> {
+        self.parsed.get(&module_key(path)).cloned()
+    }
+
     fn read_to_string(&mut self, path: &Path) -> io::Result<String> {
         if let Some(text) = self.overlay.get(&module_key(path)) {
             return Ok(text.clone());

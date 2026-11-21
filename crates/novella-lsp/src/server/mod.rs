@@ -16,6 +16,7 @@
 //! - `run`：stdio 主循环与报文包装。
 
 mod adapter;
+mod analysis;
 mod capabilities;
 mod dispatch;
 mod lexical;
@@ -41,10 +42,15 @@ pub struct Server {
     /// 已打开文档：URI → 解析快照。全量同步策略下每次变更直接重建，
     /// 因此无需维护增量区间。
     documents: HashMap<String, crate::document::SourceDoc>,
-    /// 最近一次语义分析结果（引用绑定表 / 类型摘要），
-    /// definition / references / rename / 类型层级共用；
-    /// 每次对 `file://` 文档推送诊断时重建。
-    analysis: Option<novella_sema::SemaResult>,
+    /// 同一输入版本的多个工程快照，保留独立入口与全部导入闭包。
+    analyses: Vec<novella_sema::SemaResult>,
+    versions: HashMap<String, i32>,
+    options: novella_sema::AnalysisOptions,
+    entries: Vec<std::path::PathBuf>,
+    /// stdio 模式延后语义分析，单元级 handle 仍可同步使用。
+    background: bool,
+    analysis_requested: bool,
+    generation: u64,
     /// 是否已收到 `shutdown` 请求（决定 `exit` 通知的退出码）。
     shutdown_requested: bool,
     /// 收到 `exit` 后置位，主循环据此结束。
@@ -141,13 +147,11 @@ mod tests {
             responses[0]["method"], "textDocument/publishDiagnostics",
             "推送方法名"
         );
-        // 该文档没有顶层 `func main`：sema 会报 NVL3003（缺少程序入口），
-        // 这正是内存缓冲参与分析后的预期行为。
+        // 未配置为可执行入口的文档按普通模块分析，不要求 main。
         let diagnostics = responses[0]["params"]["diagnostics"]
             .as_array()
             .expect("diagnostics 应为数组");
-        assert_eq!(diagnostics.len(), 1, "只有入口诊断");
-        assert_eq!(diagnostics[0]["code"], "NVL3003");
+        assert!(diagnostics.is_empty(), "普通模块无需程序入口");
 
         // 语义 token：3 个 token（let / = / 1），每个 5 个整数
         let responses = server.handle(&json!({

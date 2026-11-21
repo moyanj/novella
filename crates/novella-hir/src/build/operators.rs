@@ -199,6 +199,12 @@ impl BodyBuilder<'_> {
         block: &mut HirBlock,
     ) -> Result<HirOperand, BuildError> {
         let ty = self.expr_type(target.span())?;
+        // 普通赋值先完成 RHS；复合赋值先定位并读取旧值。
+        let early_rhs = if op == AssignOp::Assign {
+            Some(self.build_typed_expression(value, &ty, block)?)
+        } else {
+            None
+        };
         let address = self.build_address(target, block)?;
         let previous = if op == AssignOp::Assign {
             None
@@ -210,7 +216,10 @@ impl BodyBuilder<'_> {
         } else {
             ty.clone()
         };
-        let rhs = self.build_typed_expression(value, &rhs_ty, block)?;
+        let rhs = match early_rhs {
+            Some(rhs) => rhs,
+            None => self.build_typed_expression(value, &rhs_ty, block)?,
+        };
         let stored = if let Some(lhs) = previous {
             let hir_op = compound_op_of(op).ok_or_else(|| {
                 BuildError::at(BuildErrorKind::Unimplemented {

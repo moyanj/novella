@@ -75,7 +75,14 @@ impl BodyBuilder<'_> {
             operands.push(self.build_typed_expression(arg, expected, block)?);
         }
         if args.len() < signature.params.len() {
-            self.append_default_arguments(&signature, &mut operands, args.len(), span, block)?;
+            self.append_default_arguments(
+                callee.span(),
+                &signature,
+                &mut operands,
+                args.len(),
+                span,
+                block,
+            )?;
         }
         let ret = signature.ret.clone();
         let dst = if ret == HirType::Void {
@@ -94,51 +101,26 @@ impl BodyBuilder<'_> {
     /// 默认实参从原始声明取表达式；调用处只替换此前参数的已求值快照。
     fn append_default_arguments(
         &mut self,
+        callee_span: Span,
         signature: &FunctionSignature,
         operands: &mut Vec<HirOperand>,
         provided: usize,
         span: Span,
         block: &mut HirBlock,
     ) -> Result<(), BuildError> {
-        // id 不作为类型名解析来源：语义 FunctionView 已给出 module + name。
-        let declaration = self.sema.modules.modules.iter().find_map(|module| {
-            module.program.items.iter().find_map(|item| match item {
-                Item::Function(function)
-                    if signature.id
-                        == HirFunctionId(format!("m{}::{}", module.id, function.name)) =>
-                {
-                    function
-                        .r#type
-                        .as_ref()
-                        .map(|ty| (module.id, ty.params.clone()))
-                }
-                Item::Struct(item) => item.members.iter().find_map(|member| match member {
-                    ClassMember::Method(method)
-                        if signature.id
-                            == HirFunctionId(format!(
-                                "m{}::{}::{}",
-                                module.id, item.name, method.name
-                            )) =>
-                    {
-                        Some((module.id, method.params.clone()))
-                    }
-                    _ => None,
+        let declaration = match self.sema.expression_types.get(self.module, callee_span) {
+            Some(novella_sema::TypeView::Function(view)) => view
+                .name
+                .as_ref()
+                .and_then(|name| self.sema.declarations.named(view.module, name))
+                .and_then(|id| {
+                    self.sema
+                        .declarations
+                        .parameters(&self.sema.modules, id)
+                        .map(|params| (id.module, params.to_vec()))
                 }),
-                Item::Class(item) => item.members.iter().find_map(|member| match member {
-                    ClassMember::Method(method)
-                        if signature.id
-                            == HirFunctionId(format!(
-                                "m{}::{}::{}",
-                                module.id, item.name, method.name
-                            )) =>
-                    {
-                        Some((module.id, method.params.clone()))
-                    }
-                    _ => None,
-                }),
-                _ => None,
-            })
-        });
+            _ => None,
+        };
         let (module, mut params) = declaration.ok_or_else(|| {
             BuildError::at(BuildErrorKind::Unimplemented {
                 node: "defaults of indirect function",

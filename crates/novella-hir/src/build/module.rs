@@ -12,13 +12,7 @@ pub fn build_hir(sema: &SemaResult) -> Result<HirProgram, BuildError> {
     }
     let mut modules = Vec::with_capacity(sema.modules.modules.len());
     for module in &sema.modules.modules {
-        if module.syntax_failed
-            || module.load_failed
-            || module
-                .syntax_diagnostics
-                .iter()
-                .any(|diagnostic| diagnostic.severity == novella_core::diagnostic::Severity::Error)
-        {
+        if module.syntax_failed || module.load_failed {
             return Err(BuildError::at(BuildErrorKind::InvalidInput)
                 .with_site(module.id, Span { start: 0, end: 0 }));
         }
@@ -32,11 +26,7 @@ pub fn build_hir(sema: &SemaResult) -> Result<HirProgram, BuildError> {
         let mut items = Vec::new();
         for item in std::mem::take(&mut module.items) {
             if let HirItem::Function(function) = &item
-                && function
-                    .id
-                    .0
-                    .split_once("::")
-                    .is_some_and(|(_, name)| name.starts_with("lambda#"))
+                && function.is_lambda
             {
                 if seen.insert(function.id.clone()) {
                     lambdas.push(item);
@@ -53,7 +43,7 @@ pub fn build_hir(sema: &SemaResult) -> Result<HirProgram, BuildError> {
         };
         let owner = modules
             .iter_mut()
-            .find(|module| function.id.0.starts_with(&format!("m{}::", module.id)))
+            .find(|module| function.source_module == module.id)
             .expect("lambda 的定义模块来自已加载的语义模块");
         owner.items.push(item);
     }
@@ -258,6 +248,8 @@ impl<'a> ModuleBuilder<'a> {
         self.pending.push(lambdas);
 
         Ok(HirFunction {
+            source_module: self.module,
+            is_lambda: false,
             id,
             signature,
             params: body_builder.parameter_slots(),

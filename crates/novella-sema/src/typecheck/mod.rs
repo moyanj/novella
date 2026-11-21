@@ -14,7 +14,10 @@
 mod body;
 mod call;
 mod expr;
-mod member;
+mod flow;
+mod lambda;
+mod matching;
+pub(crate) mod member;
 mod unsafe_rules;
 
 use novella_ast::expr::Expression;
@@ -41,6 +44,21 @@ fn check_defaults(
     let scope = sema.scopes.new_scope(Some(global), ScopeKind::Function);
     let mut ctx = BodyCtx::base(module, scope);
     ctx.this_ty = this_ty;
+    for id in &sig.type_params {
+        ctx.type_env.insert(
+            id.split('@').next().unwrap_or(id).to_owned(),
+            Ty::TypeParam(id.clone()),
+        );
+    }
+    if let Some(owner) = &ctx.this_ty
+        && let Some(def) = sema.type_defs.get(&this_ty_key(owner))
+    {
+        for id in def.type_params() {
+            ctx.type_env
+                .entry(id.split('@').next().unwrap_or(id).to_owned())
+                .or_insert(Ty::TypeParam(id.clone()));
+        }
+    }
     for (param, resolved) in params.iter().zip(&sig.params) {
         if let Some(expr) = &param.default {
             let actual = expr::check_expr_with_hint(sema, &mut ctx, expr, &resolved.ty);
@@ -116,22 +134,29 @@ pub(crate) fn check_function_body(
     ctx.expected_return = Some(sig.ret.clone());
     if let Some(function_type) = &function.r#type {
         for param in &function_type.type_parameters {
-            ctx.type_env
-                .insert(param.name.clone(), Ty::TypeParam(param.name.clone()));
+            ctx.type_env.insert(
+                param.name.clone(),
+                Ty::TypeParam(crate::ty::param_key(module, param)),
+            );
         }
     }
-    for param in &sig.params {
-        define_local(
-            sema,
-            &ctx,
-            &param.name,
-            SymbolKind::Param {
-                ty: param.ty.clone(),
-            },
-            function.span,
-        );
+    // 重定义已报错时，注册签名可能来自另一条声明；仅配对实际存在的形参，
+    // 不用签名下标强行索引当前 AST，避免错误恢复路径 panic。
+    if let Some(syntax) = &function.r#type {
+        for (syntax, param) in syntax.params.iter().zip(&sig.params) {
+            define_local(
+                sema,
+                &ctx,
+                &syntax.name,
+                SymbolKind::Param {
+                    ty: param.ty.clone(),
+                },
+                syntax.span,
+            );
+        }
     }
     check_stmt(sema, &mut ctx, block);
+    flow::check_statement(sema, module, &sig.ret, block);
 }
 /// 检查方法体（`this` 绑定为属主类型）。
 pub(crate) fn check_method_body(
@@ -144,39 +169,50 @@ pub(crate) fn check_method_body(
     let global = sema.modules[module].global_scope;
     let fn_scope = sema.scopes.new_scope(Some(global), ScopeKind::Function);
     let mut ctx = BodyCtx::base(module, fn_scope);
-    ctx.this_ty = Some(this_ty.clone());
+    ctx.this_ty = (!method.modifiers.is_static).then(|| this_ty.clone());
     for param in &method.type_parameters {
-        ctx.type_env
-            .insert(param.name.clone(), Ty::TypeParam(param.name.clone()));
+        ctx.type_env.insert(
+            param.name.clone(),
+            Ty::TypeParam(crate::ty::param_key(module, param)),
+        );
     }
     // 属主类型的泛型形参同样可见（class<T> 的方法内可用 T）
     if let Some(def) = sema
         .type_defs
         .get(&(this_ty_key(this_ty).0, this_ty_key(this_ty).1))
     {
-        let _ = def; // 形参名未存注册表，由调用方保证方法体内 T 已覆盖（见下）
+        for id in def.type_params() {
+            ctx.type_env
+                .entry(id.split('@').next().unwrap_or(id).to_owned())
+                .or_insert(Ty::TypeParam(id.clone()));
+        }
     }
     // 从注册表读取方法签名以绑定形参
     let method_sig = lookup_method_def(sema, this_ty, &method.name).map(|m| m.sig.clone());
     if let Some(sig) = &method_sig {
         ctx.expected_return = Some(sig.ret.clone());
-        for param in &sig.params {
+        for (syntax, param) in method.params.iter().zip(&sig.params) {
             define_local(
                 sema,
                 &ctx,
-                &param.name,
+                &syntax.name,
                 SymbolKind::Param {
                     ty: param.ty.clone(),
                 },
-                method.span,
+                syntax.span,
             );
         }
     }
+
     check_block(sema, &mut ctx, block);
+    if let Some(sig) = &method_sig {
+        flow::check_block(sema, module, &sig.ret, block);
+    }
 }
 pub(crate) fn this_ty_key(ty: &Ty) -> (ModuleId, String) {
     match ty {
-        Ty::Struct(m, n) | Ty::Class(m, n) => (*m, n.clone()),
+        Ty::Applied(base, _) => this_ty_key(base),
+        Ty::Struct(m, n) | Ty::Class(m, n) | Ty::Trait(m, n) => (*m, n.clone()),
         _ => unreachable!("this_ty 恒为 Struct/Class"),
     }
 }
@@ -188,7 +224,9 @@ pub(crate) fn lookup_method_def(
     let key = this_ty_key(this_ty);
     match sema.type_defs.get(&key) {
         Some(TypeDef::Struct(StructDef { methods, .. }))
-        | Some(TypeDef::Class(ClassDef { methods, .. })) => methods.get(name).cloned(),
+        | Some(TypeDef::Class(ClassDef { methods, .. })) => methods
+            .get(crate::check::canonical_method_name(name))
+            .cloned(),
         _ => None,
     }
 }
@@ -199,11 +237,13 @@ pub(crate) fn check_field_initializer(
     this_ty: &Ty,
     field: &FieldMember,
     initializer: &Expression,
+    env: std::collections::HashMap<String, Ty>,
 ) {
     let global = sema.modules[module].global_scope;
     let scope = sema.scopes.new_scope(Some(global), ScopeKind::Block);
     let mut ctx = BodyCtx::base(module, scope);
-    let value_ty = check_expr(sema, &mut ctx, initializer);
+    ctx.type_env = env;
+    ctx.this_ty = (!field.modifiers.is_static).then(|| this_ty.clone());
     let key = this_ty_key(this_ty);
     let annotated = field.ty.is_some();
     // 先读出现有字段类型，再做检查 / 回填，避免同时可变借用注册表与 sema
@@ -216,9 +256,21 @@ pub(crate) fn check_field_initializer(
         _ => None,
     };
     let Some(expected) = existing_ty else { return };
+    let value_ty = if annotated {
+        expr::check_expr_with_hint(sema, &mut ctx, initializer, &expected)
+    } else {
+        check_expr(sema, &mut ctx, initializer)
+    };
     if !annotated {
         // 无标注：推导回填（字面量归一化为默认类型）
         let inferred = concrete(&value_ty);
+        if !sema.is_assignable(&inferred, &value_ty) {
+            sema.type_error(
+                module,
+                field.span,
+                format!("字段初始值 `{value_ty}` 超出默认类型 `{inferred}` 的范围"),
+            );
+        }
         if let Some(def) = sema.type_defs.get_mut(&key) {
             let fields = match def {
                 TypeDef::Struct(StructDef { fields, .. })
@@ -240,6 +292,30 @@ pub(crate) fn check_field_initializer(
         );
     }
 }
+/// 检查顶层语句（变量声明回填全局符号类型；`return` 非法）。
+pub(crate) fn register_global_annotation(
+    sema: &mut Sema,
+    module: ModuleId,
+    declaration: &novella_ast::stmt::VariableStmt,
+) {
+    let scope = sema.modules[module].global_scope;
+    let mut ctx = BodyCtx::base(module, scope);
+    ctx.fill_existing = true;
+    let ty = sema.resolve_type(
+        module,
+        scope,
+        declaration.ty.as_ref().expect("有注解声明"),
+        &ctx.type_env,
+    );
+    body::bind_pattern_typed(
+        sema,
+        &mut ctx,
+        &declaration.pattern,
+        &ty,
+        matches!(declaration.r#type, novella_ast::stmt::VariableType::Const),
+    );
+}
+
 /// 检查顶层语句（变量声明回填全局符号类型；`return` 非法）。
 pub(crate) fn check_toplevel_statement(sema: &mut Sema, module: ModuleId, stmt: &Statement) {
     let global = sema.modules[module].global_scope;

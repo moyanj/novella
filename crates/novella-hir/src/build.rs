@@ -24,7 +24,7 @@
 //! 默认实参、自由/静态函数与 struct 直接实例调用、跨模块继承字段布局。
 //! 循环条件 prelude 每轮执行，continue 先执行 Loop.step 再检查条件。
 //!
-//! 异常、异步、class 构造/动态派发、闭包捕获、宏/装饰器、动态对象、
+//! 异常、异步、class 构造/动态派发、闭包捕获、非 cfg 装饰器、动态对象、
 //! 静态/弱字段及 trait 成员明确拒绝；完整契约与验证见 docs/hir-handover.md。
 
 use std::collections::{HashMap, HashSet};
