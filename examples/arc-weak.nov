@@ -1,0 +1,48 @@
+@no_std;
+
+extern func putchar(character: i32) -> i32;
+extern func abort();
+
+class Node {
+    pub value: i32;
+    pub child: Node;
+    pub weak parent: Node;
+
+    pub func __init(self, value: i32) {
+        this.value = value;
+    }
+
+    pub func __destroy(self) {
+        unsafe { putchar(this.value); }
+    }
+}
+
+func make(value: i32) -> Node {
+    return new Node(value);
+}
+
+func identity(value: Node) -> Node {
+    return value;
+}
+
+// 输出 ABCED：块退出、返回转移、weak 过期、循环 continue/break 和强字段析构。
+func main() -> int {
+    let holder = new Node(69);
+    {
+        let target = identity(make(65));
+        holder.parent = target;
+        if (holder.parent == null) { unsafe { abort(); } }
+        // 自赋值必须先保留新引用，再释放旧引用。
+        target = target;
+    }
+    if (holder.parent != null) { unsafe { abort(); } }
+    let index: i32 = 0;
+    while (index < 2) {
+        let item = make(66 + index);
+        index += 1;
+        if (index == 1) { continue; }
+        break;
+    }
+    holder.child = make(68);
+    return 0;
+}

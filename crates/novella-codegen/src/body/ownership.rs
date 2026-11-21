@@ -1,0 +1,286 @@
+//! 局部所有权、对象分配与字符串物化。
+
+use super::*;
+
+impl<'ctx> Body<'ctx, '_> {
+    pub(super) fn is_managed(ty: &HirType) -> bool {
+        matches!(
+            ty,
+            HirType::Class(..) | HirType::Array(_) | HirType::Struct(..) | HirType::Tuple(_)
+        )
+    }
+
+    pub(super) fn save_parameter(
+        &mut self,
+        id: LocalId,
+        ty: &HirType,
+        value: BasicValueEnum<'ctx>,
+    ) -> Result<()> {
+        self.save(id, ty, value)?;
+        if Self::is_managed(ty) {
+            self.reference_value("novella_rt_retain", value, ty)?;
+        }
+        Ok(())
+    }
+
+    pub(super) fn release_locals(&mut self, keep: Option<LocalId>) -> Result<()> {
+        self.release_owned(0, keep)
+    }
+
+    pub(super) fn release_owned(&mut self, start: usize, keep: Option<LocalId>) -> Result<()> {
+        let ids: Vec<_> = self.owned[start..].iter().rev().copied().collect();
+        for id in ids {
+            if keep == Some(id) {
+                continue;
+            }
+            self.release_slot(id)?;
+        }
+        Ok(())
+    }
+
+    pub(super) fn release_temps(&mut self, ids: &[LocalId]) -> Result<()> {
+        for id in ids.iter().rev().copied() {
+            // 恒定条件可能使定义所在分支不被发射；借用快照不拥有引用。
+            if self
+                .slots
+                .get(&id)
+                .is_some_and(|(_, ty)| Self::is_managed(ty))
+                && !self.borrowed.contains(&id)
+            {
+                self.release_slot(id)?;
+            }
+        }
+        Ok(())
+    }
+
+    fn release_slot(&mut self, id: LocalId) -> Result<()> {
+        let (pointer, ty) = self.slot(id)?.clone();
+        let value_ty = value_type(self.context, self.types, &ty)?;
+        let value = self
+            .builder
+            .build_load(value_ty, pointer, "release_local")?;
+        // 清空后再析构，后续合流及循环再次进入时不会重复释放旧值。
+        self.builder.build_store(pointer, value_ty.const_zero())?;
+        self.reference_value("novella_rt_release", value, &ty)
+    }
+
+    pub(super) fn aggregate_type(&self, ty: &HirType) -> Result<inkwell::types::StructType<'ctx>> {
+        let (module, name) = match ty {
+            HirType::Struct(module, name) | HirType::Class(module, name) => (*module, name),
+            HirType::Pointer(inner) => return self.aggregate_type(inner),
+            _ => return Err(CodegenError(format!("不是可寻址聚合类型：{ty:?}"))),
+        };
+        self.types.aggregate(module, name)
+    }
+
+    pub(super) fn field_pointer(
+        &self,
+        target: &HirOperand,
+        target_ty: &HirType,
+        index: usize,
+    ) -> Result<PointerValue<'ctx>> {
+        let aggregate = self.aggregate_type(target_ty)?;
+        let pointer_ty = HirType::Pointer(Box::new(target_ty.clone()));
+        let value = match target_ty {
+            HirType::Class(..) => self.operand(target, target_ty)?,
+            HirType::Struct(..) => match target {
+                HirOperand::Local(id) if self.slot(*id)?.1 == *target_ty => {
+                    self.slot(*id)?.0.into()
+                }
+                _ => self.operand(target, &pointer_ty)?,
+            },
+            HirType::Pointer(_) => self.operand(target, target_ty)?,
+            _ => unreachable!(),
+        };
+        let pointer = value.into_pointer_value();
+        let pointer_type = self.context.ptr_type(inkwell::AddressSpace::default());
+        let pointer = if pointer.get_type() == pointer_type {
+            pointer
+        } else {
+            self.builder
+                .build_pointer_cast(pointer, pointer_type, "aggregate_ptr")?
+        };
+        aggregate
+            .get_field_type_at_index(index as u32)
+            .ok_or_else(|| CodegenError(format!("字段下标越界：{index}")))?;
+        Ok(self
+            .builder
+            .build_struct_gep(aggregate, pointer, index as u32, "field")?)
+    }
+
+    pub(super) fn runtime_alloc(&mut self, ty: &HirType) -> Result<PointerValue<'ctx>> {
+        let aggregate = self.aggregate_type(ty)?;
+        let size = aggregate
+            .size_of()
+            .ok_or_else(|| CodegenError("class 布局不是定长类型".into()))?;
+        let alloc_ty = self
+            .context
+            .ptr_type(inkwell::AddressSpace::default())
+            .fn_type(
+                &[
+                    self.context.i64_type().into(),
+                    self.context.i64_type().into(),
+                    self.context
+                        .ptr_type(inkwell::AddressSpace::default())
+                        .into(),
+                ],
+                false,
+            );
+        let alloc = self
+            .module
+            .get_function("novella_rt_alloc")
+            .unwrap_or_else(|| self.module.add_function("novella_rt_alloc", alloc_ty, None));
+        let size = self
+            .builder
+            .build_int_cast(size, self.context.i64_type(), "object_size")?;
+        let alignment = self.context.i64_type().const_int(8, false);
+        let destroy = self
+            .module
+            .get_function(&crate::ownership::destructor_name(ty)?)
+            .ok_or_else(|| CodegenError("缺少 class 析构包装函数".into()))?
+            .as_global_value()
+            .as_pointer_value();
+        let call = self.builder.build_call(
+            alloc,
+            &[size.into(), alignment.into(), destroy.into()],
+            "new_object",
+        )?;
+        call.try_as_basic_value()
+            .basic()
+            .ok_or_else(|| CodegenError("runtime alloc 没有返回对象指针".into()))
+            .map(|value| value.into_pointer_value())
+    }
+
+    pub(super) fn reference_value(
+        &self,
+        operation: &str,
+        value: BasicValueEnum<'ctx>,
+        ty: &HirType,
+    ) -> Result<()> {
+        crate::ownership::reference_op(
+            self.context,
+            self.module,
+            self.types,
+            &self.builder,
+            operation,
+            value,
+            ty,
+        )
+    }
+
+    pub(super) fn runtime_reference_op(
+        &mut self,
+        name: &str,
+        object: PointerValue<'ctx>,
+    ) -> Result<()> {
+        let pointer_type = self.context.ptr_type(inkwell::AddressSpace::default());
+        let signature = self
+            .context
+            .void_type()
+            .fn_type(&[pointer_type.into()], false);
+        let function = self
+            .module
+            .get_function(name)
+            .unwrap_or_else(|| self.module.add_function(name, signature, None));
+        self.builder.build_call(function, &[object.into()], "")?;
+        Ok(())
+    }
+
+    pub(super) fn runtime_weak_value(
+        &mut self,
+        name: &str,
+        value: PointerValue<'ctx>,
+    ) -> Result<PointerValue<'ctx>> {
+        let pointer = self.context.ptr_type(inkwell::AddressSpace::default());
+        let signature = pointer.fn_type(&[pointer.into()], false);
+        let function = self
+            .module
+            .get_function(name)
+            .unwrap_or_else(|| self.module.add_function(name, signature, None));
+        self.builder
+            .build_call(function, &[value.into()], "weak_value")?
+            .try_as_basic_value()
+            .basic()
+            .map(|value| value.into_pointer_value())
+            .ok_or_else(|| CodegenError(format!("{name} 没有返回引用")))
+    }
+
+    pub(super) fn string_literal(
+        &mut self,
+        value: &[u16],
+        ty: &HirType,
+    ) -> Result<PointerValue<'ctx>> {
+        let HirType::Class(_, name) = ty else {
+            return Err(CodegenError(format!(
+                "字符串字面量的目标类型不是 class：{ty:?}"
+            )));
+        };
+        if name != "String" {
+            return Err(CodegenError(format!(
+                "字符串字面量的目标 class 不是 std:String：{name}"
+            )));
+        }
+        let expected_data = HirType::Pointer(Box::new(HirType::Int(novella_hir::IntTy::U16)));
+        if self.types.field_type(ty, 0)? != expected_data
+            || self.types.field_type(ty, 1)? != HirType::Int(novella_hir::IntTy::Usize)
+        {
+            return Err(CodegenError(
+                "std:String 必须以 UTF-16 数据指针和 usize 长度开头".into(),
+            ));
+        }
+        let object = self.runtime_alloc(ty)?;
+        let aggregate = self.aggregate_type(ty)?;
+        let data_field = self
+            .builder
+            .build_struct_gep(aggregate, object, 0, "string_data")?;
+        let len_field = self
+            .builder
+            .build_struct_gep(aggregate, object, 1, "string_len")?;
+        let pointer_type = self.context.ptr_type(inkwell::AddressSpace::default());
+        let data = if value.is_empty() {
+            pointer_type.const_null()
+        } else {
+            let malloc_ty = pointer_type.fn_type(&[self.context.i64_type().into()], false);
+            let malloc = self
+                .module
+                .get_function("malloc")
+                .unwrap_or_else(|| self.module.add_function("malloc", malloc_ty, None));
+            let bytes = value
+                .len()
+                .checked_mul(std::mem::size_of::<u16>())
+                .ok_or_else(|| CodegenError("字符串字面量缓冲区大小溢出".into()))?;
+            let bytes = self.context.i64_type().const_int(bytes as u64, false);
+            self.builder
+                .build_call(malloc, &[bytes.into()], "string_bytes")?
+                .try_as_basic_value()
+                .basic()
+                .ok_or_else(|| CodegenError("malloc 没有返回字符串缓冲区".into()))?
+                .into_pointer_value()
+        };
+        if !value.is_empty() {
+            self.trap_if(
+                self.builder
+                    .build_is_null(data, "string_allocation_failed")?,
+            )?;
+        }
+        self.builder.build_store(data_field, data)?;
+        self.builder.build_store(
+            len_field,
+            self.context.i64_type().const_int(value.len() as u64, false),
+        )?;
+        if !value.is_empty() {
+            let data_type = self.context.i16_type();
+            for (index, code_unit) in value.iter().copied().enumerate() {
+                // LLVM 的 opaque pointer 允许直接以元素类型进行索引。
+                let index = self.context.i64_type().const_int(index as u64, false);
+                let slot = unsafe {
+                    self.builder
+                        .build_gep(data_type, data, &[index], "string_code_unit")?
+                };
+                self.builder
+                    .build_store(slot, data_type.const_int(u64::from(code_unit), false))?;
+            }
+        }
+        Ok(object)
+    }
+}

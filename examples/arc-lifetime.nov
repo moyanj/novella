@@ -1,0 +1,49 @@
+@no_std;
+
+extern func putchar(character: i32) -> i32;
+extern func abort();
+
+class Node {
+    pub id: i32;
+    pub weak target: Node;
+
+    pub func __init(self, id: i32) {
+        this.id = id;
+    }
+
+    pub func __destroy(self) {
+        unsafe { putchar(this.id); }
+    }
+}
+
+func set(holder: Node, value: Node) {
+    holder.target = value;
+}
+
+// 输出 ABCDEFGH：覆盖、完整表达式结束及 CFor 退出均及时释放最后强引用。
+func main() -> int {
+    let holder = new Node(72);
+    let target = new Node(65);
+    holder.target = target;
+    target = null;
+    if (holder.target != null) { unsafe { abort(); } }
+
+    // weak 不保活 RHS 临时对象；赋值语句结束即析构 B。
+    holder.target = new Node(66);
+    if (holder.target != null) { unsafe { abort(); } }
+
+    // 普通实参临时对象在调用语句结束释放，不能被隐藏临时槽位继续保活。
+    set(holder, new Node(67));
+    if (holder.target != null) { unsafe { abort(); } }
+
+    let run = true;
+    for (item = new Node(68); run; run = false) {
+        if (item.id != 68) { unsafe { abort(); } }
+    }
+    // CFor init 的命名局部只活到循环结束，D 必须先于 E。
+    unsafe { putchar(69); }
+    for (item = new Node(70); true;) { break; }
+    // break 同样退出 init 作用域，F 必须先于 G。
+    unsafe { putchar(71); }
+    return 0;
+}

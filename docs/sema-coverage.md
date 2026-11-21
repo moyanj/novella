@@ -108,7 +108,7 @@
 | D16S | 禁用标准库指令 | 用户补充（2026-11-21） | `module/loader.rs` / `check/decl.rs` | 已实现 | 入口独立 @no_std; 关闭整个导入闭包的标准库加载和 site 注入；拒绝 std: 导入、重复/带参/依赖模块/修饰声明或块的用法；字符串字面量缺少 std:String 报错 | 无参数指令 |
 | D17R | 多继承 | design §4.6（仅单父类） | `build_type_defs` 报错 | 已实现 | 反：两个父类报错 | — |
 | D18R | 继承环检测 | plan E12 | `resolve_class_parents` | 已实现 | 反：`A(B)`/`B(A)` 报错 | — |
-| D19R | weak 字段只保存 class 引用，初值推导后检查 | design §7.4 | `check/fields.rs::check_fields` | 已实现静态约束；class 自动 ARC 未接通 | 正：class 别名、泛型 class、struct 内弱字段；反：标量、裸指针、数组、裸类型参数 | — |
+| D19R | weak 字段只保存 class 引用，初值推导后检查 | design §7.4 | `check/fields.rs::check_fields` | 已实现静态约束及原生 weak upgrade/ARC | 正：class 别名、泛型 class、struct 内弱字段；反：标量、裸指针、数组、裸类型参数 | — |
 
 ### 1.5 表达式
 
@@ -135,7 +135,7 @@
 | E19R | 空数组需上下文给出元素类型 | design §5.2.1 | `expr.rs::check_expr_with_hint` + `check_array_literal_with_hint` | **已实现** | 正：声明 / 括号 / 元组 / 嵌套数组 / 实参 / return / struct 字段 / 赋值位置的 `[]` 均由上下文定型；反：无上下文 `[]` 报错 | **S03 完成** |
 | E20R | 调用：实参个数、类型、默认值、extern 需 unsafe | design §4.8；§6.2 | `call.rs::check_call` + `instance_param_tys` | **已实现** | 反：少参/多参/类型不符；正：`takes([])` 由形参定型 | **S03 完成** |
 | E21R | `new`：`__init` 实参检查；无 `__init` 不得传参；抽象类实例化 | design §4.6.1；plan S10b | `call.rs::check_new` + `type_defs::is_abstract_class` | **已实现** | 反：`new Shape()` 报「是抽象类…不能 new」；正：实现完抽象方法的子类可 new | **S04a 完成（D02）** |
-| E22R | 索引：数组 / 指针（unsafe）/ 元组字面量下标 | design §4.10、§6.5 | `call.rs::check_index_access` | 已实现 | 正：`pair[(+0x1)] = []` 按对应槽位定型；反：负数、动态下标和越界下标报错 | — |
+| E22R | 索引：数组 / 指针（unsafe）/ 元组字面量下标 / String 只读 UTF-16 码元 | design §4.10、§6.5 | `call.rs::check_index_access` | 已实现 | 正：`pair[(+0x1)] = []` 按对应槽位定型；反：负数、动态下标和越界下标报错 | — |
 | E23R | 成员访问：字段 / 方法 / 自动解引用 / struct `this` 免 unsafe | design §6.5 S6；§8.4 | `member.rs::check_member_access` + `MemberHit::check_visible` | **已实现** | 反：跨模块访问非 `pub` 字段报错；正：同模块 / 类型内部 / `pub` 可访问 | **S04a 完成（D02）** |
 | E24R | 静态成员 `Type.member` | design §4.6 | `member.rs::check_static_access` | **已实现** | 反：`a.make()` 报「静态成员…请改用类型名」；`A.f()` 正常 | **S04a 完成（D02）** |
 | E25R | match 类型合一、重复/覆盖模式与穷尽性 | 已确认 D06 | `typecheck/matching.rs` / `flow.rs` | 已实现 | 布尔穷尽无 default 通过；缺分支与重复负常量拒绝；void 分支不强制穷尽 | S12a |
@@ -733,3 +733,12 @@ f-string、异常/异步等明确返回带源码位置的 BuildError；不会以
   全部布尔分支均提前返回时，包含该 `match` 的变量初始化不会产生错误的落尾诊断。
 - 抽象方法使用继承链中最近的声明。`__str__` 和 `__str` 的覆写使用同一个规范名称。
 - `yield` 仍依 design §9.4 保留语法并报告未支持。编译器指令以 `@cfg` 为已定义范围。
+
+### 2026-11-21 · String/ARC 原生集成
+
+- D19R：weak 接通独立控制块与原子 upgrade，过期返回 null，禁止 weak 取址。泛型 class 静态判定不等于原生单态化已实现。
+- String 身份由 SemaResult.string_type 传递，同名用户 class 不匹配；索引只读返回 UTF-16 码元 u16。
+- f-string 已检查 AST 保存在 SemaResult，供 HIR 降级；支持整数、boolean、f32/f64、String、class __str。b 字符串为 u8[]，支持 no_std。
+- 析构 self/this 不得进入拥有位置，不得调用自身实例方法或被捕获，防止直接/间接复活；字段访问及字段对象的方法允许。
+- HIR/codegen 接通构造、ARC、weak、数组、struct/tuple 递归所有权、完整表达式及作用域清理。此前 ARC/b/f 不在范围的条目为 2026-11-15 历史。
+- 验证与限制见 [String/ARC 交接](ai-handover-string-arc.md)，标准库契约见 [std 说明](../std/README.md)。

@@ -1,0 +1,63 @@
+@no_std;
+
+extern func putchar(value: i32) -> i32;
+extern func abort();
+
+class Node {
+    pub value: i32;
+
+    pub func __init(self, value: i32) { this.value = value; }
+    pub func __destroy(self) { unsafe { putchar(this.value); } }
+}
+
+struct Holder { pub item: Node; }
+
+func identity(items: Node[]) -> Node[] { return items; }
+
+// 输出 ABCEDGFJHI，退出码 0；每个 class 对象恰好析构一次。
+// byte string、数组边界内读写及递归 ARC；任一值不符立即中止。
+func main() -> int {
+    let bytes = b"ABC";
+    let sum: i32 = 0;
+    for (item in bytes) { sum += item as i32; }
+    if (sum != 198) { unsafe { abort(); } }
+    bytes[1] = 90 as u8;
+    unsafe {
+        let pointer = &bytes[0];
+        pointer[2] = 89 as u8;
+    }
+    if (bytes[1] != 90 as u8 or bytes[2] != 89 as u8) { unsafe { abort(); } }
+    let empty = b"";
+    for (item in empty) { unsafe { abort(); } }
+
+    {
+        // 传参与返回保留数组所有权；索引读取保留旧元素，覆盖释放数组持有的引用。
+        let nodes = identity([new Node(65), new Node(66)]);
+        let saved = nodes[0];
+        nodes[0] = new Node(67);
+        for (item in nodes) {
+            if (item.value == 67) { continue; }
+            if (item.value != 66) { unsafe { abort(); } }
+        }
+        if (saved.value != 65) { unsafe { abort(); } }
+    }
+    {
+        // 内层数组被替换后，独立别名仍保持原有元素存活。
+        let nested = [[new Node(68)], [new Node(69)]];
+        let alias = nested[0];
+        nested[0] = [new Node(70)];
+        nested[1][0] = new Node(71);
+        if (alias[0].value != 68 or nested[1][0].value != 71) { unsafe { abort(); } }
+    }
+    {
+        // struct/tuple 元素按值复制，内部 class 引用递归 retain/release。
+        let entries = [Holder { item: new Node(72) }];
+        let copied = entries[0];
+        entries[0] = Holder { item: new Node(73) };
+        if (copied.item.value != 72 or entries[0].item.value != 73) { unsafe { abort(); } }
+        let tuples = [(new Node(74), 1)];
+        let (item, number) = tuples[0];
+        if (item.value != 74 or number != 1) { unsafe { abort(); } }
+    }
+    return 0;
+}

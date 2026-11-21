@@ -54,6 +54,7 @@ pub(crate) fn check_fstring(sema: &mut Sema, ctx: &mut BodyCtx, raw: &str, span:
     let inner = &raw[2..raw.len().saturating_sub(1)];
     let inner_base = span.start + 2; // 插值文本在源文件中的起始偏移
     let bytes = inner.as_bytes();
+    let mut parts = Vec::new();
     let mut i = 0;
     let mut literal_start = 0;
     while i < bytes.len() {
@@ -62,9 +63,7 @@ pub(crate) fn check_fstring(sema: &mut Sema, ctx: &mut BodyCtx, raw: &str, span:
             continue;
         }
         if bytes[i] == b'{' && bytes.get(i + 1) != Some(&b'{') {
-            if let Err(error) = novella_core::string::decode_escapes(&inner[literal_start..i]) {
-                sema.type_error(ctx.module, span, error.to_string());
-            }
+            push_text(sema, ctx.module, span, &inner[literal_start..i], &mut parts);
             let mut j = i + 1;
             let mut depth = 1;
             let mut quote = None;
@@ -95,7 +94,7 @@ pub(crate) fn check_fstring(sema: &mut Sema, ctx: &mut BodyCtx, raw: &str, span:
                 sema.type_error(ctx.module, span, "f-string 插值缺少配对的 }");
                 return;
             }
-            check_fstring_interpolation(
+            if let Some(expression) = check_fstring_interpolation(
                 sema,
                 ctx,
                 &inner[i + 1..j],
@@ -103,7 +102,9 @@ pub(crate) fn check_fstring(sema: &mut Sema, ctx: &mut BodyCtx, raw: &str, span:
                     start: inner_base + i,
                     end: inner_base + j + 1,
                 },
-            );
+            ) {
+                parts.push(crate::FStringPart::Expression(expression));
+            }
             i = j + 1;
             literal_start = i;
         } else if matches!(bytes[i], b'{' | b'}') && bytes.get(i + 1) == Some(&bytes[i]) {
@@ -115,8 +116,22 @@ pub(crate) fn check_fstring(sema: &mut Sema, ctx: &mut BodyCtx, raw: &str, span:
             i += 1;
         }
     }
-    if let Err(error) = novella_core::string::decode_escapes(&inner[literal_start..]) {
-        sema.type_error(ctx.module, span, error.to_string());
+    push_text(sema, ctx.module, span, &inner[literal_start..], &mut parts);
+    sema.fstrings.insert((ctx.module, span), parts);
+}
+
+fn push_text(
+    sema: &mut Sema,
+    module: crate::ModuleId,
+    span: Span,
+    text: &str,
+    parts: &mut Vec<crate::FStringPart>,
+) {
+    // 双花括号只在文本中转义；插值表达式的花括号由 parser 解释。
+    let text = text.replace("{{", "{").replace("}}", "}");
+    match novella_core::string::decode_escapes(&text) {
+        Ok(text) => parts.push(crate::FStringPart::Text(text)),
+        Err(error) => sema.type_error(module, span, error.to_string()),
     }
 }
 /// 检查单个 f-string 插值 `{expr}`：独立 lex+parse 后类型检查。
@@ -130,12 +145,12 @@ pub(crate) fn check_fstring_interpolation(
     ctx: &mut BodyCtx,
     text: &str,
     span: Span,
-) {
+) -> Option<Expression> {
     let leading = text.len() - text.trim_start().len();
     let text = text.trim();
     if text.is_empty() {
         sema.type_error(ctx.module, span, "f-string 插值不能为空");
-        return;
+        return None;
     }
     // 片段在源码中的起始偏移：`{` 之后 + 被 trim 掉的前导空白
     let base = span.start + 1 + leading;
@@ -149,13 +164,9 @@ pub(crate) fn check_fstring_interpolation(
             },
             "f-string 插值存在词法错误",
         );
-        return;
+        return None;
     }
-    let tokens: Vec<_> = lex_result
-        .tokens
-        .into_iter()
-        .filter(|t| t.kind != novella_core::token::TokenKind::LineComment)
-        .collect();
+    let tokens = lex_result.tokens;
     let mut parser = novella_parser::Parser::new(ParserInput {
         tokens,
         file: "Sema".to_string(),
@@ -163,7 +174,7 @@ pub(crate) fn check_fstring_interpolation(
     let program = parser.parse();
     if !program.diagnostics.is_empty() {
         sema.type_error(ctx.module, span, "f-string 插值不是合法表达式");
-        return;
+        return None;
     }
     // 只接受单个表达式语句
     let expression = match program.program.items.as_slice() {
@@ -171,16 +182,58 @@ pub(crate) fn check_fstring_interpolation(
             Statement::Expression(expr) => expr.clone(),
             _ => {
                 sema.type_error(ctx.module, span, "f-string 插值必须是单个表达式");
-                return;
+                return None;
             }
         },
         _ => {
             sema.type_error(ctx.module, span, "f-string 插值必须是单个表达式");
-            return;
+            return None;
         }
     };
     // `lexer_at` 已把片段 token 平移到父坐标：插值内的 AST span、诊断、类型表键
     // 全部直接是真坐标，不需要任何事后平移（旧实现的 `adjust_diagnostics` 只平移
     // 诊断而漏掉类型表 / 绑定表，正是 plan E07 报出的错位来源）。
-    check_expr(sema, ctx, &expression);
+    let ty = check_expr(sema, ctx, &expression);
+    if let Ty::IntLiteral(negative, value) = &ty {
+        let limit = if *negative {
+            (i64::MAX as u128) + 1
+        } else {
+            u128::from(u64::MAX)
+        };
+        if *value > limit {
+            sema.type_error(
+                ctx.module,
+                expression.span(),
+                "f-string 整数字面量超出 i64/u64 转换范围",
+            );
+        }
+    }
+    let supported_float = matches!(
+        ty,
+        Ty::Float(crate::ty::FloatKind::F32 | crate::ty::FloatKind::F64) | Ty::FloatLiteral(_)
+    );
+    if !sema.is_string_type(&ty)
+        && !ty.is_integer()
+        && !supported_float
+        && !matches!(ty, Ty::Boolean | Ty::Error)
+    {
+        let method = match &ty {
+            Ty::Class(module, name) | Ty::Struct(module, name) => {
+                crate::typecheck::member::lookup_member_chain(
+                    sema,
+                    &(*module, name.clone()),
+                    "__str",
+                    false,
+                )
+            }
+            _ => None,
+        };
+        if !method.is_some_and(|hit| matches!(hit.info,
+            crate::typecheck::member::MemberInfo::Method(method)
+            if !method.is_static && method.sig.params.len() == 1 && sema.is_string_type(&method.sig.ret))) {
+            sema.type_error(ctx.module, expression.span(),
+                "f-string 插值需要 String、整数、f32/f64、boolean，或提供 __str(self) -> String 的类型");
+        }
+    }
+    Some(expression)
 }

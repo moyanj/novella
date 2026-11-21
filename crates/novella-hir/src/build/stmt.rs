@@ -21,6 +21,29 @@ impl<'a> BodyBuilder<'a> {
         statement: &Statement,
         block: &mut HirBlock,
     ) -> Result<(), BuildError> {
+        let first_temporary = self.next_local;
+        self.emit_statement_inner(statement, block)?;
+        self.finish_expression(first_temporary, block);
+        Ok(())
+    }
+
+    /// 临时值仅活到完整表达式结束；具名绑定在词法作用域内继续拥有其值。
+    fn finish_expression(&self, first: u32, block: &mut HirBlock) {
+        let named: HashSet<_> = self.locals.iter().map(|(_, id)| *id).collect();
+        let temporaries: Vec<_> = (first..self.next_local)
+            .map(LocalId)
+            .filter(|id| !named.contains(id))
+            .collect();
+        if !temporaries.is_empty() {
+            block.push(HirStmt::ReleaseTemps(temporaries));
+        }
+    }
+
+    fn emit_statement_inner(
+        &mut self,
+        statement: &Statement,
+        block: &mut HirBlock,
+    ) -> Result<(), BuildError> {
         match statement {
             Statement::Variable(variable) => self.emit_variable(variable, block)?,
             Statement::VariableList { declarations, .. } => {
@@ -312,10 +335,11 @@ impl<'a> BodyBuilder<'a> {
                     ..
                 } => {
                     let mut wrapper = HirBlock::new();
-                    let cond = self.build_expression(condition, &mut wrapper)?;
+                    let mut prelude = HirBlock::new();
+                    let value = self.build_expression(condition, &mut prelude)?;
                     let then_block = self.with_scope(|this| this.build_statement(body))?;
                     wrapper.push(HirStmt::If {
-                        cond: HirCond::new(cond),
+                        cond: HirCond { prelude, value },
                         then_block,
                         else_block: tail.take(),
                     });
@@ -354,8 +378,25 @@ impl<'a> BodyBuilder<'a> {
         body: &Statement,
         block: &mut HirBlock,
     ) -> Result<(), BuildError> {
-        // for 自带一层作用域：init 声明的变量不泄漏到循环外
-        self.with_scope(|this| {
+        // for 的 init 绑定拥有独立的运行期作用域，正常退出和 break 都释放。
+        let nested = self.with_scope(|this| {
+            let mut nested = HirBlock::new();
+            this.emit_c_for_scoped(cond, body, &mut nested)?;
+            Ok(nested)
+        })?;
+        block.push(HirStmt::Block(nested));
+        Ok(())
+    }
+
+    fn emit_c_for_scoped(
+        &mut self,
+        cond: &novella_ast::stmt::ForLoopCond,
+        body: &Statement,
+        block: &mut HirBlock,
+    ) -> Result<(), BuildError> {
+        {
+            let this = self;
+            let init_start = this.next_local;
             if let Some(init) = &cond.init {
                 match init {
                     ForInit::Declaration { declarations, .. } => {
@@ -368,6 +409,7 @@ impl<'a> BodyBuilder<'a> {
                     }
                 }
             }
+            this.finish_expression(init_start, block);
             // 省略条件视为恒真；条件求值语句每轮都要重跑，落进 `prelude`
             let (mut prelude, value) = match &cond.condition {
                 Some(expr) => {
@@ -396,6 +438,6 @@ impl<'a> BodyBuilder<'a> {
                 step,
             });
             Ok(())
-        })
+        }
     }
 }

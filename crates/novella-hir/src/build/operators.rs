@@ -87,6 +87,54 @@ impl BodyBuilder<'_> {
         if op == BinaryOp::NullCoalesce {
             return self.build_coalesce(left, right, span, preferred, block);
         }
+        let left_type = self.expr_type(left.span()).ok();
+        let right_type = self.expr_type(right.span()).ok();
+        if let (Some(left_type), Some(right_type)) = (&left_type, &right_type)
+            && same_string_class(self.sema, left_type)
+            && left_type == right_type
+        {
+            let method_name = match op {
+                BinaryOp::Plus => Some("concat"),
+                BinaryOp::Equals | BinaryOp::NotEquals => Some("equals"),
+                _ => None,
+            };
+            if let Some(method_name) = method_name {
+                let signature = self
+                    .class_method_signature(
+                        class_identity(left_type).unwrap().0,
+                        "String",
+                        method_name,
+                        span,
+                    )?
+                    .ok_or_else(|| {
+                        BuildError::at(BuildErrorKind::MissingType {
+                            what: "std:String 运算方法",
+                        })
+                        .with_site(self.module, span)
+                    })?;
+                let receiver = self.build_typed_expression(left, left_type, block)?;
+                let argument = self.build_typed_expression(right, right_type, block)?;
+                let result_ty = self.expr_type_pref(span, preferred)?;
+                let dst = self.fresh_local(signature.ret.clone());
+                block.push(HirStmt::Instr(HirInstr::Call {
+                    callee: HirOperand::FunctionPtr(signature.id),
+                    args: vec![receiver, argument],
+                    dst: Some(dst),
+                    dst_ty: Some(signature.ret),
+                }));
+                if op == BinaryOp::NotEquals {
+                    let inverted = self.fresh_local(result_ty);
+                    block.push(HirStmt::Instr(HirInstr::Unary {
+                        op: HirUnaryOp::Not,
+                        operand: HirOperand::Local(dst),
+                        dst: inverted,
+                        dst_ty: HirType::Boolean,
+                    }));
+                    return Ok(HirOperand::Local(inverted));
+                }
+                return Ok(HirOperand::Local(dst));
+            }
+        }
         let mut hir_op = binary_op_of(op).ok_or_else(|| {
             BuildError::at(BuildErrorKind::Unimplemented {
                 node: binary_node_name(op),
@@ -205,11 +253,27 @@ impl BodyBuilder<'_> {
         } else {
             None
         };
-        let address = self.build_address(target, block)?;
-        let previous = if op == AssignOp::Assign {
+        let weak_field = self.weak_assignment_field(target, block)?;
+        let address = if weak_field.is_some() {
             None
         } else {
-            Some(self.read_address(address.clone(), &ty, block))
+            Some(self.build_address(target, block)?)
+        };
+        let previous = if op == AssignOp::Assign {
+            None
+        } else if let Some((receiver, target_ty, field, index)) = &weak_field {
+            let dst = self.fresh_local(ty.clone());
+            block.push(HirStmt::Instr(HirInstr::FieldLoad {
+                target: receiver.clone(),
+                target_ty: target_ty.clone(),
+                field: field.clone(),
+                index: *index,
+                ty: ty.clone(),
+                dst,
+            }));
+            Some(HirOperand::Local(dst))
+        } else {
+            Some(self.read_address(address.clone().expect("普通左值有地址"), &ty, block))
         };
         let rhs_ty = if op != AssignOp::Assign && matches!(ty, HirType::Pointer(_)) {
             self.expr_type_pref(value.span(), Some(&HirType::Int(IntTy::Isize)))?
@@ -221,31 +285,46 @@ impl BodyBuilder<'_> {
             None => self.build_typed_expression(value, &rhs_ty, block)?,
         };
         let stored = if let Some(lhs) = previous {
-            let hir_op = compound_op_of(op).ok_or_else(|| {
-                BuildError::at(BuildErrorKind::Unimplemented {
-                    node: assign_node_name(op),
-                })
-                .with_site(self.module, span)
-            })?;
-            let dst = self.fresh_local(ty.clone());
-            block.push(HirStmt::Instr(HirInstr::Binary {
-                op: hir_op,
-                lhs,
-                rhs,
-                lhs_ty: ty.clone(),
-                rhs_ty,
-                dst,
-                dst_ty: ty.clone(),
-            }));
-            HirOperand::Local(dst)
+            if op == AssignOp::PlusAssign && same_string_class(self.sema, &ty) {
+                self.string_method_call(&ty, "concat", vec![lhs, rhs], span, block)?
+            } else {
+                let hir_op = compound_op_of(op).ok_or_else(|| {
+                    BuildError::at(BuildErrorKind::Unimplemented {
+                        node: assign_node_name(op),
+                    })
+                    .with_site(self.module, span)
+                })?;
+                let dst = self.fresh_local(ty.clone());
+                block.push(HirStmt::Instr(HirInstr::Binary {
+                    op: hir_op,
+                    lhs,
+                    rhs,
+                    lhs_ty: ty.clone(),
+                    rhs_ty,
+                    dst,
+                    dst_ty: ty.clone(),
+                }));
+                HirOperand::Local(dst)
+            }
         } else {
             rhs
         };
-        block.push(HirStmt::Instr(HirInstr::StoreIndirect {
-            address,
-            value: stored.clone(),
-            ty,
-        }));
+        if let Some((receiver, target_ty, field, index)) = weak_field {
+            block.push(HirStmt::Instr(HirInstr::FieldStore {
+                target: receiver,
+                target_ty,
+                field,
+                index,
+                value: stored.clone(),
+                is_weak: true,
+            }));
+        } else {
+            block.push(HirStmt::Instr(HirInstr::StoreIndirect {
+                address: address.expect("普通左值有地址"),
+                value: stored.clone(),
+                ty,
+            }));
+        }
         Ok(stored)
     }
 
@@ -328,4 +407,17 @@ impl BodyBuilder<'_> {
         }));
         Ok(Some(HirOperand::Local(dst)))
     }
+}
+
+fn class_identity(ty: &HirType) -> Option<(novella_sema::ModuleId, &str)> {
+    match ty {
+        HirType::Class(module, name) => Some((*module, name)),
+        _ => None,
+    }
+}
+
+pub(super) fn same_string_class(sema: &SemaResult, ty: &HirType) -> bool {
+    matches!((&sema.string_type, ty),
+        (Some(TypeView::Class(expected_module, expected_name)), HirType::Class(module, name))
+        if expected_module == module && expected_name == name)
 }

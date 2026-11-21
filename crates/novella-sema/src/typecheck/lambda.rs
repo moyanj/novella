@@ -18,6 +18,7 @@ pub(crate) fn check_lambda(
 ) -> Ty {
     let scope = sema.scopes.new_scope(Some(ctx.scope), ScopeKind::Function);
     let mut lambda_ctx = fork_scope(ctx, scope);
+    lambda_ctx.destructor_capture = ctx.destructor_self.is_some();
     lambda_ctx.in_async = lambda.is_async;
     lambda_ctx.in_loop = false;
     lambda_ctx.loop_assignments = None;

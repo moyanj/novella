@@ -1,0 +1,4 @@
+func main() -> int {
+    let value = "hello 😀";
+    return value.length() as int;
+}

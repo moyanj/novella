@@ -40,7 +40,16 @@ pub(crate) fn value_type_of_symbol(
             ty.unwrap_or(Ty::Error)
         }
         SymbolKind::Param { ty } => ty,
-        SymbolKind::Function { sig } => Ty::Function(Rc::new(sig)),
+        SymbolKind::Function { sig } => {
+            if ctx.destructor_self.is_some() && sig.is_method {
+                sema.type_error(
+                    ctx.module,
+                    span,
+                    "析构接收者不能调用或提取自身实例方法；该方法可能间接建立 self 的强引用",
+                );
+            }
+            Ty::Function(Rc::new(sig))
+        }
         SymbolKind::NamedImport { target, imported } => match target {
             Some(target_module) => {
                 // 沿导入链取目标符号（不支持再导出链，直接取目标模块全局符号）

@@ -62,6 +62,7 @@ mod lvalue;
 mod module;
 mod operators;
 mod stmt;
+mod strings;
 mod types;
 
 pub use error::{BuildError, BuildErrorKind};

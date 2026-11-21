@@ -170,6 +170,9 @@ pub(crate) fn check_method_body(
     let fn_scope = sema.scopes.new_scope(Some(global), ScopeKind::Function);
     let mut ctx = BodyCtx::base(module, fn_scope);
     ctx.this_ty = (!method.modifiers.is_static).then(|| this_ty.clone());
+    if method.name == "__destroy" && matches!(this_ty, Ty::Class(..)) {
+        ctx.destructor_self = method.params.first().map(|param| param.span);
+    }
     for param in &method.type_parameters {
         ctx.type_env.insert(
             param.name.clone(),

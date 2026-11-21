@@ -13,7 +13,25 @@ pub(crate) fn check_expr(sema: &mut Sema, ctx: &mut BodyCtx, expr: &Expression) 
 }
 
 pub(super) fn check_expr_recorded(sema: &mut Sema, ctx: &mut BodyCtx, expr: &Expression) -> Ty {
+    let borrowed = std::mem::take(&mut ctx.borrowed_receiver);
+    if let Some(parameter_span) = ctx.destructor_self {
+        let is_self = matches!(expr, Expression::This { .. })
+            || matches!(expr, Expression::Identifier { name, .. }
+                if name == "self" && sema.scopes.lookup(ctx.scope, name).is_some_and(|symbol| symbol.span == parameter_span));
+        if is_self && (!borrowed || ctx.destructor_capture) {
+            sema.type_error(
+                ctx.module,
+                expr.span(),
+                "析构函数中不能建立或捕获 self 的强引用；仅允许直接访问自身字段",
+            );
+        }
+    }
+    // 括号不改变借用角色；其他组合表达式的子表达式重新检查自己的角色。
+    if borrowed && matches!(expr, Expression::Paren { .. }) {
+        ctx.borrowed_receiver = true;
+    }
     let ty = check_expr_inner(sema, ctx, expr);
+    ctx.borrowed_receiver = false;
     if matches!(
         expr,
         Expression::Call { .. } | Expression::New { .. } | Expression::Await { .. }

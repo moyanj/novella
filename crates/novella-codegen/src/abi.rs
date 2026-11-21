@@ -10,11 +10,12 @@ pub(crate) fn extensions(
 ) -> Vec<(AttributeLoc, Attribute)> {
     let mut attributes = Vec::new();
     for (location, ty) in std::iter::once((AttributeLoc::Return, &signature.ret)).chain(
-        signature
-            .params
-            .iter()
-            .enumerate()
-            .map(|(index, ty)| (AttributeLoc::Param(index as u32), ty)),
+        signature.params.iter().enumerate().map(|(index, ty)| {
+            (
+                AttributeLoc::Param(index as u32 + u32::from(signature.receiver)),
+                ty,
+            )
+        }),
     ) {
         let name = match ty {
             HirType::Boolean | HirType::Int(IntTy::U8 | IntTy::U16) => "zeroext",

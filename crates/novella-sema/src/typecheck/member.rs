@@ -78,8 +78,29 @@ pub(crate) fn check_member_access(
             _ => {}
         }
     }
+    // 访问成员只借用接收者，不建立新的对象所有权。
+    ctx.borrowed_receiver = true;
     let target_ty = check_expr(sema, ctx, target);
-    member_type_of(sema, ctx, &target_ty, name, span)
+    let ty = member_type_of(sema, ctx, &target_ty, name, span);
+    // 尚无借用效果分析，任何自身实例方法都可能把析构接收者转为强引用。
+    // 只检查直接 self/this（及括号），字段对象的方法具有独立所有权，仍可调用。
+    let mut receiver = target;
+    while let Expression::Paren { expr, .. } = receiver {
+        receiver = expr;
+    }
+    let destructor_receiver = ctx.destructor_self.is_some_and(|parameter_span| {
+        matches!(receiver, Expression::This { .. })
+            || matches!(receiver, Expression::Identifier { name, .. }
+                if name == "self" && sema.scopes.lookup(ctx.scope, name).is_some_and(|symbol| symbol.span == parameter_span))
+    });
+    if destructor_receiver && matches!(&ty, Ty::Function(signature) if signature.is_method) {
+        sema.type_error(
+            ctx.module,
+            span,
+            "析构接收者不能调用或提取自身实例方法；该方法可能间接建立 self 的强引用",
+        );
+    }
+    ty
 }
 /// 解析静态成员属主，读写共用别名展开规则。
 pub(crate) fn static_receiver(sema: &mut Sema, ctx: &BodyCtx, type_name: &str, span: Span) -> Ty {

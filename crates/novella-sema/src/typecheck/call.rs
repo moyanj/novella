@@ -32,6 +32,9 @@ pub(crate) fn check_index_access(
         );
         return Ty::Error;
     }
+    if sema.is_string_type(&target_ty) {
+        return Ty::Int(crate::ty::IntKind::U16);
+    }
     match target_ty {
         Ty::Array(element) => *element,
         Ty::Pointer(inner) => {

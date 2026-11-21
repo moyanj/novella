@@ -1,0 +1,37 @@
+// 原生运行成功返回 0；覆盖插值转换、UTF-16 下标、原始串与字节串。
+class Display {
+    pub prefix: String = "item";
+    pub func __init(self, prefix: String = "item") {
+        this.prefix = prefix;
+    }
+    pub func __str(self) -> String { return this.prefix; }
+}
+
+class DerivedDisplay(Display) {}
+
+func main() -> int {
+    let minimum: i64 = -9223372036854775808;
+    let maximum: u64 = 18446744073709551615;
+    let single: f32 = 1.25;
+    let double: f64 = 1.25;
+    let display = new Display();
+    let message = f"{{{minimum}}} {maximum} {true} {single} {double} {display} {42}";
+    if (message != "{-9223372036854775808} 18446744073709551615 true 1.25 1.25 item 42") { return 1; }
+    let text = "A😀B";
+    if (text.length() != 4 or text.byteLength() != 8 or text.charCount() != 3) { return 2; }
+    if (text[1] != 0xD83D or text[2] != 0xDE00) { return 3; }
+    if (text.slice(1, 2) != "😀" or text.slice(4, 0) != "") { return 4; }
+    if (text.slice(1, 1).charCount() != 1) { return 5; }
+    let raw = r"\n";
+    if (raw.length() != 2 or raw[0] != 92) { return 6; }
+    let bytes = b"A\x00\xff";
+    if (bytes[0] != 65 or bytes[1] != 0 or bytes[2] != 255) { return 7; }
+    let appended = "a";
+    appended += "b";
+    if (appended != "ab") { return 8; }
+    // 子类复用父类 __str，验证 HIR 沿父链定位方法实体。
+    let inherited = new DerivedDisplay();
+    inherited.prefix = "derived";
+    if (f"{inherited}" != "derived") { return 9; }
+    return 0;
+}

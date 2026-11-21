@@ -35,7 +35,7 @@ impl<'a> BodyBuilder<'a> {
         block: &mut HirBlock,
     ) -> Result<HirOperand, BuildError> {
         match expr {
-            Expression::Literal { value, span } => self.build_literal(value, *span),
+            Expression::Literal { value, span } => self.build_literal(value, *span, block),
             Expression::Identifier { name, span } => {
                 if let Some(id) = self.lookup_local(name) {
                     if name == "self"
@@ -187,6 +187,19 @@ impl<'a> BodyBuilder<'a> {
                 index,
                 span,
             } => {
+                let target_ty = self.expr_type(target.span())?;
+                if operators::same_string_class(self.sema, &target_ty) {
+                    let receiver = self.build_expression(target, block)?;
+                    let index =
+                        self.build_typed_expression(index, &HirType::Int(IntTy::Usize), block)?;
+                    return self.string_method_call(
+                        &target_ty,
+                        "codeUnitAt",
+                        vec![receiver, index],
+                        *span,
+                        block,
+                    );
+                }
                 self.check_index_target(target, *span)?;
                 let value = self.build_expression(target, block)?;
                 // 元素类型 = 表达式本身的类型；目标类型用于 codegen 选 GEP 的步长
@@ -209,12 +222,12 @@ impl<'a> BodyBuilder<'a> {
                 ..
             } => self.build_struct_init(name, properties, *span, block),
             Expression::Lambda(node) => self.build_lambda(node),
-            Expression::New { span, .. } => {
-                Err(
-                    BuildError::at(BuildErrorKind::Unimplemented { node: "new" })
-                        .with_site(self.module, *span),
-                )
-            }
+            Expression::New {
+                target,
+                type_args,
+                args,
+                span,
+            } => self.build_new(target, type_args, args, *span, block),
             Expression::Await { span, .. } => {
                 Err(
                     BuildError::at(BuildErrorKind::Unimplemented { node: "await" })
