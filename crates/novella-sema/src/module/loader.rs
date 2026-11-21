@@ -198,6 +198,7 @@ pub(crate) fn load_modules(
                 &importer_dir,
                 module.crate_root.as_deref(),
                 options.std_root.as_deref(),
+                |path| loader.exists(path),
             ) {
                 Ok(ResolvedImport::File(target)) => {
                     let target_key = loader.module_key(&target);

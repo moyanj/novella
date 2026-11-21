@@ -49,7 +49,7 @@ pub trait FileLoader {
     }
 
     fn read_to_string(&mut self, path: &Path) -> io::Result<String>;
-    /// 路径是否存在（nov.toml 查找用）
+    /// 路径是否存在（crate 根查找与模块文件候选选择用，须与读取共享同一视图）。
     fn exists(&mut self, path: &Path) -> bool;
 }
 

@@ -55,6 +55,7 @@ pub(crate) fn resolve_import_path(
         &dir,
         importer.crate_root.as_deref(),
         sema.std_root.as_deref(),
+        |path| sema.module_by_path.contains_key(&module_key(path)),
     )? {
         ResolvedImport::File(path) => {
             let key = module_key(&path);
@@ -70,12 +71,15 @@ pub(crate) fn resolve_import_path(
 
 /// 将导入语句映射到目标（纯路径运算，不触发加载）。
 ///
-/// `crate_root_of` 返回导入方模块的 crate 根（懒查找 nov.toml）。
+/// `crate_root` 是导入方的 crate 根（懒查找 nov.toml）。
+/// 文件候选优先于目录下的 `lib.nov`；加载阶段通过加载器检查存在性，
+/// 绑定阶段只查询已加载模块，避免绕过内存 overlay 或重新观察磁盘。
 pub(crate) fn resolve_import(
     import: &ImportItem,
     importer_dir: &Path,
     crate_root: Option<&Path>,
     std_root: Option<&Path>,
+    mut exists: impl FnMut(&Path) -> bool,
 ) -> Result<ResolvedImport, String> {
     // `:` 仅作别名分隔符且最多一个：parser 已在第一个 `:` 处切分，
     // path 内残留的 `:` 即第二个分隔符
@@ -116,12 +120,12 @@ pub(crate) fn resolve_import(
         base.push(segment);
     }
     base.set_extension("nov");
-    if !base.exists() {
+    if !exists(&base) {
         base.pop();
         base.push(segments[segments.len() - 1]);
         base.push("lib");
         base.set_extension("nov");
-        if !base.exists() {
+        if !exists(&base) {
             return Err(format!("模块文件不存在：{}", base.display()));
         }
     }
