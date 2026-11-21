@@ -24,7 +24,7 @@ fn main() {
         println!("cargo:rerun-if-env-changed={name}");
     }
     let output = PathBuf::from(std::env::var_os("OUT_DIR").expect("Cargo 必须提供 OUT_DIR"));
-    let object = output.join("object.o");
+    let object = output.join("rt.o");
     let archive = output.join("libnovella_rt.a");
     let compiler = std::env::var_os("NOVELLA_RUNTIME_CC").unwrap_or_else(|| "clang".into());
     let archiver = std::env::var_os("NOVELLA_RUNTIME_AR").unwrap_or_else(|| "ar".into());
@@ -40,7 +40,7 @@ fn main() {
             "-Werror",
             "-Iinclude",
             "-c",
-            "src/object.c",
+            "src/rt.c",
             "-o",
         ])
         .arg(&object));
