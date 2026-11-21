@@ -98,12 +98,10 @@ novella 是一门类 TS/Rust 混合风格、面向系统编程的语言：TS 的
 | 错误处理 | `try` `catch` `finally` `throw` |
 | 上下文 | `with` `as` |
 | 类型 | `type` `is` |
-| 异步 | `async` `await` `yield` |（`stream` 已确认砍掉，关键字已移除）
+| 异步 | `async` `await` `yield` |
 | 外部 | `extern` |
 | unsafe | `unsafe` |
 | 弱引用 | `weak`（字段修饰） |
-
-> 宏系统和 stream 均已删除。`macro` 不再是保留关键字，`f!(...)` 不属于语言语法。
 
 #### 内置符号（已确认）
 
@@ -898,20 +896,10 @@ async func main_async() {
 > main 保持同步，不能直接使用 await；
 > 上例用 `async func main_async` 演示将其包在 async 上下文中的写法。
 
-### 9.4 stream 已砍 / yield 保留
-
-**`stream` 已确认砍掉**（2026 决策）：`stream func` 生成器不再支持；
-`Stream` 关键字已从词法层移除（`TokenKind` / lexer / grammar / LSP 同步删除）。
+### 9.4 yield
 
 - `yield` 关键字**保留**，`yieldStatement`（`yield expr?;`）仍在语法层；
-- 在没有 `stream` 生成器的情况下，`yield` 的完整语义**待定**：候选方向为
-  协程 / 可恢复函数（后续评审），v1 先仅保留语法形态、由语义阶段按
-  「未支持」报错或按未来协程设计实现；
-- 示例（暂不可用，仅存档）：
-
-```
-stream func fib(n: i64) { ... }   // 已砍，不再支持
-```
+- `yield` 的完整语义**待定**：候选方向为协程 / 可恢复函数（后续评审），v1 先仅保留语法形态、由语义阶段按「未支持」报错或按未来协程设计实现；
 
 ### 9.5 与对象模型 / unsafe 交互
 
@@ -937,7 +925,7 @@ stream func fib(n: i64) { ... }   // 已砍，不再支持
   符合文法）；均**可恢复**——记录后继续分析同一文件其余部分；
 - 语义错误（类型不符、unsafe 违规、未知路径别名、缺少 `main` 等）由语义
   分析阶段产出；
-- 当前静态覆盖以 [sema-coverage.md](sema-coverage.md) 为准。宏语法已删除；@cfg 在声明收集前生效，
+- 当前静态覆盖以 [sema-coverage.md](sema-coverage.md) 为准。@cfg 在声明收集前生效，
   其他未定义指令及 yield 明确报 error；std 需要真实模块声明并执行完整检查。
   多级限定模块、限定名 struct 初始化仍受既有 parser 范围约束；未使用符号
   warning 不是本轮完成标准。异常展开、异步状态机、ARC 与泛型单态化尚不属于

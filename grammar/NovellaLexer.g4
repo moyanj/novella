@@ -13,8 +13,7 @@ lexer grammar NovellaLexer;
 //   - 字面量（`'+'`、`';'` 等）刻意保留原文拼写，避免两处维护同一集合时漂移；
 //   - 词法层不做值语义：字符串转义内容、数字进制等一律原样保留，交由语义分析阶段解析。
 //
-// 与旧参考文的差异（以下结构在代码中已被砍掉，本文件同步移除）：
-//   - `MultiLineComment`：块注释不再支持，输入 `/*` 会被切分为 Divide + Multiply；
+// 与旧参考文的差异（本文件同步移除的结构）：
 //   - `SingleLineComment -> channel(HIDDEN)`：行注释改为正式 token `LineComment`
 //     （供 LSP 高亮等消费），不再是隐藏通道 token；
 //   - `superClass` / `ProcessOpenBrace` / `ProcessStringLiteral` 等动作：代码中不存在

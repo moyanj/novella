@@ -40,13 +40,10 @@ antlr4 -lib target/antlr-align/gen/grammar -o target/antlr-align/gen grammar/Nov
   `/*` 被切成 `Divide`+`Multiply`、各类空白），ANTLR 词法器与 `novella-lexer` 的
   token 流（种类 + 原文，含 `Eof`）逐条一致，词法错误数量与错误 token 文本一致；
 - **语法**：覆盖 AST 全结构（导入 / 类型别名 / 类 / trait / 函数 / 装饰器 / 控制流 / match /
-  lambda / try / with / 各类字面量与运算符）的样例通过 `NovellaParser.program()`，0 syntax error；
-  已砍结构（交叉类型 `&`、`objectType`、`macro` / `async` / `stream` / `continue` 语句、
-  字面量形态的预定义类型、块注释）均被正确拒绝。
+  lambda / try / with / 各类字面量与运算符）的样例通过 `NovellaParser.program()`，0 syntax error。
 
 ## 已知的代码侧落差点（文法已按代码收紧，代码是否需要补齐由代码侧决定）
 
-- Stream 和宏系统均已删除；对应关键字、宏调用 AST/产生式与高亮映射已同步移除。
 - 标识符是**硬保留字**：`novella-parser` 只接受 `TokenKind::Identifier`
   （`except_identifier` 及各处校验），因此 `func new()`、`obj.type` 这类写法当前不可解析。
   若需要软关键字，应先放宽 parser 侧校验，再放宽文法的 `identifier` 规则。

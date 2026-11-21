@@ -64,7 +64,7 @@ ast ──(构建期)── novella-derive（proc-macro，展开引用 ::novella
 | `Span`, `Spanned<T>` | `novella-core/src/lib.rs` | 源码位置区间（字节偏移）/ 通用位置包装（AST 已改为节点内嵌 span，`Spanned` 暂保留备用） |
 | `Spanned`（derive 宏） | `novella-derive/src/lib.rs` | 为携带 `span` 字段的节点生成 `span()` 方法；struct 取字段、enum 具名变体取字段、newtype 变体委托内部节点 |
 | `AnalyzedModule` / `ModuleOutput` | `novella-sema/src/lib.rs` | 每模块产物（`id`/`path`/`source`/`tokens`/`program`/`syntax_failed`/`load_failed`）；`get`/`entry`/`find_by_path`/`find_entry`（路径两侧经 `module_key` 规范化） |
-| `TypeView` / `ExpressionTypes` | `novella-sema/src/lib.rs`（投影在 `ty.rs` 的 `Ty::view`） | 表达式类型表，键 `(ModuleId, Span)`；`Unknown` 与 `Error` 分别投影为 `TypeView::Unknown` / `TypeView::Error`，External 已删除，函数类型投影为 `TypeView::Function(Box<FunctionView>)`（含 `params`/`ret`/`receiver`，不再因 `name: None` 退化） |
+| `TypeView` / `ExpressionTypes` | `novella-sema/src/lib.rs`（投影在 `ty.rs` 的 `Ty::view`） | 表达式类型表，键 `(ModuleId, Span)`；`Unknown` 与 `Error` 分别投影为 `TypeView::Unknown` / `TypeView::Error`，函数类型投影为 `TypeView::Function(Box<FunctionView>)`（含 `params`/`ret`/`receiver`，不再因 `name: None` 退化） |
 | `Diagnostic` / `Severity` / `DiagnosticLocation` | `novella-core/src/diagnostic.rs` | 与阶段无关的通用诊断结构（serde），各阶段产出、CLI 渲染 |
 | `TokenKind` | `novella-core/src/token.rs` | 词法单元种类，纯数据投影，带 `Display`（输出 Debug 文本）；含 `LineComment`（行注释） |
 | `Token` | `novella-core/src/token.rs` | kind + span + slice + line + column |
@@ -146,15 +146,14 @@ just lsp-pack     # 打包 VS Code 扩展（esbuild 打包 + vsce 产出 vsix）
 - lexer 的 `TokenError` / `LexerResult` 已启用：`lexer()` 返回 token 流与错误列表，可恢复错误（非法字符、未闭合字符串）只进 `errors`，不中断后续分析；错误种类结构化（`LexError` 枚举），消息由 `Display` 生成，经 `TokenError::to_diagnostic` 转通用诊断。
 - EOF token 的 span 指向输入末尾 `{start:len, end:len}`，line/column 为末尾处行列；行号 1-based、列号 0-based（字节偏移），对齐 ANTLR `getLine()` / `getCharPositionInLine()`。
 - `TokenKind::Error` 保留为非法字符 / 未闭合字符串的占位（`to_token` 的 None 分支），随错误记录进 `errors`。
-- **注释 token 化**：lexer 把 `// ...`（到行尾，不含换行）产出为 `TokenKind::LineComment`（此前由 `logos(skip)` 丢弃），故 CLI 的 JSON 输出 `tokens` 现包含注释 token；sema 的 loader 保存完整 token 流，filter 只在 `preprocess.rs` 一处完成。若将来 parser 需要 doc comment，应改为 parser 内部吞注释并移除该过滤。
-- **块注释未支持**：`/* ... */` 在本项目被刻意砍掉（文法中已无 `MultiLineComment`）；`/*` 目前会被切分为 `Divide` + `Multiply`。
+- **注释 token 化**：lexer 把 `// ...`（到行尾，不含换行）产出为 `TokenKind::LineComment`，故 CLI 的 JSON 输出 `tokens` 现包含注释 token；sema 的 loader 保存完整 token 流，filter 只在 `preprocess.rs` 一处完成。若将来 parser 需要 doc comment，应改为 parser 内部吞注释并移除该过滤。
 - **`Symbol.name_span` 与 `Symbol.span` 的区别**：`span` 覆盖整条声明（含函数体），`name_span` 只覆盖标识符；`Definition.span` 与类型摘要的定位一律取 `name_span`，否则编辑器跳转/重命名会选中 `() -> int { ... }` 而不是名字。
 - LSP 语义 token 的偏移单位为 **UTF-16 码元**（见 CONVENTIONS）；跨行 token 会被按行拆分为多个语义 token——当前词法下（行注释与字面量都不含换行）不会触发，属防御性实现。
 - `FunctionItem.block` 类型为 `Option<Box<Statement>>`：`Box` 用于抑制 `Item` 枚举的尺寸差异（否则触发 clippy `large_enum_variant`）；类方法成员的 `block` 仍为 `Option<Block>`。
 - VS Code 扩展以 esbuild 打包为自包含单文件（`dist/extension.js`），vsix 不携带 `node_modules`；`editors/vscode/pnpm-workspace.yaml` 中 `allowBuilds: esbuild: false` 是**必需**的——允许其 postinstall 会把 `bin/esbuild` 替换成 ELF 原生二进制，导致 pnpm 执行 scripts 时按 JS 解析而报语法错误。
 - `novella-lsp` 与 `novella-cli` 同为二进制 crate，未登记进 `workspace.dependencies`。
 - `Scope` 枚举已按 `Public` / `Private` / `Package` 拼写，token 侧仍是 `Pub` / `Pri` / `Pkg`，转换只在 `Scope::from_token` 一处。
-- **parser 递归防护**：原先 `MAX_NESTING` / `MAX_EXPRESSION_NESTING`（均 128）已删除，改为**按需扩展分段栈**（`rust-lang/stacker`）。所有递归入口（`parse_expression` / `parse_assignment` / `parse_ternary` / `parse_unary` / `parse_primary` / `parse_type_expr` / `parse_block` / `parse_statement` / `parse_binding_pattern` / `parse_match`）一律写成「守卫包装 + `_inner` 实体」两层，包装层调用 `self.guarded(...)`（见 `crates/novella-parser/src/recursion.rs`）：剩余栈逼近红区（`RED_ZONE`）时由 `stacker::maybe_grow` 切到堆上新分段（`STACK_SEGMENT`）。合法的深层输入（数万层括号 / 嵌套块）可正常解析；只有病态输入耗尽 `MAX_STACK_SEGMENTS`（`1 << 20`，按**守卫调用次数**计）才报「语法嵌套层级超出工程上限」。注意 `maybe_grow` 参数顺序是 `(red_zone, stack_size)`。`checkpoint()/rollback()` 保存/恢复递归预算，避免推测分支消耗配额。
+- **parser 递归防护**：递归入口（`parse_expression` / `parse_assignment` / `parse_ternary` / `parse_unary` / `parse_primary` / `parse_type_expr` / `parse_block` / `parse_statement` / `parse_binding_pattern` / `parse_match`）一律写成「守卫包装 + `_inner` 实体」两层，包装层调用 `self.guarded(...)`（见 `crates/novella-parser/src/recursion.rs`）：剩余栈逼近红区（`RED_ZONE`）时由 `stacker::maybe_grow` 切到堆上新分段（`STACK_SEGMENT`）。合法的深层输入（数万层括号 / 嵌套块）可正常解析；只有病态输入耗尽 `MAX_STACK_SEGMENTS`（`1 << 20`，按**守卫调用次数**计）才报「语法嵌套层级超出工程上限」。注意 `maybe_grow` 参数顺序是 `(red_zone, stack_size)`。`checkpoint()/rollback()` 保存/恢复递归预算，避免推测分支消耗配额。
 - **AST 析构同样需要分段栈**：`Expression` / `Statement` / `TypeExpr` 是深层 `Box` 递归链，编译器默认析构会逐层下钻把栈打穿（实测 2000 层嵌套 `unsafe` 块即 abort）。因此三者在 `crates/novella-ast/src/drop_guard.rs` 中实现自定义 `Drop`：每层只在 `with_stack` 段内摘取**直接子节点**放进局部 `Vec`，再逐个释放，使析构深度由「真实栈深度」变成「分段栈切换次数」。**新增 `Box<...>` / `Vec<...>` 递归字段（含 `IfStmt` / `ForStmt` / `TryStmt` / `Match` / `Lambda` 等中间结构里的）必须同步该模块**——其中的 `match` 穷尽所有变体、不留 `_` 兜底，漏改会编译失败而不是静默退回递归析构。
 - **语法歧义的消解位置**：`with expr as binding` 的 `as` 靠 `with_stack` + `with_shield` + `looks_like_with_binding()` 判定（表头裸位绑定优先，嵌套括号/实参内仍是 cast；with 表头为无括号形态，旧 `with (expr)` 写法报迁移诊断），不走全局猜测；`match subject {` 的 `{` 靠 `in_match_subject` 禁止被 StructInit 抢走；match 分支体靠 `inside_match` 让表达式解析在 `case` / `default` / `}` 处自然停下。新增同类歧义应复用这些上下文标记，不要在 `parse_primary` 里堆特判。
 - `[profile.release]` 开启 `lto = true`。
@@ -169,7 +168,7 @@ just lsp-pack     # 打包 VS Code 扩展（esbuild 打包 + vsce 产出 vsix）
 ## 2026-11-15 sema 补全后的定位与契约
 
 - 当前覆盖以 docs/sema-coverage.md 为准。已确认决策与
-  本轮跨层授权不再重复询问；宏能力已删除；@cfg 已实现，其他未定义指令/yield 明确 error，不以 warning 放行。
+  本轮跨层授权不再重复询问；@cfg 已实现，其他未定义指令/yield 明确 error，不以 warning 放行。
 - sema 的公开数据在 api.rs，阶段编排在 analysis.rs，内部状态在 state.rs；
   ty/、resolve/、check/type_defs/、typecheck/expr/、body/、unsafe_rules/ 按职责拆分。
   公开入口仍从 novella_sema 根导出，新增 analyze_with_target 接收 32/64 位配置。

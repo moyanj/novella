@@ -42,7 +42,7 @@
 | try/catch/finally/throw | 异常传播与清理协议 |
 | async/await/yield | 状态机、挂起与恢复协议 |
 | new、class 动态方法调用、绑定方法值 | 分配、初始化、动态派发及绑定接收者表示 |
-| 宏、装饰器及装饰块 | 尚无可消费的展开或修饰结果；类型、字段、方法装饰器同样拒绝 |
+| 装饰器及装饰块 | 尚无可消费的修饰结果；类型、字段、方法装饰器同样拒绝 |
 | 闭包捕获 | 环境布局与生命周期 |
 | 泛型定义/调用、联合及不透明类型 | 无单态化或具体可生成类型；不能因投影抹除信息而接受泛型类型定义 |
 | 动态对象字面量 | 尚无定型对象布局 |
@@ -111,6 +111,6 @@ git diff --check
 TypeView::Error 与 Unknown 分离，std 不再产生 External。
 默认实参与字段初值通过 DeclarationIndex 和分析内 DeclarationId 定位，保留定义模块环境；
 不再遍历全部 AST 或解释函数 id 字符串。HirFunction.source_module/is_lambda 显式记录 lambda 属主。
-宏关键字、调用 AST 和降级分支已删除；已求值 @cfg 不进入 HIR。
+已求值 @cfg 不进入 HIR。
 
 这些公开 API/serde 改动无迁移，直接替换；所有定义身份仅对本次分析快照有效。

@@ -220,7 +220,7 @@ overlay 查找与相对导入解析，不外泄。
 （内部 `Ty` 的公开投影）。登记由 typecheck/expr/dispatch.rs 的 check_expr 与 hints.rs 的
 check_expr_with_hint 包装层统一完成，两者共用同一记录键空间，结构下推不漏子节点。
 Unknown（允许的无注解形参等）投影为 `TypeView::Unknown`，
-Error（已报错）独立投影为 `TypeView::Error`；External 已删除，std 必须加载声明；所有函数签名（含匿名 lambda）均投影为
+Error（已报错）独立投影为 `TypeView::Error`；std 必须加载声明；所有函数签名（含匿名 lambda）均投影为
 `TypeView::Function`，名义键只决定实体身份，不决定函数类型投影。
 
 以下为既定规则清单（来自 `design.md` §6.5 / §5 / §4）：
@@ -352,8 +352,7 @@ antlr4 -lib target/antlr-align/gen/grammar -o target/antlr-align/gen grammar/Nov
 依赖：1→2→（lexer 依赖 core）；3/4/5/6 相互独立；7 依赖 1；8 依赖 3/4/5/6；
 9 依赖 2/3/4/5/6；10 依赖 1；11 依赖 9。
 
-> 工程说明：stream 已确认砍掉（含关键字）；`weak` 仅字段修饰（无空安全保证，
-> 读过期对象未定义行为）。
+> 工程说明：`weak` 仅字段修饰（无空安全保证，读过期对象未定义行为）。
 
 ## 13. 工程注意与已知限制
 

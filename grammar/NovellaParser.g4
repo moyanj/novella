@@ -12,15 +12,12 @@ parser grammar NovellaParser;
 //                            parser 侧的 token 预处理与上下文标记消歧，文法本身保持 LL(1) 外观
 //   - 词法面见 NovellaLexer.g4（与 novella-core 的 `TokenKind` 逐条对齐）
 //
-// 与旧参考文的差异（这些结构在代码中已被砍掉，故同步移除）：
-//   - `typeExpression` 的 `&` 交叉类型：AST 仅 `TypeExpr::Union`（`|`），无交叉类型节点；
-//   - `objectType` / `objectTypeMember`：`TypeExpr` 无对象类型变体（`ObjectMember` 已随之删除）；
-//   - `asyncStatement` / `streamStatement`：`async func ...` 并入 `FunctionItem.is_async`，
-//     异步 lambda 由 `Lambda.is_async` 承载；`stream` 的 AST 与关键字均已删除；
+// 与旧参考文的差异（本文件同步移除的结构）：
+//   - `objectType` / `objectTypeMember`：`TypeExpr` 无对象类型变体；
+//   - `asyncStatement`：`async func ...` 并入 `FunctionItem.is_async`，
+//     异步 lambda 由 `Lambda.is_async` 承载；
 //   - 字面量形态的 `predefinedType`（`BooleanLiteral | StringLiteral | NullLiteral`）：
 //     `PredefinedType` 是一组类型名（int / float / u8 / ...），词法层并无这些保留字。
-//
-// 宏系统已删除：不再保留 Macro 关键字或宏调用表达式。
 //
 // 行注释在语法层透明：`LineComment` 是正式 token（供高亮等消费），由 parser
 // preprocess 一处过滤，CLI / LSP 不另行过滤，故本文件不引用该 token。

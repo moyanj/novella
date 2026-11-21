@@ -4,7 +4,7 @@
 > AST 变体/语义面**，状态只能填 `已实现` / `部分` / `缺失` / `待决策`，且必须有实测依据。
 > 计划 §1 的三个验收点：A 现有规则漏洞修补（S00–S08）、B 已确认语言范围覆盖
 > （S09–S13）、C 整体交付（S14）。**A/B 未闭环前不得写「sema 完成」。**
-> S00–S14 已全部完成并验收；计划原文已清理，验收结果保留在本文件。
+> S00–S14 已全部完成并验收；验收结果保留在本文件。
 
 ## 0. 起始基线（历史快照）
 
@@ -82,7 +82,7 @@
 | L07 | 字符串前缀 `f` / `r` / `b`、单双引号 | design §3.3 | `novella_core::string::decode_string_literal` | **已实现** | `r` 原样不解释；`b` 为 u8[] 并校验单字节字符与转义；单双引号等价 | **S04c 完成（D07）** |
 | L08 | 已定义转义序列校验 | design §3.3 | `core::string::decode_escapes`（sema 调用） | **已实现** | 反：`"\q"` 报「非法转义序列 `\q`」；`\x4` / `\u{110000}` / `\u{D800}` 各自报错 | **S04c 完成（D07）** |
 | L09 | f-string 插值扫描（转义引号、`{{`/`}}`） | design §4.12 | `expr.rs::check_fstring` | **已实现** | 正：`{{b}}` 转义、插值内单引号、嵌套括号；反：`{1 + }` 报非法表达式、`{}` 报插值不能为空 | **S02 完成** |
-| L10 | sema 与 HIR 字符串解码规则一致 | plan §6 S04c | `novella_core::string::decode_string_literal`（唯一实现） | **已实现** | HIR 私有 `decode_string` 已删除，两侧共用 core 实现 | **S04c 完成** |
+| L10 | sema 与 HIR 字符串解码规则一致 | plan §6 S04c | `novella_core::string::decode_string_literal`（唯一实现） | **已实现** | 两侧共用 core 实现 | **S04c 完成** |
 | L11 | `null` 字面量类型与可空判定 | design §6.5 S9 | `ty::Ty::Null` + `is_nullable` | 已实现 | 正/反见判空规则 | — |
 
 ### 1.4 声明（S01 / S05）
@@ -138,9 +138,8 @@
 | E24R | 静态成员 `Type.member` | design §4.6 | `member.rs::check_static_access` | **已实现** | 反：`a.make()` 报「静态成员…请改用类型名」；`A.f()` 正常 | **S04a 完成（D02）** |
 | E25R | match 类型合一、重复/覆盖模式与穷尽性 | 已确认 D06 | `typecheck/matching.rs` / `flow.rs` | 已实现 | 布尔穷尽无 default 通过；缺分支与重复负常量拒绝；void 分支不强制穷尽 | S12a |
 | E26R | lambda 返回推导、默认值与独立执行上下文 | D03/D08 / TD03/TD05 | `typecheck/lambda.rs` | 已实现 | 块体合并可达返回和落尾；继承词法 this，重置 loop/catch/unsafe/异常状态；self 不能冒充接收者 | 设计纠偏 |
-| E27R | 宏系统已删除 | 用户后续纠偏 TD06 | token / lexer / parser / AST / grammar / LSP | 已清理 | macro 可作为普通标识符；f!(1) 语法拒绝 | 设计纠偏 |
 | E28R | f-string 插值类型检查与坐标 | design §4.12 | `expr.rs::check_fstring*` + `novella_lexer::lexer_at` | **已实现** | 正：`{a + 2}` 的类型键落在真实坐标；反：未定义名诊断 span 精确命中该标识符（含前导空白、多字节前缀） | **S02 完成** |
-| E29R | 期望类型检查递归传递（括号/元组/数组/三元/`??`/`&&`/`\|\|`） | plan S03 | `expr.rs::check_expr_with_hint_inner` + `unsafe_rules::check_binary_with_hint` | **已实现** | 结构下推表见 S03 执行记录；宏系统已删除，不属于下推范围 | **S03 完成** |
+| E29R | 期望类型检查递归传递（括号/元组/数组/三元/`??`/`&&`/`\|\|`） | plan S03 | `expr.rs::check_expr_with_hint_inner` + `unsafe_rules::check_binary_with_hint` | **已实现** | 结构下推表见 S03 执行记录 | **S03 完成** |
 
 ### 1.6 语句与控制流
 
@@ -195,7 +194,7 @@
 | S10 | E21R、D12R | 完成（继承覆写、抽象类、trait 实例签名） |
 | S11 | T08、T09 | 完成（显式代入、递归推导、约束、别名） |
 | S12 | E25R、E17R、S07R、S08R、S14R、S16R、A02R、A03R | 完成（match、结构对象、确定赋值、Exception、Future、with） |
-| S13 | D16R、E27R | 完成（公开类型保真与后端明确拒绝） |
+| S13 | D16R | 完成（公开类型保真与后端明确拒绝） |
 | S14 | 全表 | 完成（见本轮收口验收） |
 
 ## 2. 决策溯源（D，均已确认）
@@ -223,7 +222,7 @@
 - D06：值 match 必须穷尽；布尔与可判定联合类型模式可无 default，其他要求 default；块分支 void，不允许值/void 混合；重复常量与被前项覆盖的类型分支报错。
 - D07：匿名对象结构类型允许宽对象赋给窄对象；b 字符串 u8[]，仅单字节字符与字节转义；f16 IEEE binary16、f8 E4M3FN；分析目标配置指定 usize/isize 的 32/64 位宽，默认宿主宽度；f-string 仅 {表达式} 与 {{/}}，不增加格式说明符，沿用已确认转义。
 - D08：编译器提供 std:exception 的 Exception 名义基类静态身份，throw/catch 仅其子类；throw; 仅 catch 内重抛，catch 不得被前项覆盖；内建可写 Future<T>，async 调用返回 Future<T>，仅 async 内可 await，main 保持同步；with as 绑定原资源，可选 __enter/__exit 无显式参数且返回 void，__init/__destroy 返回 void、__str 返回 string。仅实现静态协议，不实现运行时。
-- 宏系统已删除；@cfg 已实现，其他未定义指令及保留 yield 报不支持错误。
+- @cfg 已实现，其他未定义指令及保留 yield 报不支持错误。
 
 以上为确认范围，不是实施完成声明；各任务仍须单独验证后更新状态。
 
@@ -317,7 +316,6 @@
       call-arg-mismatch 同上（span 命中实参内 "a"）；tuple-mismatch 第二行先报空数组无法推断
       （既有语义：声明只在值能赋值给标注时静态复核，空数组自身仍须可定型）
 回归：cargo fmt --check、cargo test --workspace = 102 passed、clippy -D warnings 无问题
-历史未通过项已废止：宏系统已删除，不再列为后续能力。
 下一步：S04a
 禁止覆盖的既有修改：无
 ```
@@ -578,7 +576,7 @@ rtk cargo clippy --workspace --all-targets -- -D warnings
 S00–S14 已完成，D01–D08 均按本轮用户一次性答复落实，无剩余待确认的静态规则。
 第 0 节是启动基线；第 3 节中逐阶段“下一步”“待确认”等字样是历史执行记录，
 当前状态以第 1 节矩阵为准；本节运行记录保留历史含义。
-宏系统现已删除，@cfg 已实现，其他未定义指令及 yield 报错；std 除编译器 Exception 根外必须加载真实声明。
+@cfg 已实现，其他未定义指令及 yield 报错；std 除编译器 Exception 根外必须加载真实声明。
 
 ### 4.2 质量命令与实际结果
 
@@ -709,7 +707,7 @@ JSON 原始文本精确保留 18446744073709551615，HIR 整数载荷改为 i128
 - typecheck/expr/ 按分派、名称、提示、字符串、聚合、一元拆分；body/ 负责语句、绑定、异常路径；
   flow.rs 计算出口，matching.rs 维护匹配事实，unsafe_rules/ 分管运算符、赋值及构造。
 - 字符串解码只有 core/string.rs 一处；lexer_at 提供插值宿主坐标，注释仍只在 parser/preprocess.rs 过滤。
-- 无注解普通形参等保留 Unknown；已报错类型独立投影为 Error；std External 已删除。
+- 无注解普通形参等保留 Unknown；已报错类型独立投影为 Error。
   错误结果不能作为 HIR 输入。匿名函数始终投影 Function，不因无名义键退化为 Unknown。
 - 新增 TypeView::Applied/Object/Future、目标位宽入口、trait 方法摘要、穷尽 match 事实；AST 成员
   name_span、StructInit.type_args、Throw.expr 可选、HIR i128 会改变 Rust/serde 消费者形状。

@@ -1287,7 +1287,7 @@ pub(crate) struct BodyCtx {
 9. **签名占位与回填分离**：Phase 1 建骨架、Phase 2b 回填真签名——循环导入与前向引用正确的根本。
 10. **泛型参数带声明身份**：`param_key = format!("{}@m{}:{}", name, module, span.start)`。
 11. **确定赋值按定义 Span 为键**，不按名字——正确支持遮蔽。
-12. **已知未实现特性一律 error，不 warning 放行**：宏已删除；`@cfg` 已实现；其他未定义指令、`yield` 明确报错；std 除 Exception 根外必须加载真实声明。
+12. **已知未实现特性一律 error，不 warning 放行**：`@cfg` 已实现；其他未定义指令、`yield` 明确报错；std 除 Exception 根外必须加载真实声明。
 13. **公开面最小化**：`Sema` 仅 `pub(crate)`；新增 `pub` 前确认有 crate 外调用方。
 14. **递归防护**：所有递归入口套 stacker；AST 析构另有自定义 Drop 分段栈（见根 AGENTS.md）。
 
