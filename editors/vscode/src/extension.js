@@ -62,17 +62,22 @@ async function stopClient() {
   }
 }
 
+async function restartClient() {
+  await stopClient();
+  await startClient();
+}
+
 async function activate(context) {
   await startClient();
 
-  // 配置变更后重启服务器，让 novella.lsp.path / args 立即生效
   context.subscriptions.push(
+    vscode.commands.registerCommand('novella.restartLanguageServer', restartClient),
+    // 配置变更后重启服务器，让 novella.lsp.path / args 立即生效
     vscode.workspace.onDidChangeConfiguration(async (event) => {
       if (!event.affectsConfiguration('novella.lsp')) {
         return;
       }
-      await stopClient();
-      await startClient();
+      await restartClient();
     }),
     new vscode.Disposable(() => {
       void stopClient();

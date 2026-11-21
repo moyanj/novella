@@ -13,9 +13,17 @@
   ],
   "main": "./dist/extension.js",
   "activationEvents": [
-    "onLanguage:novella"
+    "onLanguage:novella",
+    "onCommand:novella.restartLanguageServer"
   ],
   "contributes": {
+    "commands": [
+      {
+        "command": "novella.restartLanguageServer",
+        "title": "重启语言服务器",
+        "category": "Novella"
+      }
+    ],
     "languages": [
       {
         "id": "novella",

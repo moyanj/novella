@@ -60,7 +60,7 @@ code --install-extension novella-language-0.1.0.vsix
 | `novella.lsp.path` | `novella-lsp` | 服务器可执行文件路径；未安装到 `PATH` 时指向 `target/debug/novella-lsp` 即可 |
 | `novella.lsp.args` | `[]` | 追加的启动参数 |
 
-配置变更后插件会自动重启服务器，无需重载窗口。
+配置变更后插件会自动重启服务器，无需重载窗口。也可以在命令面板运行 **Novella: 重启语言服务器**，例如构建了新版本的 `novella-lsp` 后，无需重载 VS Code 窗口即可让插件重新启动服务器进程。
 
 ## 故障排查
 
