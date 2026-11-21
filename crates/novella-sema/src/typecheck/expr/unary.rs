@@ -114,6 +114,37 @@ pub(crate) fn check_unary(
             }
         }
         UnaryOp::AddressOf => {
+            // weak 槽位保存控制块句柄，不能作为载荷地址暴露给裸指针操作。
+            fn weak_field(sema: &Sema, ctx: &BodyCtx, expr: &Expression) -> bool {
+                match expr {
+                    Expression::Paren { expr, .. } => weak_field(sema, ctx, expr),
+                    Expression::MemberAccess { target, name, .. } => {
+                        let Some(receiver) =
+                            sema.expression_types.get(&(ctx.module, target.span()))
+                        else {
+                            return false;
+                        };
+                        let base = match receiver {
+                            Ty::Pointer(inner) => &**inner,
+                            other => other,
+                        };
+                        if !matches!(base, Ty::Struct(..) | Ty::Class(..) | Ty::Applied(..)) {
+                            return false;
+                        }
+                        let key = crate::typecheck::this_ty_key(base);
+                        crate::typecheck::member::lookup_member_chain(sema, &key, name, false)
+                            .is_some_and(|hit| {
+                                matches!(hit.info,
+                                crate::typecheck::member::MemberInfo::Field(field) if field.is_weak)
+                            })
+                    }
+                    _ => false,
+                }
+            }
+            if weak_field(sema, ctx, operand) {
+                sema.type_error(ctx.module, operand.span(), "weak 字段不能取裸地址");
+                return Ty::Error;
+            }
             // 取址是安全操作（design.md §6），但需要左值；
             // 操作数类型未知时错误已报过，跳过左值检查避免级联
             if !operand_ty.is_opaque() && !is_lvalue(sema, ctx, operand) {

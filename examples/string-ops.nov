@@ -1,0 +1,11 @@
+func main() -> int {
+    let left = "hello";
+    let right = " world";
+    let joined = left + right;
+    if (joined == "hello world") {
+        if (joined != "other") {
+            return joined.length() as int;
+        }
+    }
+    return 0;
+}

@@ -4,6 +4,7 @@ mod abi;
 mod body;
 mod identity;
 mod operators;
+mod ownership;
 
 pub use identity::llvm_library_path;
 
@@ -17,9 +18,11 @@ use inkwell::module::Linkage;
 use inkwell::targets::{
     CodeModel, FileType, InitializationConfig, RelocMode, Target, TargetTriple,
 };
-use inkwell::types::{BasicMetadataTypeEnum, BasicType, BasicTypeEnum, FunctionType};
+use inkwell::types::{BasicMetadataTypeEnum, BasicType, BasicTypeEnum, FunctionType, StructType};
 use inkwell::{AddressSpace, OptimizationLevel};
-use novella_hir::{FunctionSignature, HirFunction, HirItem, HirProgram, HirType, IntTy};
+use novella_hir::{
+    FunctionSignature, HirFunction, HirFunctionId, HirItem, HirProgram, HirType, HirTypeDef, IntTy,
+};
 
 type Result<Value> = std::result::Result<Value, CodegenError>;
 
@@ -71,7 +74,123 @@ fn entry(program: &HirProgram) -> Result<&HirFunction> {
         })
 }
 
-fn value_type<'ctx>(context: &'ctx Context, ty: &HirType) -> Result<BasicTypeEnum<'ctx>> {
+pub(crate) struct Types<'ctx> {
+    aggregates: HashMap<(usize, String), StructType<'ctx>>,
+    fields: HashMap<(usize, String), Vec<novella_hir::HirField>>,
+    destructors: HashMap<(usize, String), HirFunctionId>,
+}
+
+impl<'ctx> Types<'ctx> {
+    fn build(context: &'ctx Context, program: &HirProgram) -> Result<Self> {
+        let mut aggregates = HashMap::new();
+        let mut fields_by_type = HashMap::new();
+        let mut destructors = HashMap::new();
+        for module in &program.modules {
+            for definition in &module.types {
+                let name = match definition {
+                    HirTypeDef::Struct { name, .. }
+                    | HirTypeDef::Class { name, .. }
+                    | HirTypeDef::Trait { name, .. } => name,
+                };
+                if !matches!(definition, HirTypeDef::Trait { .. }) {
+                    aggregates.insert(
+                        (module.id, name.clone()),
+                        context.opaque_struct_type(&format!("m{}${name}", module.id)),
+                    );
+                }
+            }
+        }
+        let types = Self {
+            aggregates,
+            fields: HashMap::new(),
+            destructors: HashMap::new(),
+        };
+        for module in &program.modules {
+            for definition in &module.types {
+                let (name, fields) = match definition {
+                    HirTypeDef::Struct { name, fields, .. } => (name, fields),
+                    HirTypeDef::Class {
+                        name,
+                        fields,
+                        methods,
+                        ..
+                    } => {
+                        if let Some(destructor) =
+                            methods.iter().find(|method| method.name == "__destroy")
+                        {
+                            destructors
+                                .insert((module.id, name.clone()), destructor.signature.id.clone());
+                        }
+                        (name, fields)
+                    }
+                    HirTypeDef::Trait { .. } => continue,
+                };
+                let aggregate = types
+                    .aggregates
+                    .get(&(module.id, name.clone()))
+                    .ok_or_else(|| CodegenError(format!("缺少聚合类型 `{name}`")))?;
+                let field_types = fields
+                    .iter()
+                    .map(|field| value_type(context, &types, &field.ty))
+                    .collect::<Result<Vec<_>>>()?;
+                fields_by_type.insert((module.id, name.clone()), fields.clone());
+                aggregate.set_body(&field_types, false);
+            }
+        }
+        Ok(Self {
+            aggregates: types.aggregates,
+            fields: fields_by_type,
+            destructors,
+        })
+    }
+
+    fn aggregate(&self, module: usize, name: &str) -> Result<StructType<'ctx>> {
+        self.aggregates
+            .get(&(module, name.to_string()))
+            .copied()
+            .ok_or_else(|| CodegenError(format!("未定义聚合类型 `m{module}::{name}`")))
+    }
+
+    fn field_type(&self, ty: &HirType, index: usize) -> Result<HirType> {
+        let (module, name) = match ty {
+            HirType::Struct(module, name) | HirType::Class(module, name) => (*module, name),
+            HirType::Pointer(inner) => return self.field_type(inner, index),
+            _ => return Err(CodegenError(format!("不是聚合类型：{ty:?}"))),
+        };
+        self.fields
+            .get(&(module, name.clone()))
+            .and_then(|fields| fields.get(index))
+            .map(|field| field.ty.clone())
+            .ok_or_else(|| CodegenError(format!("字段下标越界：{index}")))
+    }
+
+    fn field_is_weak(&self, ty: &HirType, index: usize) -> Result<bool> {
+        let (module, name) = match ty {
+            HirType::Struct(module, name) | HirType::Class(module, name) => (*module, name),
+            HirType::Pointer(inner) => return self.field_is_weak(inner, index),
+            _ => return Err(CodegenError(format!("不是聚合类型：{ty:?}"))),
+        };
+        self.fields
+            .get(&(module, name.clone()))
+            .and_then(|fields| fields.get(index))
+            .map(|field| field.is_weak)
+            .ok_or_else(|| CodegenError(format!("字段下标越界：{index}")))
+    }
+
+    pub(crate) fn destructor(&self, ty: &HirType) -> Option<&HirFunctionId> {
+        let (module, name) = match ty {
+            HirType::Class(module, name) => (*module, name),
+            _ => return None,
+        };
+        self.destructors.get(&(module, name.clone()))
+    }
+}
+
+fn value_type<'ctx>(
+    context: &'ctx Context,
+    types: &Types<'ctx>,
+    ty: &HirType,
+) -> Result<BasicTypeEnum<'ctx>> {
     match ty {
         HirType::Int(kind) => Ok(match kind {
             IntTy::U8 | IntTy::I8 => context.i8_type(),
@@ -81,30 +200,58 @@ fn value_type<'ctx>(context: &'ctx Context, ty: &HirType) -> Result<BasicTypeEnu
         }
         .into()),
         HirType::Boolean => Ok(context.bool_type().into()),
-        HirType::Pointer(_) => Ok(context.ptr_type(AddressSpace::default()).into()),
-        HirType::Function(signature) => {
-            function_type(context, signature)?;
+        HirType::Float(kind) => Ok(match kind {
+            novella_hir::FloatTy::F16 => context.f16_type(),
+            novella_hir::FloatTy::F32 => context.f32_type(),
+            novella_hir::FloatTy::F64 => context.f64_type(),
+            novella_hir::FloatTy::F8 => return Err(CodegenError("LLVM 目标暂不支持 f8".into())),
+        }
+        .into()),
+        HirType::Tuple(elements) => Ok(context
+            .struct_type(
+                &elements
+                    .iter()
+                    .map(|element| value_type(context, types, element))
+                    .collect::<Result<Vec<_>>>()?,
+                false,
+            )
+            .into()),
+        HirType::Array(_) | HirType::Pointer(_) => {
             Ok(context.ptr_type(AddressSpace::default()).into())
         }
+        // class 在 ABI 中始终以指向 runtime 对象载荷的 opaque pointer 表示。
+        HirType::Class(_, _) => Ok(context.ptr_type(AddressSpace::default()).into()),
+        HirType::Function(signature) => {
+            function_type(context, types, signature)?;
+            Ok(context.ptr_type(AddressSpace::default()).into())
+        }
+        HirType::Struct(module, name) => Ok(types.aggregate(*module, name)?.into()),
         _ => Err(CodegenError(format!("暂不支持值类型 {ty:?}"))),
     }
 }
 
 fn function_type<'ctx>(
     context: &'ctx Context,
+    types: &Types<'ctx>,
     signature: &FunctionSignature,
 ) -> Result<FunctionType<'ctx>> {
-    if signature.receiver || signature.is_async || signature.type_param_count != 0 {
-        return Err(CodegenError("暂不支持带接收者、异步或泛型函数".into()));
+    if signature.is_async || signature.type_param_count != 0 {
+        return Err(CodegenError("暂不支持异步或泛型函数".into()));
     }
-    let params = signature
-        .params
-        .iter()
-        .map(|ty| value_type(context, ty).map(BasicMetadataTypeEnum::from))
-        .collect::<Result<Vec<_>>>()?;
+    let mut params = Vec::with_capacity(signature.params.len() + usize::from(signature.receiver));
+    if signature.receiver {
+        params.push(context.ptr_type(AddressSpace::default()).into());
+    }
+    params.extend(
+        signature
+            .params
+            .iter()
+            .map(|ty| value_type(context, types, ty).map(BasicMetadataTypeEnum::from))
+            .collect::<Result<Vec<_>>>()?,
+    );
     match &signature.ret {
         HirType::Void => Ok(context.void_type().fn_type(&params, false)),
-        ty => Ok(value_type(context, ty)?.fn_type(&params, false)),
+        ty => Ok(value_type(context, types, ty)?.fn_type(&params, false)),
     }
 }
 
@@ -125,6 +272,7 @@ pub fn emit_object(program: &HirProgram) -> Result<Vec<u8>> {
         )
         .ok_or_else(|| CodegenError("无法创建 x86-64 Linux 目标机器".into()))?;
     let context = Context::create();
+    let types = Types::build(&context, program)?;
     let module = context.create_module("novella");
     module.set_triple(&triple);
     module.set_data_layout(&machine.get_target_data().get_data_layout());
@@ -152,7 +300,7 @@ pub fn emit_object(program: &HirProgram) -> Result<Vec<u8>> {
                     "HIR 外部声明与链接名不一致".into(),
                 )));
             }
-            let ty = function_type(&context, &function.signature).map_err(contextualize)?;
+            let ty = function_type(&context, &types, &function.signature).map_err(contextualize)?;
             let (name, linkage) = if let Some(name) = &function.link_name {
                 if name.is_empty() || name == "main" {
                     return Err(contextualize(CodegenError(
@@ -194,10 +342,11 @@ pub fn emit_object(program: &HirProgram) -> Result<Vec<u8>> {
             functions.insert(function.id.clone(), (value, &function.signature));
         }
     }
+    ownership::emit_destructors(&context, &module, &types, &functions, program)?;
     for source in &program.modules {
         for item in &source.items {
             if let HirItem::Function(function) = item {
-                body::emit(&context, &module, &functions, function).map_err(|error| {
+                body::emit(&context, &module, &types, &functions, function).map_err(|error| {
                     CodegenError(format!("{}：{}：{}", source.path, function.id, error.0))
                 })?;
             }

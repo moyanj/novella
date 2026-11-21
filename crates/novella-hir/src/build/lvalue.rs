@@ -2,6 +2,8 @@
 
 use super::*;
 
+type WeakFieldTarget = (HirOperand, HirType, String, usize);
+
 impl BodyBuilder<'_> {
     pub(super) fn check_index_target(
         &self,
@@ -55,6 +57,51 @@ impl BodyBuilder<'_> {
         }
     }
 
+    /// weak 字段没有可暴露的 payload 指针槽位；赋值必须保留字段元数据。
+    pub(super) fn weak_assignment_field(
+        &mut self,
+        expr: &Expression,
+        block: &mut HirBlock,
+    ) -> Result<Option<WeakFieldTarget>, BuildError> {
+        match expr {
+            Expression::Paren { expr, .. } => self.weak_assignment_field(expr, block),
+            Expression::MemberAccess { target, name, span } => {
+                let ty = self.expr_type(target.span())?;
+                let (index, _) = self.field_slot(&ty, name, *span)?;
+                if !self.is_weak_field(&ty, index, *span)? {
+                    return Ok(None);
+                }
+                let receiver = self.build_expression(target, block)?;
+                Ok(Some((receiver, ty, name.clone(), index)))
+            }
+            Expression::Identifier { name, span } if self.lookup_local(name).is_none() => {
+                let receiver = self.with_receiver.clone().or_else(|| {
+                    self.lookup_local("self")
+                        .map(|id| (self.local_type(id), HirOperand::Local(id)))
+                });
+                let Some((ty, receiver)) = receiver else {
+                    return Ok(None);
+                };
+                let (index, _) = self.field_slot(&ty, name, *span)?;
+                Ok(self
+                    .is_weak_field(&ty, index, *span)?
+                    .then(|| (receiver, ty, name.clone(), index)))
+            }
+            _ => Ok(None),
+        }
+    }
+
+    fn is_weak_field(&self, ty: &HirType, index: usize, span: Span) -> Result<bool, BuildError> {
+        let ty = match ty {
+            HirType::Pointer(inner) => inner.as_ref(),
+            ty => ty,
+        };
+        let (HirType::Class(module, name) | HirType::Struct(module, name)) = ty else {
+            return Ok(false);
+        };
+        Ok(instance_fields(self.sema, *module, name, span)?[index].is_weak)
+    }
+
     pub(super) fn build_address(
         &mut self,
         expr: &Expression,
@@ -73,7 +120,7 @@ impl BodyBuilder<'_> {
                 if let Some((ty, value)) = self.with_receiver.clone()
                     && let Ok((index, field_ty)) = self.field_slot(&ty, name, *span)
                 {
-                    return Ok(self.field_address(value, ty, index, field_ty, block));
+                    return self.field_address(value, ty, index, field_ty, *span, block);
                 }
                 if let Some(local) = self.lookup_local("self") {
                     let ty = self.local_type(local);
@@ -83,7 +130,7 @@ impl BodyBuilder<'_> {
                     } else {
                         HirOperand::Local(local)
                     };
-                    return Ok(self.field_address(base, ty, index, field_ty, block));
+                    return self.field_address(base, ty, index, field_ty, *span, block);
                 }
                 Err(BuildError::at(BuildErrorKind::Unimplemented {
                     node: "non-local assignment target",
@@ -111,7 +158,7 @@ impl BodyBuilder<'_> {
                 } else {
                     self.build_expression(target, block)?
                 };
-                Ok(self.field_address(base, target_ty, index, field_ty, block))
+                self.field_address(base, target_ty, index, field_ty, *span, block)
             }
             Expression::IndexAccess {
                 target,
@@ -150,8 +197,15 @@ impl BodyBuilder<'_> {
         target_ty: HirType,
         index: usize,
         ty: HirType,
+        span: Span,
         block: &mut HirBlock,
-    ) -> HirOperand {
+    ) -> Result<HirOperand, BuildError> {
+        if self.is_weak_field(&target_ty, index, span)? {
+            return Err(BuildError::at(BuildErrorKind::Unimplemented {
+                node: "weak 字段取址",
+            })
+            .with_site(self.module, span));
+        }
         let dst = self.fresh_local(HirType::Pointer(Box::new(ty.clone())));
         block.push(HirStmt::Instr(HirInstr::FieldAddress {
             target,
@@ -160,7 +214,7 @@ impl BodyBuilder<'_> {
             ty,
             dst,
         }));
-        HirOperand::Local(dst)
+        Ok(HirOperand::Local(dst))
     }
 
     pub(super) fn read_address(

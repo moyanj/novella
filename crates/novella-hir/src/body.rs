@@ -17,8 +17,7 @@
 use novella_core::Span;
 use serde::{Deserialize, Serialize};
 
-use crate::ty::HirFunctionId;
-use crate::ty::HirType;
+use crate::ty::{FunctionSignature, HirFunctionId, HirType};
 
 /// 局部变量标识：在**同一函数体内**唯一。
 ///
@@ -45,8 +44,6 @@ pub enum HirOperand {
     UntypedFloat { value: f64, span: Span },
     /// 布尔常量
     BoolConst(bool),
-    /// 字符串常量（已解码为 UTF-16 码元，不含源码引号 / 前缀）
-    StringConst(Vec<u16>),
     /// 函数引用（取函数地址 / 构造函数指针）
     Function(HirFunctionId),
     /// 空引用（`null` 字面量；已在构造期确定目标类型来自上下文，此处只表示空值）
@@ -121,10 +118,10 @@ pub enum HirStmt {
     Break,
     /// `continue`：进入最近循环的下一次迭代
     Continue,
-    /// 进入 / 离开作用域标记（供 codegen 做析构 / 引用计数插入点）。
-    ///
-    /// 当前 codegen 未实现自动内存管理，故两端只记录作用域深度，
-    /// 不做任何发射；保留它是为了避免将来插入析构时改 HIR 结构。
+    /// 完整表达式结束：逆序释放临时拥有值，具名绑定保留到词法作用域退出。
+    /// 未执行分支中的槽位无需清理；已经清空的槽位可重复经过清理点。
+    ReleaseTemps(Vec<LocalId>),
+    /// 语法作用域标记；局部生命周期由结构化 Block / Loop 及 ReleaseTemps 表达。
     EnterScope,
     LeaveScope,
     /// 无操作（空语句 / 恒定真值替换后留下的空位），便于保持语句序列与源码一致
@@ -134,6 +131,12 @@ pub enum HirStmt {
 /// 顺序指令：每条都对应一次确定的运行期动作。
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub enum HirInstr {
+    /// 构造拥有 UTF-16 缓冲区的标准库 String 实例。
+    StringLiteral {
+        value: Vec<u16>,
+        ty: HirType,
+        dst: LocalId,
+    },
     /// 取局部槽位地址，不复制局部值。
     LocalAddress {
         local: LocalId,
@@ -171,6 +174,15 @@ pub enum HirInstr {
     Array {
         elements: Vec<HirOperand>,
         element_ty: HirType,
+        dst: LocalId,
+    },
+    /// 分配一个 class 实例，并在分配后调用其 `__init`。
+    ///
+    /// `init` 为空表示类型没有构造函数；接收者由 codegen 自动插入为新实例。
+    New {
+        ty: HirType,
+        init: Option<FunctionSignature>,
+        args: Vec<HirOperand>,
         dst: LocalId,
     },
     /// 取元组的已知位置元素，不涉及动态索引或边界推测。
@@ -253,6 +265,8 @@ pub enum HirInstr {
         field: String,
         index: usize,
         value: HirOperand,
+        /// 强字段管理新旧强引用；weak 字段改为管理控制块弱计数。
+        is_weak: bool,
     },
     /// 取元素：`target[index]`（`target` 为指针 / 数组值）
     IndexLoad {

@@ -42,6 +42,12 @@ pub(crate) struct BodyCtx {
     pub in_catch: bool,
     /// 方法内的 `this` 类型（非方法上下文为 None）
     pub this_ty: Option<Ty>,
+    /// 析构接收者只允许借用；其参数定义位置用于区分局部同名遮蔽。
+    pub destructor_self: Option<Span>,
+    /// lambda 对接收者字段的读取同样需要捕获自身，不能视为当前栈内借用。
+    pub destructor_capture: bool,
+    /// 仅对当前一次表达式检查有效，不传播到调用实参等拥有位置。
+    pub borrowed_receiver: bool,
     /// 期望返回类型（顶层语句为 None，`return` 即报错）
     pub expected_return: Option<Ty>,
     /// 泛型形参环境（`T` → `TypeParam("T")`）
@@ -65,6 +71,9 @@ impl BodyCtx {
             in_loop: false,
             in_catch: false,
             this_ty: None,
+            destructor_self: None,
+            destructor_capture: false,
+            borrowed_receiver: false,
             expected_return: None,
             type_env: HashMap::new(),
             fill_existing: false,
@@ -393,6 +402,9 @@ pub(crate) fn fork_scope(ctx: &BodyCtx, scope: ScopeId) -> BodyCtx {
         in_loop: ctx.in_loop,
         in_catch: ctx.in_catch,
         this_ty: ctx.this_ty.clone(),
+        destructor_self: ctx.destructor_self,
+        destructor_capture: ctx.destructor_capture,
+        borrowed_receiver: false,
         expected_return: ctx.expected_return.clone(),
         type_env: ctx.type_env.clone(),
         fill_existing: false,

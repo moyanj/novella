@@ -1,0 +1,41 @@
+@no_std;
+
+extern func putchar(character: i32) -> i32;
+extern func abort();
+
+class Node {
+    pub id: i32;
+
+    pub func __init(self, id: i32) {
+        this.id = id;
+    }
+
+    pub func __destroy(self) {
+        unsafe { putchar(this.id); }
+    }
+}
+
+struct Holder {
+    pub child: Node;
+    pub weak parent: Node;
+}
+
+func make() -> Holder {
+    let target = new Node(65);
+    return Holder{child: target, parent: target};
+}
+
+// 输出 A：struct 复制/返回递归管理 strong 与 weak，清空最后 strong 后立即析构。
+func main() -> int {
+    let first = make();
+    {
+        let second = first;
+        if (second.child.id != 65) { unsafe { abort(); } }
+        if (second.parent == null) { unsafe { abort(); } }
+    }
+    // 副本离开作用域不能提前释放原件拥有的 child 或 weak 控制块。
+    if (first.child.id != 65) { unsafe { abort(); } }
+    first.child = null;
+    if (first.parent != null) { unsafe { abort(); } }
+    return 0;
+}

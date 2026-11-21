@@ -74,6 +74,7 @@ impl<'a> BodyBuilder<'a> {
                 field: fields[index].name.clone(),
                 index,
                 value,
+                is_weak: fields[index].is_weak,
             }));
         }
         Ok(HirOperand::Local(id))
@@ -267,31 +268,54 @@ impl<'a> BodyBuilder<'a> {
 
     /// 字面量：直接求值为常量。
     pub(super) fn build_literal(
-        &self,
+        &mut self,
         literal: &Literal,
         span: Span,
+        block: &mut HirBlock,
     ) -> Result<HirOperand, BuildError> {
         match literal {
             Literal::Null => Ok(HirOperand::Null),
             Literal::Boolean(value) => Ok(HirOperand::BoolConst(*value)),
             Literal::String(raw) => {
-                if raw.starts_with('f') || raw.starts_with('b') {
-                    return Err(BuildError::at(BuildErrorKind::Unimplemented {
-                        node: "格式化或字节字符串",
-                    })
-                    .with_site(self.module, span));
+                if raw.starts_with('f') {
+                    return self.build_fstring(span, block);
+                }
+                if raw.starts_with('b') {
+                    let bytes = novella_core::string::decode_byte_literal(raw).map_err(|_| {
+                        BuildError::at(BuildErrorKind::UntypedLiteral {
+                            what: "byte string",
+                        })
+                        .with_site(self.module, span)
+                    })?;
+                    let element_ty = HirType::Int(IntTy::U8);
+                    let dst = self.fresh_local(HirType::Array(Box::new(element_ty.clone())));
+                    block.push(HirStmt::Instr(HirInstr::Array {
+                        elements: bytes
+                            .into_iter()
+                            .map(|byte| HirOperand::IntConst(i128::from(byte)))
+                            .collect(),
+                        element_ty,
+                        dst,
+                    }));
+                    return Ok(HirOperand::Local(dst));
                 }
                 // 解码表在 `novella_core::string`（sema 校验非法转义时用同一份实现），
                 // 此处只负责把解码失败转成降级错误
-                novella_core::string::decode_string_literal(raw)
-                    .map(|text| HirOperand::StringConst(text.encode_utf16().collect()))
-                    .map_err(|_error| {
-                        // 语义阶段已校验过转义；走到这里说明 sema 与 core 解码表不一致
-                        BuildError::at(BuildErrorKind::Unimplemented {
-                            node: "string literal with unsupported escape",
-                        })
-                        .with_site(self.module, span)
+                let text = novella_core::string::decode_string_literal(raw).map_err(|_error| {
+                    // 语义阶段已校验过转义；走到这里说明 sema 与 core 解码表不一致
+                    BuildError::at(BuildErrorKind::Unimplemented {
+                        node: "string literal with unsupported escape",
                     })
+                    .with_site(self.module, span)
+                })?;
+                let ty = self.expr_type(span)?;
+                let dst = self.fresh_local(ty.clone());
+                block.push(HirStmt::Instr(HirInstr::StringLiteral {
+                    value: text.encode_utf16().collect(),
+                    ty,
+                    dst,
+                }));
+                Ok(HirOperand::Local(dst))
             }
             Literal::Number(raw) => {
                 let text: String = raw.chars().filter(|&c| c != '_').collect();

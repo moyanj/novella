@@ -143,8 +143,9 @@ pub struct HirMethod {
 pub struct HirField {
     pub name: String,
     pub ty: HirType,
-    /// `weak` 标记：赋值与销毁不 retain/release，读取不提升为临时强引用
-    /// （`docs/design.md` §7.4）；布局与普通 class 引用一致，不自动置空。
+    /// `weak` 字段保存 opaque 控制块指针；写入/销毁管理弱计数，
+    /// 读取尝试升级并产生拥有的临时 class 引用，目标析构后读取为 null。
+    /// 禁止取字段地址，以免绕过 weak 的加载/写入契约。
     pub is_weak: bool,
     /// `static` 标记：不出现在实例布局里，而是一个全局
     pub is_static: bool,

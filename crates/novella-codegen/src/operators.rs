@@ -21,6 +21,9 @@ impl<'ctx> Body<'ctx, '_> {
             (HirUnaryOp::Neg, BasicValueEnum::IntValue(value)) => {
                 Ok(self.builder.build_int_neg(value, "neg")?.into())
             }
+            (HirUnaryOp::Neg, BasicValueEnum::FloatValue(value)) => {
+                Ok(self.builder.build_float_neg(value, "neg")?.into())
+            }
             (HirUnaryOp::Not | HirUnaryOp::BitNot, BasicValueEnum::IntValue(value)) => {
                 Ok(self.builder.build_not(value, "not")?.into())
             }
@@ -38,15 +41,51 @@ impl<'ctx> Body<'ctx, '_> {
         if from == to {
             return Ok(value);
         }
-        if matches!((from, to), (HirType::Pointer(_), HirType::Pointer(_))) {
+        if matches!(
+            (from, to),
+            (
+                HirType::Pointer(_) | HirType::Class(..),
+                HirType::Pointer(_) | HirType::Class(..)
+            )
+        ) {
             return Ok(value);
         }
         if let (HirType::Int(kind), HirType::Int(_)) = (from, to) {
-            let ty = value_type(self.context, to)?.into_int_type();
+            let ty = value_type(self.context, self.types, to)?.into_int_type();
             return Ok(self
                 .builder
                 .build_int_cast_sign_flag(value.into_int_value(), ty, kind.is_signed(), "cast")?
                 .into());
+        }
+        match (from, to) {
+            (HirType::Float(_), HirType::Float(_)) => {
+                return Ok(self
+                    .builder
+                    .build_float_cast(
+                        value.into_float_value(),
+                        value_type(self.context, self.types, to)?.into_float_type(),
+                        "float_cast",
+                    )?
+                    .into());
+            }
+            (HirType::Int(kind), HirType::Float(_)) => {
+                let ty = value_type(self.context, self.types, to)?.into_float_type();
+                return Ok(if kind.is_signed() {
+                    self.builder.build_signed_int_to_float(
+                        value.into_int_value(),
+                        ty,
+                        "int_float",
+                    )?
+                } else {
+                    self.builder.build_unsigned_int_to_float(
+                        value.into_int_value(),
+                        ty,
+                        "int_float",
+                    )?
+                }
+                .into());
+            }
+            _ => {}
         }
         Err(CodegenError(format!("暂不支持转换 {from:?} → {to:?}")))
     }
@@ -77,6 +116,32 @@ impl<'ctx> Body<'ctx, '_> {
                 .builder
                 .build_int_compare(predicate, lhs, rhs, "ptr.cmp")?
                 .into());
+        }
+        if let (BasicValueEnum::FloatValue(lhs), BasicValueEnum::FloatValue(rhs)) = (lhs, rhs) {
+            use inkwell::FloatPredicate;
+            let result: BasicValueEnum = match op {
+                Add => self.builder.build_float_add(lhs, rhs, "add")?.into(),
+                Sub => self.builder.build_float_sub(lhs, rhs, "sub")?.into(),
+                Mul => self.builder.build_float_mul(lhs, rhs, "mul")?.into(),
+                Div => self.builder.build_float_div(lhs, rhs, "div")?.into(),
+                Rem => self.builder.build_float_rem(lhs, rhs, "rem")?.into(),
+                Eq | Ne | Lt | Le | Gt | Ge => {
+                    let predicate = match op {
+                        Eq => FloatPredicate::OEQ,
+                        Ne => FloatPredicate::UNE,
+                        Lt => FloatPredicate::OLT,
+                        Le => FloatPredicate::OLE,
+                        Gt => FloatPredicate::OGT,
+                        Ge => FloatPredicate::OGE,
+                        _ => unreachable!(),
+                    };
+                    self.builder
+                        .build_float_compare(predicate, lhs, rhs, "fcmp")?
+                        .into()
+                }
+                _ => return Err(unsupported()),
+            };
+            return Ok(result);
         }
         let (BasicValueEnum::IntValue(lhs), BasicValueEnum::IntValue(rhs)) = (lhs, rhs) else {
             return Err(unsupported());
@@ -147,7 +212,7 @@ impl<'ctx> Body<'ctx, '_> {
         Ok(result.into())
     }
 
-    fn trap_if(&self, invalid: IntValue<'ctx>) -> Result<()> {
+    pub(crate) fn trap_if(&self, invalid: IntValue<'ctx>) -> Result<()> {
         let trap = Intrinsic::find("llvm.trap")
             .and_then(|intrinsic| intrinsic.get_declaration(self.module, &[]))
             .ok_or_else(|| CodegenError("LLVM 未提供 llvm.trap".into()))?;

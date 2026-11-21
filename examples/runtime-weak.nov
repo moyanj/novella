@@ -3,11 +3,14 @@
 extern func novella_rt_alloc(size: usize, alignment: usize, destroy: (void*) -> void) -> void*;
 extern func novella_rt_retain(object: void*);
 extern func novella_rt_release(object: void*);
+extern func novella_rt_weak_create(object: void*) -> void*;
+extern func novella_rt_weak_release(handle: void*);
+extern func novella_rt_weak_upgrade(handle: void*) -> void*;
 extern func putchar(character: i32) -> i32;
 extern func abort();
 
-// x86-64 的一个指针槽位：父对象拥有 child，子对象非拥有地记录 parent。
-// 显式指针操作演示 runtime 契约；class 的自动 ARC 仍待编译器接通。
+// x86-64 的一个指针槽位：父对象拥有 child，子对象持有 parent 的 weak 控制块。
+// 保留 no_std 与显式指针操作，独立演示底层 runtime ABI，不依赖自动 class ARC。
 func destroyParent(object: void*) {
     unsafe {
         novella_rt_release(*(object as void**));
@@ -16,8 +19,9 @@ func destroyParent(object: void*) {
 }
 
 func destroyChild(object: void*) {
-    // parent 是 weak，不读取已过期的目标，也不对它调用 release。
+    // 只释放 weak 控制块，不对已过期的 parent 载荷调用 release。
     unsafe {
+        novella_rt_weak_release(*(object as void**));
         putchar(67);
     }
 }
@@ -28,15 +32,20 @@ func main() -> int {
         let child = novella_rt_alloc(8, 8, destroyChild);
         novella_rt_retain(child);
         *(parent as void**) = child;
-        *(child as void**) = parent;
-        if (*(child as void**) != parent) {
+        *(child as void**) = novella_rt_weak_create(parent);
+        // 读取 weak 先安全升级，成功时得到一份新的强引用。
+        let promoted = novella_rt_weak_upgrade(*(child as void**));
+        if (promoted != parent) {
             abort();
         }
+        novella_rt_release(promoted);
         putchar(65);
-        // child 局部强引用仍存活，parent 必须可以独立析构。
+        // child 局部强引用仍存活，weak 回边不能阻止 parent 析构。
         novella_rt_release(parent);
-        // 清空仍存活对象里的弱字段，无需触碰已销毁的 parent。
-        *(child as void**) = null;
+        if (novella_rt_weak_upgrade(*(child as void**)) != null) {
+            abort();
+        }
+        // child 析构负责释放剩余 weak 控制块。
         novella_rt_release(child);
         putchar(90);
     }

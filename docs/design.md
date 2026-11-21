@@ -641,10 +641,10 @@ unsafe {
 
 | | class | struct |
 |---|-------|--------|
-| 语义 | **引用语义（ARC，本篇）** | 值语义（逐位拷贝，已定） |
+| 语义 | **引用语义（ARC，本篇）** | 值语义（复制时递归维护拥有成员） |
 | 分配 | 堆：对象头 + 字段区 | 栈 / 内嵌 / 手动 |
 | 构造 | `new Foo(...)` → `__init` | `Foo{ x: 1 }` 字段初始化 |
-| 析构 | 引用归零 → `__destroy` | 无（POD） |
+| 析构 | 引用归零 → `__destroy`，再自动清理字段 | 无用户析构；拥有成员自动 release |
 | 隐藏状态 | 引用计数头部（运行时） | 无 |
 
 ### 7.2 对象布局
@@ -663,9 +663,9 @@ class 对象（堆）：
 - 对象头对语言层透明：用户看不到 refcount，`as` 不能把引用当整数；
 - class 引用默认可空：`null` 可赋给任意 class 引用；解引用前须判空。
 
-2026-11-21：runtime 已实现隐藏头部、对齐分配、原子强引用计数和归零析构回调。
-实际头部还保存原始分配地址及析构函数，以上图示不规定其二进制字段偏移。
-class 自动 ARC 降级尚未接通；底层实现与可执行示例见
+2026-11-21：runtime 已实现对齐载荷、独立强/弱控制块和归零析构回调；class 自动 ARC 已接入原生后端。
+以上图示仅表示不透明对象头与载荷关系，不规定其二进制字段偏移。
+用户析构后逆序清理本类字段，再执行父类析构链。实现与可执行示例见
 [runtime 说明](../crates/novella-runtime/README.md)。
 
 ### 7.3 引用计数规则（ARC）
@@ -679,14 +679,20 @@ class 自动 ARC 降级尚未接通；底层实现与可执行示例见
 |------|------|
 | `new Foo(...)` 赋给变量 | 计数 1（转移，无 retain） |
 | 引用赋值 `b = a` | retain(a) → release(旧 b) |
-| 传入函数 / 方法 | retain（调用约定：调用方负责） |
+| 普通形参 | 被调用方 retain，返回前 release；实例接收者借用，由调用方保活 |
 | 存入字段 / 数组元素 | retain |
 | 从函数返回引用 | 转移所有权（调用方接收，无 retain/release 对） |
 | 局部变量离开作用域 / 被覆盖 | release |
-| `weak` 字段赋值 | 不 retain（§7.4） |
+| `weak` 字段赋值 | 创建新 weak handle，再释放旧 handle；不增加强计数（§7.4） |
 
 编译优化（后端）：转移场景（`new` 直接赋、返回值、`if` 分支内唯一引用）可
 省略 retain/release 对，语义层只保证**引用守恒**，不规定具体计数次数。
+
+完整表达式结束后释放匿名临时值；具名局部保持到覆盖或词法作用域退出。
+break、continue、return 均清理离开的作用域。struct、tuple 和数组递归维护拥有成员。
+析构时 strong 已归零，`self` / `this` 只能借用来访问字段；
+sema 拒绝把它复制到局部、拥有字段、普通实参或返回值，也禁止调用自身实例方法，
+避免经 helper 复活已开始析构的对象；字段对象的方法仍允许。
 
 #### 7.3.1 示例
 
@@ -723,16 +729,16 @@ ARC 缺陷：`root.child = child; child.parent = root;`（全强）形成环，�
 - 类型：`weak` 字段必须保存 class 引用（包括别名与已实例化的泛型 class）；
   struct 字段也可保存这样的弱引用。标量、裸指针、数组及不能证明为 class 的类型参数
   不能标记为 `weak`；无注解字段在初值推导后检查；
-- 语义：`weak` 字段赋值不 retain，字段销毁也不 release；布局为普通 class 引用的
-  对象载荷指针，无独立控制块。对象可能已被释放，runtime 不追踪或自动置空弱字段；
-- **无空安全保证**（已确认）：`weak` 字段不提供判空/解引用的静态保证——
-  读取过期对象属**未定义行为**，与裸指针的手动管理哲学一致；
-  不使用「临时强引用」等运行时兜底；
-- 只读语义：`weak` 字段不可写原对象的非安全操作（与普通字段同规则）。
+- 存储：字段保存独立控制块的 weak handle，不增加对象强计数；覆盖及字段销毁释放旧 handle；
+- 读取：原子 upgrade 成功后得到拥有强引用的普通 class 值，完整表达式结束时清理；
+  最后强引用开始析构后 upgrade 返回 `null`，对象不可复活。字段内 handle 不必物理清零；
+- 空安全：读取过期 weak 得到 `null`，后续成员解引用仍须调用方判空；没有静态非空证明；
+- weak 字段禁止取裸地址，避免控制块句柄被误当成 class 载荷地址；
+- 原子计数保护 upgrade 与最后 release 的竞态；并发修改同一字段仍需调用方同步。
 
-当前 sema 已校验弱字段类型，HIR 保留 `is_weak`（包括继承字段）；runtime 契约与
-`examples/runtime-weak.nov` 覆盖显式弱回边。class 自动 ARC 与原生字段访问尚未接通，
-因此该示例通过 `unsafe` 裸指针与显式 retain/release 演示相同的所有权关系。
+sema、HIR、codegen 与 runtime 已接通 weak 字段；显式 ABI 示例见
+[runtime-weak](../examples/runtime-weak.nov)，自动 ARC 示例见
+[arc-weak](../examples/arc-weak.nov) 与 [arc-lifetime](../examples/arc-lifetime.nov)。
 
 ```novella
 class Tree {
@@ -784,8 +790,7 @@ with openFile("data.txt") as f: File {
 ### 7.8 待确认决策点
 
 1. `weak` 语法：已定案为**字段修饰符**（与 `static` 同位），已入文法与词法；
-2. ~~弱引用读取是否做「临时强引用」保证~~ —— **不做**（无空安全保证，访问
-   过期对象未定义）；
+2. 2026-11-21 weak 契约修订：读取以原子 upgrade 获取临时强引用，过期返回 null；
 3. `with as` 已确认绑定原始资源。可选 `__enter` / `__exit` 无显式形参并返回
    void；`__init` / `__destroy` 返回 void，`__str` 返回 string；
 4. 是否提供 `@arc` / 配置项切到 tracing GC（本稿：不做，ARC 唯一）。

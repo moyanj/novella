@@ -161,6 +161,7 @@ pub fn analyze_with_options(
             ));
     }
 
+    let string_type = sema.string_type().map(|ty| ty.view());
     let types = sema.type_summaries();
     let definitions = sema.definition_index();
     let codegen_modules = crate::dependencies::codegen_modules(&sema);
@@ -192,6 +193,8 @@ pub fn analyze_with_options(
     }
 
     let mut result = SemaResult {
+        string_type,
+        fstrings: sema.fstrings,
         declarations: Default::default(),
         exhaustive_matches: sema.exhaustive_matches,
         diagnostics: DiagnosticReport {

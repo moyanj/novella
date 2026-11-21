@@ -1,6 +1,7 @@
 # novella-hir 交接文档
 
-> 更新：2026-11-15。P0、P1 覆盖补全及 P2 检查完成；改动尚未提交。
+> 更新：2026-11-21。已接通原生 class ARC、weak、String 和数组；改动尚未提交。
+> 2026-11-15 验证记录保留为历史，当前实现及验证见文末修订。
 > 本文记录 HIR 交接时的状态。后续 Linux x86-64 原生后端与 CLI 的现状见 [编译器设计](compiler-design.md) 第 8、9 节。
 
 ## 1. 已确认的架构与语义
@@ -11,12 +12,12 @@
 - `AnalyzedModule.required_for_codegen` 标记入口经显式导入、名字及类型依赖可达的模块。
   默认 `std:site` 环境中未使用的模块仍执行完整 sema 检查，但不降级、不链接；
   显式导入即保留其模块，不因符号未使用而跳过。入口 `@no_std;` 则直接关闭标准库加载。
-- 字符串名义类型为标准库的 `Class(module, "String")`；`StringConst(Vec<u16>)`
-  保存解码后的 UTF-16 码元。class 构造、字符串内容运算与原生发射仍待接通。
+- 字符串名义身份来自 `SemaResult.string_type`，不以文件 basename 推断；`HirInstr::StringLiteral`
+  保存解码后的 UTF-16 码元。构造、内容运算、索引、格式化及原生发射已接通。
 - 类型读取 sema 的 `expression_types`、`annotation_types`、`declaration_types`，键均为 `(ModuleId, Span)`。分别提供表达式、已解析注解、变量最终绑定类型与顶层函数签名。HIR 不重新解析类型名或用初始化表达式冒充声明类型。
 - Unknown / Error、联合、泛型以及无上下文的未定型类型明确拒绝；字面量可由声明、返回值、实参等上下文定型，数组与元组递归传递期望类型。
 - 用户确认：`p ?? backup` 非空时返回指针 `p`，为空才执行并返回 `backup`；不隐式解引用，读取内容另写 `*`。sema 已同步保留指针结果并检查备用值类型。
-- codegen 后续消费 HIR，不直连 AST。后端选型为 inkwell；此前记录的 LLVM 为 21.1.8，接入前重新核验。string 与数组的具体布局、分配和 ABI 仍须在后端开工前确定。
+- codegen 后续消费 HIR，不直连 AST。后端选型为 inkwell；此前记录的 LLVM 为 21.1.8，接入前重新核验。String 为拥有 UTF-16 缓冲区的 class；数组为 runtime 管理的长度与连续元素载荷。
 
 ## 2. P1 已完成
 
@@ -46,20 +47,19 @@
 | --- | --- |
 | try/catch/finally/throw | 异常传播与清理协议 |
 | async/await/yield | 状态机、挂起与恢复协议 |
-| new、class 动态方法调用、绑定方法值 | 分配、初始化、动态派发及绑定接收者表示 |
+| class 动态派发、绑定方法值 | 直接实例调用与 new 已接通，动态方法表及绑定接收者表示尚未实现 |
 | 编译器指令及指令块 | 尚无可消费的修饰结果；类型、字段、方法编译器指令同样拒绝 |
 | 闭包捕获 | 环境布局与生命周期 |
 | 泛型定义/调用、联合及不透明类型 | 无单态化或具体可生成类型；不能因投影抹除信息而接受泛型类型定义 |
 | 动态对象字面量 | 尚无定型对象布局 |
 | 非数组 for-in | Sema 已检查 `iter()`、`hasNext()` 和 `next()`，HIR 尚未降级 |
 | 静态字段 | 静态存储 |
-| weak 字段的原生执行 | sema 校验 class 引用类型，HIR 布局保留 is_weak；自动 class ARC 与原生字段访问尚未接通。弱字段不 retain/release、不自动置空，读取不提升强引用 |
 | 有成员的 trait | sema 已携带方法签名；HIR 尚未实现 trait 派发，明确拒绝 |
 | 未证明穷尽的无 default 值 match、值/void 混合 | sema 拒绝；合法布尔穷尽 match 可由 exhaustive_matches 供 HIR 降级 |
-| 格式化串、字节串、未定义转义、聚合/string 身份比较 | 尚无对应展开或值表示契约 |
+| 未定义转义、聚合身份比较 | 明确拒绝；格式化串、字节串及 class String 的身份比较已接通 |
 | 无实体声明的间接函数默认实参 | 函数值签名不携带默认表达式定义 |
 
-类型/方法签名可以描述 class、trait 和纯声明方法；这不代表 class 运行时或 trait 派发已经实现。普通 string 的值比较/拼接保留为定型操作，后端仍需实现对应运行时操作。
+class 运行时已接通；trait 派发与无实体方法仍明确拒绝。String 的拼接、内容比较和索引调用标准库方法，身份比较使用引用身份。
 
 ## 4. 实现位置
 
@@ -108,7 +108,7 @@ git diff --check
 - IntConst 与 UntypedInt 改为 i128，JSON 中 18446744073709551615 保持精确；
   消费 JSON 时不要经 JavaScript Number 再序列化该数。
 - 泛型实例、Future 与匿名结构对象保留公开类型身份，HIR 暂无对应布局/运行时则
-  带位置拒绝；b/f 字符串仍明确拒绝。Exception 静态根不代表标准库/异常展开已实现。
+  带位置拒绝。b/f 字符串现已接通；Exception 静态根不代表标准库/异常展开已实现。
 - 新增 AST type_args/name_span 与可选 Throw.expr，开发期直接替换旧契约，无迁移层。
 
 ## 2026-11-15 声明与诊断契约修订
@@ -120,3 +120,12 @@ TypeView::Error 与 Unknown 分离，std 不再产生 External。
 已求值 @cfg 不进入 HIR。
 
 这些公开 API/serde 改动无迁移，直接替换；所有定义身份仅对本次分析快照有效。
+
+## 2026-11-21 ARC、weak 与 String 原生修订
+
+- new 支持字段默认初值和构造默认实参；直接实例调用借用接收者。
+- HirStmt::ReleaseTemps 标记完整表达式结束；结构化块及循环跳转清理拥有值，C-for init 独立成块。
+- class/数组使用强计数，struct/tuple 复制递归维护拥有成员。weak 保存控制块；FieldLoad upgrade，FieldStore 先创建新 handle 再释放旧 handle，禁止 weak 取址。
+- 析构顺序为用户析构、本类字段逆序、父类包装；析构 self 不得逃逸，也不得调用自身实例方法以防间接复活。
+- f-string 消费 sema 保存的已检查插值 AST，不重新解析。普通/raw 为 UTF-16 String，byte 为 u8[]；String 索引只读返回 u16，内容运算调用 std 方法。
+- 原生验证及限制见 [String/ARC 交接](ai-handover-string-arc.md)；早期验证数字与拒绝清单是历史记录，以本次修订为准。

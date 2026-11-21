@@ -225,7 +225,17 @@ pub(crate) fn is_lvalue(sema: &mut Sema, ctx: &mut BodyCtx, expr: &Expression) -
             }
             is_lvalue(sema, ctx, target)
         }
-        Expression::IndexAccess { target, .. } => is_lvalue(sema, ctx, target),
+        Expression::IndexAccess { target, .. } => {
+            let ty = sema
+                .expression_types
+                .get(&(ctx.module, target.span()))
+                .cloned()
+                .or_else(|| lvalue_hint(sema, ctx, target));
+            if ty.as_ref().is_some_and(|ty| sema.is_string_type(ty)) {
+                return false;
+            }
+            is_lvalue(sema, ctx, target)
+        }
         // `this` 作为成员访问/索引的基座是左值（直接给 `this` 赋值由
         // check_lvalue_assignment 单独拒绝）
         Expression::This { .. } => true,

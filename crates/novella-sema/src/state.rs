@@ -20,6 +20,8 @@ use std::{
 /// 语义分析共享状态。
 pub(crate) struct Sema {
     pub std_root: Option<PathBuf>,
+    pub fstrings: HashMap<(ModuleId, Span), Vec<FStringPart>>,
+
     pub module_only: bool,
     pub exception_imports: HashSet<(ModuleId, String)>,
     pub generic_uses: HashMap<(ModuleId, Span), ty::Ty>,
@@ -110,6 +112,7 @@ impl Sema {
     pub(crate) fn new() -> Self {
         Sema {
             std_root: None,
+            fstrings: HashMap::new(),
             module_only: false,
             exception_imports: HashSet::new(),
             generic_uses: HashMap::new(),

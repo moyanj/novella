@@ -276,7 +276,8 @@ ELF 目标文件。先登记整个导入闭包的函数，再发射函数体。�
   但尚不支持 Novella 内的间接调用。
 - 整数加减乘按位宽回绕；除零、有符号最小值除以 `-1`（含取余）或移位量越界时陷阱，避免发射可执行的 LLVM 未定义操作。
 - `main` 返回 `int` 作为进程状态，`void` 通过入口包装返回 `0`；其他 Novella 符号仅在目标文件内部可见。
-- 浮点、指针算术、聚合、字符串、间接调用、全局及聚合 FFI ABI 仍未支持；发射时遇到不支持的类型或指令即报错。
+- 已支持 f16/f32/f64 基本运算、数值提升、指针算术、struct/tuple/数组、动态 UTF-16 String、class ARC 与 weak。数组保存长度和连续元素，索引越界陷阱；struct/tuple 复制递归维护拥有成员。
+- f8、float→int 转换、动态派发、全局存储及聚合 FFI ABI 等未支持路径仍明确报错；异常展开、异步与捕获闭包尚未实现。
 
 ## 9. CLI 与诊断渲染（novella-cli）
 
@@ -284,7 +285,7 @@ ELF 目标文件。先登记整个导入闭包的函数，再发射函数体。�
 - `--emit ast` 保留旧 JSON 契约（`tokens` + `program` + `diagnostics`）；`--emit hir` 输出已通过入口检查的 HIR。两者均支持 `-o`。
 - 每个模块只分析一次。任一阶段失败均非零退出，不写入部分输出；链接和写入在输出目录内暂存，成功后才替换目标。
 - CLI 携带 `novella-runtime` 构建的目标平台静态库，最终链接按未定义符号抽取对象实现。
-  对象分配、原子引用计数及析构回调已实现，class 自动 ARC 生成仍待接通，详见
+  对象分配、原子强/弱引用计数、class 自动 ARC 和析构链已实现，详见
   [runtime 说明](../crates/novella-runtime/README.md)。`@no_std` 不阻止显式调用 runtime。
 - 渲染：`render_diagnostic`（`cli/error.rs`）输出 rustc 风格
   `error: <msg>` / `--> 文件:行:列` + 源码行 + caret；展示列号 1-based、
@@ -358,7 +359,7 @@ antlr4 -lib target/antlr-align/gen/grammar -o target/antlr-align/gen grammar/Nov
 依赖：1→2→（lexer 依赖 core）；3/4/5/6 相互独立；7 依赖 1；8 依赖 3/4/5/6；
 9 依赖 2/3/4/5/6；10 依赖 1；11 依赖 9。
 
-> 工程说明：`weak` 仅字段修饰（无空安全保证，读过期对象未定义行为）。
+> 工程说明：`weak` 仅字段修饰；读取通过原子 upgrade 得到强引用，过期返回 null，仍须在成员访问前判空。
 
 ## 13. 工程注意与已知限制
 

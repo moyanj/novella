@@ -239,11 +239,22 @@ impl ExpressionTypes {
     }
 }
 
+/// 已在宿主源码坐标中检查过的格式化字符串片段。
+#[derive(Debug, Clone)]
+pub enum FStringPart {
+    Text(String),
+    Expression(novella_ast::expr::Expression),
+}
+
 /// 语义分析结果。
 ///
 /// 各字段都是**只读视图**：语义阶段内部状态（作用域树、符号表、类型注册表、
 /// 加载器）不外泄，下游只能查询模块产物、诊断、绑定与类型层级。
 pub struct SemaResult {
+    /// 由实际 std 根目录解析出的字符串名义身份；下游不得按文件名猜测。
+    pub string_type: Option<TypeView>,
+    /// f-string 已检查的片段；下游复用 AST，不重复词法/语法分析。
+    pub fstrings: HashMap<(ModuleId, Span), Vec<FStringPart>>,
     pub declarations: crate::DeclarationIndex,
     /// 已证明穷尽的 match；下游可据此降级无 default 的值分支。
     pub exhaustive_matches: HashSet<(ModuleId, Span)>,
