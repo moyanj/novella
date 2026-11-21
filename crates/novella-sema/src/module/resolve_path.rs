@@ -86,6 +86,11 @@ pub(crate) fn resolve_import(
     if segments.iter().any(|s| s.is_empty()) {
         return Err(format!("非法模块路径 \"{}\"（含空段）", import.raw_path));
     }
+
+    if segments.iter().any(|s| matches!(*s, "." | "..")) {
+        return Err("模块路径不允许 . 或 .. 路径段".to_owned());
+    }
+
     let mut base = match import.prefix.as_deref() {
         None => importer_dir.to_path_buf(),
         Some("@") => match crate_root {
@@ -97,24 +102,28 @@ pub(crate) fn resolve_import(
             None => return Err("`super:` 导入已超出文件系统根".to_string()),
         },
         Some("std") if import.path == "exception" => return Ok(ResolvedImport::ExceptionBuiltin),
-        Some("std") => {
-            if segments.iter().any(|s| matches!(*s, "." | "..")) {
-                return Err("std 模块路径不允许 . 或 .. 路径段".to_owned());
-            }
-            std_root
-                .ok_or_else(|| {
-                    format!(
-                        "标准库模块 `{}` 缺少声明：请配置 std_root，不能跳过类型检查",
-                        import.path
-                    )
-                })?
-                .to_path_buf()
-        }
+        Some("std") => std_root
+            .ok_or_else(|| {
+                format!(
+                    "标准库模块 `{}` 缺少声明：请配置 std_root，不能跳过类型检查",
+                    import.path
+                )
+            })?
+            .to_path_buf(),
         Some(other) => return Err(format!("未知路径别名 `{other}`")),
     };
     for segment in &segments {
         base.push(segment);
     }
     base.set_extension("nov");
+    if !base.exists() {
+        base.pop();
+        base.push(segments[segments.len() - 1]);
+        base.push("lib");
+        base.set_extension("nov");
+        if !base.exists() {
+            return Err(format!("模块文件不存在：{}", base.display()));
+        }
+    }
     Ok(ResolvedImport::File(base))
 }
