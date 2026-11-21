@@ -1,9 +1,10 @@
 # sema 规则覆盖矩阵与执行记录
 
-> 本文件是 `docs/sema-completion-plan.md` 的配套交付物：**每一行 = 一条已定规则 × 一个
+> 本文件是 sema 补全计划的配套交付物：**每一行 = 一条已定规则 × 一个
 > AST 变体/语义面**，状态只能填 `已实现` / `部分` / `缺失` / `待决策`，且必须有实测依据。
 > 计划 §1 的三个验收点：A 现有规则漏洞修补（S00–S08）、B 已确认语言范围覆盖
 > （S09–S13）、C 整体交付（S14）。**A/B 未闭环前不得写「sema 完成」。**
+> S00–S14 已全部完成并验收；计划原文已清理，验收结果保留在本文件。
 
 ## 0. 起始基线（历史快照）
 
@@ -549,7 +550,7 @@ rtk cargo clippy --workspace --all-targets -- -D warnings
 
 根因：`check_module` 按源码顺序交错检查方法体与字段初值，后者才回填字段类型；方法与早期字段已记录的 Unknown 不会再更新。只把本类型字段提前不足以解决跨类型、跨模块依赖。
 
-本轮修改文件：`docs/sema-completion-plan.md`（S05a 具体阶段方案、输入输出、文件与兼容性）、`docs/sema-coverage.md`（矩阵、纠正 S05/S11 编号、证据）。
+本轮修改文件：`docs/sema-coverage.md`（矩阵、纠正 S05/S11 编号、证据）；具体阶段方案、输入输出、文件与兼容性记录见本文件下方执行记录。
 
 下一步：确认 plan §6 S05a 的阶段调整后实现；S05b 顶层声明依赖另验收。暂停依据为 S05 原文「若需重新安排多个阶段，先写具体阶段输入/输出与变更文件，确认后实施」，不是对语言规则新增假设。此前全部未提交源码保持原样。
 
@@ -559,7 +560,7 @@ rtk cargo clippy --workspace --all-targets -- -D warnings
 当前任务：S00
 状态：验收通过
 已确认依据：plan §6 S00；design §3–§10
-修改文件：docs/sema-coverage.md（新增）、docs/sema-phase1.md（标注历史计划）、AGENTS.md（指针同步）
+修改文件：docs/sema-coverage.md（新增）、AGENTS.md（指针同步）
 复现：无（基线记录）
 验证：fmt --check 通过；cargo check --workspace --all-targets 通过；
       cargo test --workspace = 102 passed / 24 suites；git status --short 为空；
@@ -576,7 +577,7 @@ rtk cargo clippy --workspace --all-targets -- -D warnings
 
 S00–S14 已完成，D01–D08 均按本轮用户一次性答复落实，无剩余待确认的静态规则。
 第 0 节是启动基线；第 3 节中逐阶段“下一步”“待确认”等字样是历史执行记录，
-当前状态以第 1 节矩阵和 [后续纠偏备忘](sema-design-todo.md) 为准；本节运行记录保留历史含义。
+当前状态以第 1 节矩阵为准；本节运行记录保留历史含义。
 宏系统现已删除，@cfg 已实现，其他未定义指令及 yield 报错；std 除编译器 Exception 根外必须加载真实声明。
 
 ### 4.2 质量命令与实际结果

@@ -55,7 +55,7 @@ ast ──(构建期)── novella-derive（proc-macro，展开引用 ::novella
 | 原生后端 | `crates/novella-codegen/src/` | `emit_object` 只消费 HIR；目标为 Linux x86-64 |
 | HIR 降级入口 | `crates/novella-hir/src/build.rs`（`build_hir`） | AST → `HirProgram`；类型取自 `sema.expression_types` / `annotation_types` / `declaration_types`，无法定型即 `BuildError` |
 | 语义分析入口 | `crates/novella-sema/src/lib.rs`（`analyze` / `analyze_with`） | 五阶段管线：模块加载→声明收集→导入绑定→类型注册→逐模块检查；实现在 `module/`（mod/loader/resolve_path）、`resolve.rs`、`symbol.rs`、`ty.rs`、`check/`（mod/type_defs/decl）、`typecheck/`（mod/body/expr/member/call/unsafe_rules）。**词法/语法只在 loader 内各跑一次**，产物经 `SemaResult.modules`（`ModuleOutput`）交还下游 |
-| sema 规则覆盖状态 | `docs/sema-coverage.md` | 唯一权威矩阵：每条 design 规则 / 每个 AST 变体一行，标注 已实现/部分/缺失/待决策；补全计划见 `docs/sema-completion-plan.md`，`docs/sema-phase1.md` 为历史计划 |
+| sema 规则覆盖状态 | `docs/sema-coverage.md` | 唯一权威矩阵：每条 design 规则 / 每个 AST 变体一行，标注 已实现/部分/缺失/待决策；当前状态以该矩阵为准 |
 
 ## CODE MAP
 
@@ -168,7 +168,7 @@ just lsp-pack     # 打包 VS Code 扩展（esbuild 打包 + vsce 产出 vsix）
 
 ## 2026-11-15 sema 补全后的定位与契约
 
-- 当前覆盖以 docs/sema-coverage.md 为准，sema-phase1.md 仅为历史。已确认决策与
+- 当前覆盖以 docs/sema-coverage.md 为准。已确认决策与
   本轮跨层授权不再重复询问；宏能力已删除；@cfg 已实现，其他未定义指令/yield 明确 error，不以 warning 放行。
 - sema 的公开数据在 api.rs，阶段编排在 analysis.rs，内部状态在 state.rs；
   ty/、resolve/、check/type_defs/、typecheck/expr/、body/、unsafe_rules/ 按职责拆分。

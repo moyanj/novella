@@ -453,7 +453,7 @@ fn build_function_sig(
     if function.is_extern {
         // E2：extern 参数必须显式标注类型（FFI 边界无法推导）。
         // 注：返回类型在 AST 层无法区分「显式 void」与「缺省补 void」（parser
-        // 统一回填），故返回标注检查暂不落地（见 docs/sema-phase1.md §6.1）
+        // 统一回填），故返回标注检查暂不落地（设计依据见 design.md §4.8.1）
         if let Some(function_type) = &function.r#type {
             for param in &function_type.params {
                 if param.ty.is_none() {

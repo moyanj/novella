@@ -42,7 +42,7 @@ let _private = 3;
 //   - pkg：第三可见性（包级），token.rs / lexer 已有，grammar 未显式记录；
 
 // ============ 第 1 节  模块系统 ============
-// 导入语义（docs/sema-phase1.md §1.3 / §1.4）：
+// 导入语义（design.md §4.3.1 / sema-coverage.md M 类）：
 //   - 无前缀：相对当前文件所在目录解析（`"utils"` → `<本文件目录>/utils.nov`）；
 //   - `@:`：crate 根（由向上查找最近的 nov.toml 确定）；
 //   - `super:`：当前文件目录的父目录；

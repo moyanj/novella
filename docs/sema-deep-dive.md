@@ -1293,7 +1293,7 @@ pub(crate) struct BodyCtx {
 
 ### 11.2 与项目覆盖矩阵的对应
 
-规则覆盖以 `docs/sema-coverage.md` 为唯一权威矩阵（每条 design 规则 / 每个 AST 变体一行，标注 已实现/部分/缺失/待决策）：M01-M09 模块与导入、T01-T15 类型系统、L01-L11 字面量、D01R-D18R 声明、E01R-E29R 表达式、S01R-S19R 语句与控制流、A01R-A04R 异常/异步。补全计划见 `docs/sema-completion-plan.md`（S00–S14，已全部完成并验收：106 passed / 24 suites，fmt/check/clippy -D warnings/doc/diff 均通过，44 正例 + 37 反例符合预期）。关键决策 D01–D08：
+规则覆盖以 `docs/sema-coverage.md` 为唯一权威矩阵（每条 design 规则 / 每个 AST 变体一行，标注 已实现/部分/缺失/待决策）：M01-M09 模块与导入、T01-T15 类型系统、L01-L11 字面量、D01R-D18R 声明、E01R-E29R 表达式、S01R-S19R 语句与控制流、A01R-A04R 异常/异步。补全计划 S00–S14 已全部完成并验收（106 passed / 24 suites，fmt/check/clippy -D warnings/doc/diff 均通过，44 正例 + 37 反例符合预期；记录见覆盖矩阵执行记录）。关键决策 D01–D08：
 
 - **D01** 普通赋值 RHS→定位 LHS→写回；复合赋值 定位→读旧值→RHS→写回；
 - **D02** 成员默认 pri、pkg≈pri、静态不得经实例、覆写形参全等/返回协变、抽象类不可 new；

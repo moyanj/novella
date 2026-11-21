@@ -1,4 +1,4 @@
-//! 声明级检查与类型注册表构建（对应 `docs/sema-phase1.md` §6–§6.1），按职责分文件：
+//! 声明级检查与类型注册表构建（规则索引见 `docs/sema-coverage.md`），按职责分文件：
 //!
 //! - `type_defs`：Phase 2b 类型注册表（字段 / 方法 / 函数签名）与 Phase 2c class 继承链；
 //! - `decl`：Phase 2d 声明级检查（main 入口、struct / class 命名规则、extern 规则 E2–E5）

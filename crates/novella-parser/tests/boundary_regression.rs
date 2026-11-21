@@ -1,4 +1,4 @@
-//! parser → sema 边界修复的回归测试（对应 `docs/parser-sema-boundary.md`）。
+//! parser → sema 边界修复的回归测试。
 //!
 //! 每个用例以条目编号命名（A/B/C/D/E 类）；条目修复后测试长期驻留防回归。
 

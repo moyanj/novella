@@ -187,7 +187,7 @@ ast ──(构建期)── novella-derive（proc-macro，展开引用 ::novella
 
 ## 6. 语义分析（novella-sema）
 
-现状与验收以 [sema-coverage.md](sema-coverage.md) 为准，第一期文档仅保留历史。
+现状与验收以 [sema-coverage.md](sema-coverage.md) 为准；
 analysis.rs 编排模块加载 → collect/imports → 类型签名注册 → 继承/trait →
 显式顶层注解 → 字段/顶层声明依赖定型 → 函数体检查 → 泛型约束复核。
 api.rs 保存公开契约，state.rs 保存内部状态；ty/、resolve/、check/type_defs/

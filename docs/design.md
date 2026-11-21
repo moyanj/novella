@@ -937,8 +937,7 @@ stream func fib(n: i64) { ... }   // 已砍，不再支持
   符合文法）；均**可恢复**——记录后继续分析同一文件其余部分；
 - 语义错误（类型不符、unsafe 违规、未知路径别名、缺少 `main` 等）由语义
   分析阶段产出；
-- 当前静态覆盖以 [sema-coverage.md](sema-coverage.md) 和
-  [设计对照备忘](sema-design-todo.md) 为准。宏语法已删除；@cfg 在声明收集前生效，
+- 当前静态覆盖以 [sema-coverage.md](sema-coverage.md) 为准。宏语法已删除；@cfg 在声明收集前生效，
   其他未定义指令及 yield 明确报 error；std 需要真实模块声明并执行完整检查。
   多级限定模块、限定名 struct 初始化仍受既有 parser 范围约束；未使用符号
   warning 不是本轮完成标准。异常展开、异步状态机、ARC 与泛型单态化尚不属于
