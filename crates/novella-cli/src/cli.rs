@@ -10,6 +10,22 @@ pub struct Cli {
 
 #[derive(Subcommand)]
 pub enum Command {
+    /// 在新目录中创建 Novella 项目。
+    New { path: PathBuf },
+    /// 构建当前目录所属的 Novella 项目。
+    Build {
+        #[command(flatten)]
+        options: AnalysisOptionsArgs,
+        /// 覆盖可执行文件路径（默认写入项目的 target/<包名>）。
+        #[arg(short, long)]
+        output: Option<PathBuf>,
+        /// 禁止读取和写入编译缓存。
+        #[arg(long)]
+        no_cache: bool,
+        /// 显示缓存命中、失效原因与构建阶段耗时。
+        #[arg(short, long)]
+        verbose: bool,
+    },
     /// 只做词法、语法和语义检查。
     Check(AnalysisArgs),
     /// 编译为原生程序，或显式导出中间产物。
@@ -26,6 +42,12 @@ pub enum Command {
 #[derive(Args)]
 pub struct AnalysisArgs {
     pub file: PathBuf,
+    #[command(flatten)]
+    pub options: AnalysisOptionsArgs,
+}
+
+#[derive(Args)]
+pub struct AnalysisOptionsArgs {
     /// 标准库声明目录（std:io 对应 io.nov）。
     #[arg(long)]
     pub std_root: Option<PathBuf>,

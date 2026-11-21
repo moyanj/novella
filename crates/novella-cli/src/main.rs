@@ -11,8 +11,11 @@ use novella_sema::{AnalysisOptions, FsLoader, SemaResult, analyze_with_options};
 use crate::cli::{AnalysisArgs, Emit};
 use crate::error::render_diagnostic;
 
+mod build;
+mod cache;
 mod cli;
 mod error;
+mod project;
 
 fn main() -> ExitCode {
     match run(cli::Cli::parse().command) {
@@ -30,6 +33,32 @@ fn main() -> ExitCode {
 
 fn run(command: cli::Command) -> Result<bool, Box<dyn std::error::Error>> {
     let (args, output) = match command {
+        cli::Command::New { path } => {
+            project::create(&path)?;
+            return Ok(true);
+        }
+        cli::Command::Build {
+            options,
+            output,
+            no_cache,
+            verbose,
+        } => {
+            let project = project::Project::discover(&std::env::current_dir()?)?;
+            let output = match output {
+                Some(path) => path,
+                None => project.default_output()?,
+            };
+            return build::run(
+                AnalysisArgs {
+                    file: project.entry(),
+                    options,
+                },
+                output,
+                project.root(),
+                no_cache,
+                verbose,
+            );
+        }
         cli::Command::Check(args) => (args, None),
         cli::Command::Compile {
             analysis,
@@ -48,15 +77,7 @@ fn run(command: cli::Command) -> Result<bool, Box<dyn std::error::Error>> {
         .as_ref()
         .is_none_or(|(emit, _)| matches!(emit, Emit::Ast));
     let result = analyze(&args, module_only, native)?;
-    for diagnostic in &result.diagnostics.global {
-        eprintln!("{}", render_diagnostic(diagnostic, None));
-    }
-    for (id, diagnostics) in result.diagnostics.modules.iter().enumerate() {
-        let source = result.modules.get(id).map(|module| module.source.as_str());
-        for diagnostic in diagnostics.ordered() {
-            eprintln!("{}", render_diagnostic(diagnostic, source));
-        }
-    }
+    render_diagnostics(&result);
     if result.diagnostics.has_errors() {
         return Ok(false);
     }
@@ -83,23 +104,45 @@ fn run(command: cli::Command) -> Result<bool, Box<dyn std::error::Error>> {
     Ok(true)
 }
 
+fn render_diagnostics(result: &SemaResult) {
+    for diagnostic in &result.diagnostics.global {
+        eprintln!("{}", render_diagnostic(diagnostic, None));
+    }
+    for (id, diagnostics) in result.diagnostics.modules.iter().enumerate() {
+        let source = result.modules.get(id).map(|module| module.source.as_str());
+        for diagnostic in diagnostics.ordered() {
+            eprintln!("{}", render_diagnostic(diagnostic, source));
+        }
+    }
+}
+
 fn analyze(
     args: &AnalysisArgs,
     module_only: bool,
     native: bool,
 ) -> Result<SemaResult, Box<dyn std::error::Error>> {
+    let options = analysis_options(args, module_only, native)?;
+    Ok(analyze_with_options(&mut FsLoader, &args.file, options))
+}
+
+fn analysis_options(
+    args: &AnalysisArgs,
+    module_only: bool,
+    native: bool,
+) -> Result<AnalysisOptions, Box<dyn std::error::Error>> {
+    let flags = &args.options;
     let mut options = AnalysisOptions {
-        std_root: args.std_root.clone(),
+        std_root: flags.std_root.clone(),
         module_only,
         ..Default::default()
     };
-    options.cfg.features.extend(args.features.iter().cloned());
+    options.cfg.features.extend(flags.features.iter().cloned());
     if native {
         options.target.pointer_width = novella_sema::PointerWidth::Bits64;
         for (flag, value, expected) in [
-            ("target-os", args.target_os.as_deref(), "linux"),
-            ("target-arch", args.target_arch.as_deref(), "x86_64"),
-            ("target-family", args.target_family.as_deref(), "unix"),
+            ("target-os", flags.target_os.as_deref(), "linux"),
+            ("target-arch", flags.target_arch.as_deref(), "x86_64"),
+            ("target-family", flags.target_family.as_deref(), "unix"),
         ] {
             if let Some(value) = value.filter(|value| *value != expected) {
                 return Err(format!(
@@ -112,16 +155,16 @@ fn analyze(
         options.cfg.target_arch = "x86_64".into();
         options.cfg.target_family = "unix".into();
     }
-    if let Some(value) = &args.target_os {
+    if let Some(value) = &flags.target_os {
         options.cfg.target_os.clone_from(value);
     }
-    if let Some(value) = &args.target_arch {
+    if let Some(value) = &flags.target_arch {
         options.cfg.target_arch.clone_from(value);
     }
-    if let Some(value) = &args.target_family {
+    if let Some(value) = &flags.target_family {
         options.cfg.target_family.clone_from(value);
     }
-    Ok(analyze_with_options(&mut FsLoader, &args.file, options))
+    Ok(options)
 }
 
 fn lower(result: &SemaResult) -> Option<HirProgram> {
@@ -179,7 +222,7 @@ fn write_output(path: &Path, bytes: &[u8], link: bool) -> Result<(), Box<dyn std
             let object = staging.path().join("program.o");
             fs::write(&object, bytes)?;
             let result = Command::new("clang")
-                .arg("--target=x86_64-unknown-linux-gnu")
+                .arg(format!("--target={}", novella_codegen::TARGET_TRIPLE))
                 .arg(&object)
                 .arg("-o")
                 .arg(&artifact)

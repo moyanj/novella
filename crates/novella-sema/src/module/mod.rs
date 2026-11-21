@@ -33,6 +33,12 @@ pub struct ParsedSource {
 
 /// 文件读取抽象；编辑器可复用解析快照并提供协作取消信号。
 pub trait FileLoader {
+    /// 模块去重前的路径观察点；默认复用 core 的规范化实现。
+    /// 缓存加载器应记录每次解析，包含最终因同一模块而被去重的别名路径。
+    fn module_key(&mut self, path: &Path) -> PathBuf {
+        module_key(path)
+    }
+
     /// 协作取消检查；已取消的产物不可用于编译或导航。
     fn is_cancelled(&self) -> bool {
         false

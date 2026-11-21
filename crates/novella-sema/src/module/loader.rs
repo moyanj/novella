@@ -6,7 +6,6 @@ use std::path::{Path, PathBuf};
 use novella_ast::program::{ImportItem, Program};
 use novella_core::Span;
 use novella_core::diagnostic::Diagnostic;
-use novella_core::path::module_key;
 use novella_parser::ParserInput;
 
 use super::resolve_path::find_crate_root;
@@ -28,7 +27,8 @@ pub(crate) fn load_modules(
     let mut global_diagnostics: Vec<Diagnostic> = Vec::new();
     // worklist 元素为 "(调用方路径, 规范化键)"：同一次加载中同一个文件可能先以
     // 相对、后以绝对路径出现，两次的键相同，但只有首次出现决定 `path` 回显值。
-    let mut worklist: Vec<(PathBuf, PathBuf)> = vec![(entry.to_path_buf(), module_key(entry))];
+    let mut worklist: Vec<(PathBuf, PathBuf)> =
+        vec![(entry.to_path_buf(), loader.module_key(entry))];
 
     while let Some((path, key)) = worklist.pop() {
         if loader.is_cancelled() {
@@ -157,7 +157,7 @@ pub(crate) fn load_modules(
                 options.std_root.as_deref(),
             ) {
                 Ok(ResolvedImport::File(target)) => {
-                    let target_key = module_key(&target);
+                    let target_key = loader.module_key(&target);
                     worklist.push((target, target_key));
                 }
                 Ok(ResolvedImport::ExceptionBuiltin) => {}

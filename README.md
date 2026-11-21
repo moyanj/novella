@@ -62,6 +62,40 @@ cargo run -p novella -- compile examples/native-main.nov --emit obj -o out.o
 `tokens`、`program`、`diagnostics` 三个字段；失败时退出非零并保留已有输出。
 `check` 不要求 `main`，通过检查不代表能生成 HIR 或原生代码。
 
+## 创建与构建项目
+
+```bash
+novella new hello
+cd hello
+novella build
+./target/hello
+```
+
+`new` 在不存在的目标目录中生成 `nov.toml`、`src/main.nov` 和 `.gitignore`，不覆盖现有目录。
+目标目录名用作包名：须以 ASCII 字母或数字开头，其余字符可为 ASCII 字母、数字、`-` 或 `_`。
+`build` 从当前目录向上查找最近的 `nov.toml`，读取其中的 `package.name`，编译该项目的
+`src/main.nov`，并输出 Linux x86-64 可执行文件到项目根的 `target/<包名>`。
+可用 `-o` 指定其他输出路径（相对路径以当前目录为基准），也可传入 `--std-root` 和 `--feature`。
+单文件编译继续使用 `novella compile <file>`，不需要项目清单。
+
+### 编译缓存
+
+`novella build` 默认把成功生成的 LLVM 目标文件缓存到项目根的
+`target/.novella-cache/v1/`。输入未变化时跳过词法、语法、语义分析、HIR 降级和 LLVM 发射，
+重放编译诊断，并重新链接到指定的输出路径。链接失败仍保留已有可执行文件。
+
+```bash
+novella build --verbose    # 查看命中、失效原因及校验、编译、写入、链接耗时
+novella build --no-cache   # 同时禁止读取和写入缓存，用于对照与排障
+```
+
+缓存按内容校验源码和传递依赖，同时追踪 crate 根清单的存在性与模块路径解析结果。
+编译器、实际加载的 LLVM 文件、目标配置、features 或项目清单变化都会使对应记录失效。
+不同输出路径可以复用同一目标文件；缓存损坏或不可用时会报告并继续正常编译。
+缓存仅在本地使用，不承诺跨机器或项目路径共享；校验工具链文件本身有开销，
+极小程序使用缓存不一定更快。`compile`、`check` 和中间产物导出不使用此缓存。
+实现边界见 [编译缓存](docs/compile-cache.md)。
+
 ## 编辑器支持
 
 [`editors/vscode/`](editors/vscode/) 提供 VS Code 扩展。语法高亮由**薄 LSP 服务器**

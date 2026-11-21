@@ -218,8 +218,9 @@ from "std:exception" import ValueError, ZeroDivisionError;
 - **`std`**：标准库符号登记为**外部符号**（类型未知、调用不查实参），
   待 std 存根落地后收紧；
 - **模块顶层语句**：照常做语义检查（执行顺序属 codegen 阶段决定）；
-- **crate 根标记 `nov.toml`**：本期仅用于定位 crate 根（`@:` 解析），
-  最小 schema：
+- **项目清单 `nov.toml`**：语义分析仅用它定位 crate 根（`@:` 解析）；
+  `novella build` 读取 `package.name` 来命名可执行文件。`version` 当前仅作元数据。
+  `novella new` 生成的清单示例：
 
   ```toml
   [package]

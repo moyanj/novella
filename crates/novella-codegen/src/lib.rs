@@ -1,7 +1,13 @@
 //! 从已定型的 HIR 发射 Linux x86-64 目标文件；链接由调用方负责。
 
 mod body;
+mod identity;
 mod operators;
+
+pub use identity::llvm_library_path;
+
+/// 当前原生目标；缓存身份与链接驱动必须和 LLVM 发射保持一致。
+pub const TARGET_TRIPLE: &str = "x86_64-unknown-linux-gnu";
 
 use std::collections::HashMap;
 
@@ -85,7 +91,7 @@ fn value_type<'ctx>(context: &'ctx Context, ty: &HirType) -> Result<BasicTypeEnu
 pub fn emit_object(program: &HirProgram) -> Result<Vec<u8>> {
     let entry = entry(program)?;
     Target::initialize_x86(&InitializationConfig::default());
-    let triple = TargetTriple::create("x86_64-unknown-linux-gnu");
+    let triple = TargetTriple::create(TARGET_TRIPLE);
     let target = Target::from_triple(&triple).map_err(|error| CodegenError(error.to_string()))?;
     let machine = target
         .create_target_machine(
