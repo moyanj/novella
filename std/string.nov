@@ -1,0 +1,137 @@
+// UTF-16 字符串。系统边界只使用分配、释放与不可恢复错误终止。
+extern func malloc(size: usize) -> void*;
+extern func free(data: void*);
+extern func abort();
+
+pub class String {
+    pri data: u16*;
+    pri len: usize;
+
+    pub func __init(self) {
+        this.data = null;
+        this.len = 0;
+    }
+
+    pub func __destroy(self) {
+        unsafe {
+            free(this.data);
+        }
+    }
+
+    // 长度和切片下标均以 UTF-16 码元计。
+    pub func length(self) -> usize {
+        return this.len;
+    }
+
+    pub func byteLength(self) -> usize {
+        return this.len * 2;
+    }
+
+    pub func codeUnitAt(self, index: usize) -> u16 {
+        if (index >= this.len) {
+            unsafe { abort(); }
+            return 0;
+        }
+        unsafe { return this.data[index]; }
+    }
+
+    pub func charCount(self) -> usize {
+        let count: usize = 0;
+        let index: usize = 0;
+        while (index < this.len) {
+            let unit = this.codeUnitAt(index);
+            index += 1;
+            if (unit >= 0xD800 and unit <= 0xDBFF and index < this.len) {
+                let next = this.codeUnitAt(index);
+                if (next >= 0xDC00 and next <= 0xDFFF) {
+                    index += 1;
+                }
+            }
+            count += 1;
+        }
+        return count;
+    }
+
+    pub func equals(self, other: String) -> boolean {
+        if (other == null) { return false; }
+        if (this.len != other.len) { return false; }
+        let index: usize = 0;
+        while (index < this.len) {
+            if (this.codeUnitAt(index) != other.codeUnitAt(index)) {
+                return false;
+            }
+            index += 1;
+        }
+        return true;
+    }
+
+    pub func compare(self, other: String) -> i32 {
+        let index: usize = 0;
+        while (index < this.len and index < other.len) {
+            let left = this.codeUnitAt(index);
+            let right = other.codeUnitAt(index);
+            if (left < right) { return -1; }
+            if (left > right) { return 1; }
+            index += 1;
+        }
+        if (this.len < other.len) { return -1; }
+        if (this.len > other.len) { return 1; }
+        return 0;
+    }
+
+    pub func concat(self, other: String) -> String {
+        if (other == null) {
+            unsafe { abort(); }
+            return null;
+        }
+        let limit: usize = ((-1 as isize) as usize) / 2;
+        if (this.len > limit or other.len > limit - this.len) {
+            unsafe { abort(); }
+            return null;
+        }
+        let result = new String();
+        result.len = this.len + other.len;
+        if (result.len == 0) { return result; }
+        unsafe {
+            result.data = malloc(result.len * 2) as u16*;
+            if (result.data == null) {
+                abort();
+                return null;
+            }
+            let index: usize = 0;
+            while (index < this.len) {
+                result.data[index] = this.data[index];
+                index += 1;
+            }
+            index = 0;
+            while (index < other.len) {
+                result.data[this.len + index] = other.data[index];
+                index += 1;
+            }
+        }
+        return result;
+    }
+
+    pub func slice(self, start: usize, length: usize) -> String {
+        if (start > this.len or length > this.len - start) {
+            unsafe { abort(); }
+            return null;
+        }
+        let result = new String();
+        result.len = length;
+        if (length == 0) { return result; }
+        unsafe {
+            result.data = malloc(length * 2) as u16*;
+            if (result.data == null) {
+                abort();
+                return null;
+            }
+            let index: usize = 0;
+            while (index < length) {
+                result.data[index] = this.data[start + index];
+                index += 1;
+            }
+        }
+        return result;
+    }
+}

@@ -3,7 +3,7 @@
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
-use novella_ast::program::{ImportItem, Program};
+use novella_ast::program::{ImportItem, Item, Program};
 use novella_core::Span;
 use novella_core::diagnostic::Diagnostic;
 use novella_parser::ParserInput;
@@ -20,15 +20,15 @@ pub(crate) fn load_modules(
     loader: &mut dyn FileLoader,
     entry: &Path,
     scopes: &mut crate::symbol::ScopeTree,
-    options: &crate::AnalysisOptions,
+    options: &mut crate::AnalysisOptions,
 ) -> (Vec<Module>, Vec<Diagnostic>, HashMap<PathBuf, ModuleId>) {
     let mut modules: Vec<Module> = Vec::new();
     let mut by_path: HashMap<PathBuf, ModuleId> = HashMap::new();
     let mut global_diagnostics: Vec<Diagnostic> = Vec::new();
     // worklist 元素为 "(调用方路径, 规范化键)"：同一次加载中同一个文件可能先以
     // 相对、后以绝对路径出现，两次的键相同，但只有首次出现决定 `path` 回显值。
-    let mut worklist: Vec<(PathBuf, PathBuf)> =
-        vec![(entry.to_path_buf(), loader.module_key(entry))];
+    let mut worklist = vec![(entry.to_path_buf(), loader.module_key(entry))];
+    let mut no_std = false;
 
     while let Some((path, key)) = worklist.pop() {
         if loader.is_cancelled() {
@@ -112,6 +112,40 @@ pub(crate) fn load_modules(
 
         // cfg 在声明收集和导入扫描之前生效，关闭的声明不参与名称解析。
         let cfg_errors = crate::cfg::configure(&mut program, &options.cfg);
+        // 在入口第一次解析后决定默认环境，避免 @no_std 仍读取标准库文件。
+        let mut directive_errors = Vec::new();
+        let mut seen_no_std = false;
+        program.items.retain(|item| {
+            let Item::Decorator(directive) = item else {
+                return true;
+            };
+            if directive.name != "no_std" {
+                return true;
+            }
+            let error = if id != 0 {
+                Some("@no_std 只能在入口模块中作为独立指令使用")
+            } else if !directive.tokens.is_empty() {
+                Some("@no_std 不接受参数，请使用 @no_std;")
+            } else if seen_no_std {
+                Some("入口模块不能重复声明 @no_std")
+            } else {
+                seen_no_std = true;
+                no_std = true;
+                None
+            };
+            if let Some(message) = error {
+                directive_errors.push((directive.span, message));
+            }
+            false
+        });
+        if id == 0 {
+            if no_std {
+                options.std_root = None;
+            } else if let Some(std_root) = &options.std_root {
+                let site = std_root.join("site.nov");
+                worklist.push((site.clone(), loader.module_key(&site)));
+            }
+        }
         let mut module = Module {
             source,
             tokens,
@@ -129,6 +163,9 @@ pub(crate) fn load_modules(
         for (span, message) in cfg_errors {
             module.error(span, message);
         }
+        for (span, message) in directive_errors {
+            module.error(span, message);
+        }
         // ---- 扫描导入语句，扩展 worklist ----
         let imports: Vec<ImportItem> = module
             .program
@@ -140,6 +177,10 @@ pub(crate) fn load_modules(
             })
             .collect();
         for import in &imports {
+            if no_std && import.prefix.as_deref() == Some("std") {
+                module.error(import.span, "入口已声明 @no_std，不能导入标准库模块");
+                continue;
+            }
             // crate 根懒查找（仅 `@:` 需要）；以规范化键为基准，避免相对路径
             // 起点不同导致找不到 nov.toml
             if import.prefix.as_deref() == Some("@") && module.crate_root.is_none() {

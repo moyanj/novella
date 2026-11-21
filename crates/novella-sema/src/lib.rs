@@ -33,6 +33,7 @@ mod cfg;
 mod declarations;
 pub use declarations::{DeclarationId, DeclarationIndex};
 mod check;
+mod dependencies;
 mod module;
 mod resolve;
 mod state;

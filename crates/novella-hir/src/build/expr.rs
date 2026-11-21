@@ -187,6 +187,7 @@ impl<'a> BodyBuilder<'a> {
                 index,
                 span,
             } => {
+                self.check_index_target(target, *span)?;
                 let value = self.build_expression(target, block)?;
                 // 元素类型 = 表达式本身的类型；目标类型用于 codegen 选 GEP 的步长
                 let element_ty = self.expr_type_pref(*span, None)?;

@@ -1,5 +1,9 @@
 # Novella 标准库设计（std）
 
+> 2026-11-21 实现修订：当前范围仅为 UTF-16 的 `String` class 与默认导入的 `site`，
+> 支持入口 `@no_std;`。当前源码与限制见 [std/README.md](../std/README.md)。
+> 下文 UTF-8 struct、字符串 runtime 函数和其他模块属于旧草案，不作为当前实现契约。
+
 > 版本：**0.2**（2026-11-15）· 状态：**待评审，未实现**
 > v0.2 变更：标准库系统层改为**直接链接预编译目标文件**（§2.1）；`string` **不再是语言内建类型**，
 > 由 `std:String` 提供（§5.0）；异常的占位实现不进入标准库（§7）。
@@ -49,6 +53,9 @@ std/                                        ← 标准库根（同时是 crate �
 ## 2. 来源、加载与链接
 
 ### 2.1 模块加载
+
+- 入口 `@no_std;` 优先于所有标准库目录配置：整个编译不加载标准库，也不默认导入
+  `std:site`；显式 `std:` 导入报错。该指令不禁用平台 C 启动环境或用户自己的外部声明。
 
 - `std:<path>` → `$STD_ROOT/<path>.nov`，与用户模块同等对待：完整词法 / 语法 / 语义 /
   可见性检查，参与导入闭包、循环导入去重、诊断定位。
@@ -276,7 +283,8 @@ pub class List<T> {
 ```
 
 - 底层存储是 `u8*` + 元素大小（在 `List<T>` 内部 `unsafe`），不暴露给调用方。
-- `Map<K, V>`、`Iterator<T>` 见 §5.12 G5/G6：trait 约束与泛型推导未定之前**不落地**。
+- 容器可按 [语言设计的迭代协议](design.md#for--in-迭代协议)提供 `iter()`，由迭代器实现 `hasNext() -> boolean` 和 `next() -> T`。前端已检查该协议，标准库 `Iterator<T>` 声明和非数组循环降级仍在后续阶段。
+- `Map<K, V>` 依赖哈希与相等协议（Q4），泛型容器的运行依赖单态化（G6）。
 - `List` 依赖 HIR 的泛型方法单态化，S4 前置条件见 §9。
 
 ### 5.6 `std:sync`（不实现）
@@ -291,8 +299,8 @@ pub class List<T> {
 | G2 | 顶层 `pub const` 解析为 `Item::Statement`；sema 已能检查，但 **HIR 对顶层语句一律拒绝** | `PI` / `E` / `CONVERT_OK` 全部不可用 |
 | G3 | 无函数重载 | `toString` 多版本、`List` 构造（已改静态工厂） |
 | G4 | `void` 返回类型写法未实测 | 所有 void 函数 |
-| G5 | 无 trait 约束 | `Map<K: Hashable>` |
-| G6 | 泛型方法推导与单态化未定 | `List<T>` / `Iterator<T>` |
+| G5 | Sema 已支持 trait 约束，哈希与相等协议待定 | `Map<K: Hashable>` |
+| G6 | Sema 已支持调用实参推导，HIR 单态化待实现 | `List<T>` / `Iterator<T>` |
 | G7 | `String` 无特殊方法；`s.length()` 只能写成 `length(s)` | `std:string` 全部为自由函数 |
 | G8 | **`string` 关键字去留**：内建 `Ty::String` 删除后，`string` 是保留关键字还是可作普通标识符 | 迁移期所有 `.nov` 源码、`__str` 签名、`Ty::String` 的 15 处引用 |
 
@@ -351,7 +359,7 @@ S0 是硬前置：**先有"直接链接"这条路，标准库才谈得上实现*
 | # | 问题 | 影响 | 当前默认（可执行） |
 | --- | --- | --- | --- |
 | Q1 | `String` 的长度/下标按码点还是字节？ | `std:string` 全下标语义 | 字节 + 提供 `charCount` |
-| Q2 | 泛型 `T?` 可空类型是否引入？ | `Iterator.next`、`Map.get` | 不引入，S4 后再说 |
+| Q2 | 泛型 `T?` 可空类型是否引入？ | `Map.get` | 暂不引入。迭代结束由 `hasNext()` 表达 |
 | Q3 | 越界/缺失/解析失败的具体哨兵取值 | `List`、`Map`、`convert` | `<=0` / `""` / `ConvertResult` |
 | Q4 | `Map` 键哈希/相等协议如何进 `__` 封闭清单 | `Map<K, V>` | 不实现 Map |
 | Q5 | 系统层 I/O 契约（阻塞、错误映射） | `std:io` 文件函数 | 只做 stdout/stderr |

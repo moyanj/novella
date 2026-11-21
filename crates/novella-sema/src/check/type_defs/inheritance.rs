@@ -164,7 +164,7 @@ fn check_trait_impl(sema: &mut Sema, class: &(ModuleId, String), trait_ty: Ty) {
     }
 }
 
-/// 沿继承链找 `name` 的最近**非抽象**实现。
+/// 查找继承链中生效的方法，抽象声明会遮蔽父类的实现。
 fn find_implementation(
     sema: &Sema,
     class: &(ModuleId, String),
@@ -180,10 +180,10 @@ fn find_implementation(
         let Some(TypeDef::Class(def)) = sema.type_defs.get(&k) else {
             return None;
         };
-        if let Some(method) = def.methods.get(crate::check::canonical_method_name(name))
-            && !method.is_abstract
-            && method.is_static == want_static
-        {
+        if let Some(method) = def.methods.get(crate::check::canonical_method_name(name)) {
+            if method.is_abstract || method.is_static != want_static {
+                return None;
+            }
             let mut resolved = method.clone();
             let receiver = Ty::Class(class.0, class.1.clone());
             let subst = crate::ty::member_substitution(sema, &receiver, &k);
@@ -411,17 +411,18 @@ fn signature_span(method: &MethodSig) -> Span {
 pub(crate) fn is_abstract_class(sema: &Sema, key: &(ModuleId, String)) -> bool {
     let mut current = key.clone();
     let mut visited = HashSet::new();
+    let mut methods = HashSet::new();
     loop {
         if !visited.insert(current.clone()) {
             return false;
         }
         match sema.type_defs.get(&current) {
             Some(TypeDef::Class(def)) => {
-                // 未被子类实现的抽象方法：沿继承链看是否所有抽象方法都被覆写
-                for method in def.methods.values().filter(|m| m.is_abstract) {
-                    if !is_implemented(sema, key, &method.name) {
-                        return true;
-                    }
+                if def.methods.iter().any(|(name, method)| {
+                    // 每个名称以继承链上最近的声明为准，表键已经过特殊方法名规范化。
+                    methods.insert(name) && method.is_abstract
+                }) {
+                    return true;
                 }
                 match &def.parent_resolved {
                     Some(parent) => current = parent.clone(),
@@ -431,27 +432,6 @@ pub(crate) fn is_abstract_class(sema: &Sema, key: &(ModuleId, String)) -> bool {
             _ => return false,
         }
     }
-}
-
-/// 自 `key` 起向上查找 `name` 的最近实现（有函数体、非抽象）。
-fn is_implemented(sema: &Sema, key: &(ModuleId, String), name: &str) -> bool {
-    let mut current = Some(key.clone());
-    let mut visited = HashSet::new();
-    while let Some(k) = current {
-        if !visited.insert(k.clone()) {
-            return false;
-        }
-        let Some(TypeDef::Class(def)) = sema.type_defs.get(&k) else {
-            return false;
-        };
-        if let Some(method) = def.methods.get(name)
-            && !method.is_abstract
-        {
-            return true;
-        }
-        current = def.parent_resolved.clone();
-    }
-    false
 }
 
 /// 类型键的所属模块。

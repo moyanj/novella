@@ -8,6 +8,11 @@
 - `novella-hir` 只依赖 core、ast、sema；开发依赖 serde_json 仅用于冒烟输出，不引用 LLVM / inkwell。
 - `HirBlock` → `HirStmt` → `HirInstr` 表示控制流与顺序指令，不保留待求值表达式树。
 - `build_hir(&SemaResult)` 遇到词法、语法、语义或加载错误即返回 `BuildError`，不跳过坏模块、不返回残缺程序。
+- `AnalyzedModule.required_for_codegen` 标记入口经显式导入、名字及类型依赖可达的模块。
+  默认 `std:site` 环境中未使用的模块仍执行完整 sema 检查，但不降级、不链接；
+  显式导入即保留其模块，不因符号未使用而跳过。入口 `@no_std;` 则直接关闭标准库加载。
+- 字符串名义类型为标准库的 `Class(module, "String")`；`StringConst(Vec<u16>)`
+  保存解码后的 UTF-16 码元。class 构造、字符串内容运算与原生发射仍待接通。
 - 类型读取 sema 的 `expression_types`、`annotation_types`、`declaration_types`，键均为 `(ModuleId, Span)`。分别提供表达式、已解析注解、变量最终绑定类型与顶层函数签名。HIR 不重新解析类型名或用初始化表达式冒充声明类型。
 - Unknown / Error、联合、泛型以及无上下文的未定型类型明确拒绝；字面量可由声明、返回值、实参等上下文定型，数组与元组递归传递期望类型。
 - 用户确认：`p ?? backup` 非空时返回指针 `p`，为空才执行并返回 `backup`；不隐式解引用，读取内容另写 `*`。sema 已同步保留指针结果并检查备用值类型。
@@ -46,7 +51,7 @@
 | 闭包捕获 | 环境布局与生命周期 |
 | 泛型定义/调用、联合及不透明类型 | 无单态化或具体可生成类型；不能因投影抹除信息而接受泛型类型定义 |
 | 动态对象字面量 | 尚无定型对象布局 |
-| 非数组 for-in | 尚无迭代器协议 |
+| 非数组 for-in | Sema 已检查 `iter()`、`hasNext()` 和 `next()`，HIR 尚未降级 |
 | 静态字段、weak 字段 | 静态存储与弱引用生命周期协议 |
 | 有成员的 trait | sema 已携带方法签名；HIR 尚未实现 trait 派发，明确拒绝 |
 | 未证明穷尽的无 default 值 match、值/void 混合 | sema 拒绝；合法布尔穷尽 match 可由 exhaustive_matches 供 HIR 降级 |

@@ -109,6 +109,10 @@ impl ScopeTree {
         self.scopes.len() - 1
     }
 
+    pub(crate) fn set_parent(&mut self, scope: ScopeId, parent: Option<ScopeId>) {
+        self.scopes[scope].parent = parent;
+    }
+
     /// 在指定作用域定义符号；重名时返回已存在的符号（供诊断引用）。
     pub(crate) fn define(&mut self, scope: ScopeId, symbol: Symbol) -> Result<(), Box<Symbol>> {
         let table = &mut self.scopes[scope].symbols;

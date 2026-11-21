@@ -103,6 +103,8 @@ pub struct TypeHierarchy {
 pub struct AnalyzedModule {
     /// 模块标识（= 在 [`SemaResult::modules`] 中的下标）
     pub id: ModuleId,
+    /// 入口经显式导入、名字引用及类型依赖可达；默认环境中未使用的模块仅参与检查。
+    pub required_for_codegen: bool,
     /// 调用方传入的原始路径（入口即 `analyze` 的 `entry`）；
     /// 诊断 `location.file` 用同一值，编辑器可直接映射
     pub path: PathBuf,
@@ -163,7 +165,6 @@ pub enum TypeView {
     Object(std::collections::BTreeMap<String, TypeView>),
     Void,
     Boolean,
-    String,
     /// 已定型整数：类型名（`int` 已归一化为 `i32`）
     Int(&'static str),
     /// 已定型浮点：类型名（`float` 已归一化为 `f32`）

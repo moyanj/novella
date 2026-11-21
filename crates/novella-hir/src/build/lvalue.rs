@@ -3,6 +3,20 @@
 use super::*;
 
 impl BodyBuilder<'_> {
+    pub(super) fn check_index_target(
+        &self,
+        target: &Expression,
+        span: Span,
+    ) -> Result<(), BuildError> {
+        if matches!(self.expr_type(target.span())?, HirType::Tuple(_)) {
+            return Err(BuildError::at(BuildErrorKind::Unimplemented {
+                node: "tuple indexing",
+            })
+            .with_site(self.module, span));
+        }
+        Ok(())
+    }
+
     /// 把局部变成存储地址，供字段链、取地址与赋值共用。
     fn local_address(&mut self, local: LocalId, block: &mut HirBlock) -> HirOperand {
         let ty = self.local_type(local);
@@ -104,6 +118,7 @@ impl BodyBuilder<'_> {
                 index,
                 span,
             } => {
+                self.check_index_target(target, *span)?;
                 let element_ty = self.expr_type(*span)?;
                 let value = self.build_expression(target, block)?;
                 let index =

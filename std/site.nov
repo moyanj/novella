@@ -1,0 +1,3 @@
+// 默认环境：这里的绑定可直接由用户模块使用，用户局部声明优先。
+from "string" import String;
+type string = String;

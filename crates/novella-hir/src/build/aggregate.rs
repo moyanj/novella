@@ -283,7 +283,7 @@ impl<'a> BodyBuilder<'a> {
                 // 解码表在 `novella_core::string`（sema 校验非法转义时用同一份实现），
                 // 此处只负责把解码失败转成降级错误
                 novella_core::string::decode_string_literal(raw)
-                    .map(HirOperand::StringConst)
+                    .map(|text| HirOperand::StringConst(text.encode_utf16().collect()))
                     .map_err(|_error| {
                         // 语义阶段已校验过转义；走到这里说明 sema 与 core 解码表不一致
                         BuildError::at(BuildErrorKind::Unimplemented {

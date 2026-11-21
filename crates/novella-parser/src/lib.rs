@@ -72,6 +72,8 @@ pub struct Parser {
     pub(crate) inside_match: u32,
     /// 正在解析 `match` 的主体表达式（此时标识符后的 `{` 属于 match 块，不是 StructInit）。
     pub(crate) in_match_subject: bool,
+    /// 消除 case 模式歧义时，保留此字节位置的分支箭头或左花括号。
+    pub(crate) match_pattern_boundary: Option<usize>,
 }
 
 impl Parser {
@@ -88,6 +90,7 @@ impl Parser {
             allow_arrow_after_type: false,
             inside_match: 0,
             in_match_subject: false,
+            match_pattern_boundary: None,
         }
     }
 

@@ -182,8 +182,6 @@ pub(crate) enum Ty {
     /// `null` 字面量的类型（可隐式赋给任意指针 / class 引用）
     Null,
     Boolean,
-    /// `string`（按名归类的内置类型；design.md 已将其移出 `PredefinedType`）
-    String,
     Int(IntKind),
     Float(FloatKind),
     /// 未定型整数字面量（如 `42`），可赋给任意整数类型。
@@ -233,7 +231,6 @@ impl Ty {
             Ty::Void => TypeView::Void,
             Ty::Null => TypeView::Null,
             Ty::Boolean => TypeView::Boolean,
-            Ty::String => TypeView::String,
             Ty::Int(kind) => TypeView::Int(kind.name()),
             Ty::Float(kind) => TypeView::Float(kind.name()),
             Ty::IntLiteral(..) => TypeView::IntLiteral,
@@ -404,7 +401,6 @@ impl fmt::Display for Ty {
             Ty::Void => write!(f, "void"),
             Ty::Null => write!(f, "null"),
             Ty::Boolean => write!(f, "boolean"),
-            Ty::String => write!(f, "string"),
             Ty::Int(k) => write!(f, "{}", k.name()),
             Ty::Float(k) => write!(f, "{}", k.name()),
             Ty::IntLiteral(negative, value) => {

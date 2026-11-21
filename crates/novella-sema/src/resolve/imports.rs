@@ -1,5 +1,6 @@
 //! 具名和命名空间导入绑定。
 use super::*;
+use crate::symbol::ScopeKind;
 // ---------- Phase 2a：导入绑定 ----------
 
 /// 绑定一个模块的全部导入符号到其全局作用域。
@@ -126,6 +127,44 @@ pub(crate) fn bind_imports(sema: &mut Sema, module: ModuleId) {
                     define_import(sema, module, scope, symbol);
                 }
             }
+        }
+    }
+}
+
+/// 把 `std:site` 的绑定作为父作用域注入其他模块；模块自身保持独立，避免自引用。
+pub(crate) fn bind_site_imports(sema: &mut Sema) {
+    let Some(std_root) = sema.std_root.as_deref() else {
+        return;
+    };
+    let site_path = std_root.join("site.nov");
+    let site_key = novella_core::path::module_key(&site_path);
+    let Some(&site_module) = sema.module_by_path.get(&site_key) else {
+        return;
+    };
+    if sema.modules[site_module].load_failed || sema.modules[site_module].syntax_failed {
+        return;
+    }
+
+    let site_scope = sema.modules[site_module].global_scope;
+    let symbols: Vec<Symbol> = sema.scopes.scopes[site_scope]
+        .symbols
+        .values()
+        .cloned()
+        .collect();
+    let prelude = sema.scopes.new_scope(None, ScopeKind::Module);
+    for symbol in symbols {
+        if sema.scopes.lookup_local(prelude, &symbol.name).is_none() {
+            let _ = sema.scopes.define(prelude, symbol);
+        }
+    }
+    for module in 0..sema.modules.len() {
+        if module != site_module
+            && !sema.modules[module]
+                .key
+                .starts_with(novella_core::path::module_key(std_root))
+        {
+            sema.scopes
+                .set_parent(sema.modules[module].global_scope, Some(prelude));
         }
     }
 }

@@ -105,6 +105,7 @@
 | D14R | 字段、顶层变量按依赖定型后检查函数体 | plan S05 | `check/fields.rs` / `check/globals.rs` | 已实现 | method-first/field-first、type-first/type-last 均拒绝 i32 返回给 string；前向调用通过 | S05 |
 | D15R | 无注解字段与顶层变量的推导环诊断 | plan S05 | `resolve_field` / `globals::resolve` | 已实现 | 静态字段环、跨类型实例字段环、顶层变量环拒绝；显式注解可打断类型依赖 | S05 |
 | D16R | 条件编译指令及未知指令拒绝 | 用户补充 TD04 | `cfg.rs` / `check/decl.rs` | 已实现 | @cfg 在声明收集前筛选；其他无定义指令报 error；支持函数/类型/成员及装饰块 | 设计纠偏 |
+| D16S | 禁用标准库指令 | 用户补充（2026-11-21） | `module/loader.rs` / `check/decl.rs` | 已实现 | 入口独立 @no_std; 关闭整个导入闭包的标准库加载和 site 注入；拒绝 std: 导入、重复/带参/依赖模块/修饰声明或块的用法；字符串字面量缺少 std:String 报错 | 无参数指令 |
 | D17R | 多继承 | design §4.6（仅单父类） | `build_type_defs` 报错 | 已实现 | 反：两个父类报错 | — |
 | D18R | 继承环检测 | plan E12 | `resolve_class_parents` | 已实现 | 反：`A(B)`/`B(A)` 报错 | — |
 
@@ -133,7 +134,7 @@
 | E19R | 空数组需上下文给出元素类型 | design §5.2.1 | `expr.rs::check_expr_with_hint` + `check_array_literal_with_hint` | **已实现** | 正：声明 / 括号 / 元组 / 嵌套数组 / 实参 / return / struct 字段 / 赋值位置的 `[]` 均由上下文定型；反：无上下文 `[]` 报错 | **S03 完成** |
 | E20R | 调用：实参个数、类型、默认值、extern 需 unsafe | design §4.8；§6.2 | `call.rs::check_call` + `instance_param_tys` | **已实现** | 反：少参/多参/类型不符；正：`takes([])` 由形参定型 | **S03 完成** |
 | E21R | `new`：`__init` 实参检查；无 `__init` 不得传参；抽象类实例化 | design §4.6.1；plan S10b | `call.rs::check_new` + `type_defs::is_abstract_class` | **已实现** | 反：`new Shape()` 报「是抽象类…不能 new」；正：实现完抽象方法的子类可 new | **S04a 完成（D02）** |
-| E22R | 索引：数组元素 / 指针下标（unsafe） | design §6.5 S3 | `call.rs::check_index_access` | 已实现 | 反：非数组非指针索引报错 | — |
+| E22R | 索引：数组 / 指针（unsafe）/ 元组字面量下标 | design §4.10、§6.5 | `call.rs::check_index_access` | 已实现 | 正：`pair[(+0x1)] = []` 按对应槽位定型；反：负数、动态下标和越界下标报错 | — |
 | E23R | 成员访问：字段 / 方法 / 自动解引用 / struct `this` 免 unsafe | design §6.5 S6；§8.4 | `member.rs::check_member_access` + `MemberHit::check_visible` | **已实现** | 反：跨模块访问非 `pub` 字段报错；正：同模块 / 类型内部 / `pub` 可访问 | **S04a 完成（D02）** |
 | E24R | 静态成员 `Type.member` | design §4.6 | `member.rs::check_static_access` | **已实现** | 反：`a.make()` 报「静态成员…请改用类型名」；`A.f()` 正常 | **S04a 完成（D02）** |
 | E25R | match 类型合一、重复/覆盖模式与穷尽性 | 已确认 D06 | `typecheck/matching.rs` / `flow.rs` | 已实现 | 布尔穷尽无 default 通过；缺分支与重复负常量拒绝；void 分支不强制穷尽 | S12a |
@@ -156,7 +157,7 @@
 | S09R | 未实现 yield 明确拒绝 | 已确认策略 | `body/mod.rs` Yield | 已实现 | yield 1 报 error；值继续检查；生成器实现不在本轮范围 | S13 |
 | S10R | if / elif / else 条件 boolean | design §4.9 | `expect_boolean` | 已实现 | 反：`if (1)` 报错 | — |
 | S11R | while 条件 boolean；循环体 | design §4.9 | `body.rs` While | 已实现 | — | — |
-| S12R | for 三段 / for-in 数组元素绑定 | design §4.9 | `body.rs` For | 已实现 | 反：遍历非数组报错 | — |
+| S12R | for 三段 / for-in 数组及协议元素绑定 | design §4.9 | `body/mod.rs` / `body/iteration.rs` | 已实现 | 正：数组、泛型迭代器、继承方法、约束与元组解构。反：方法缺失、不可见、签名错误或元素类型不匹配 | — |
 | S13R | try：必须有 catch 或 finally | design §9.1.2 | parser 文法 | 已实现（文法层） | 反：`try {}` 语法错误 | S12c |
 | S14R | catch Exception 类型与顺序覆盖 | 已确认 D08 | `body/try_flow.rs` | 已实现 | Exception 在前、子类在后的 catch 拒绝；未标注 catch 绑定 Exception | S12c |
 | S15R | finally 覆盖出口并传播确定赋值 | plan S06 / 已确认 D03 | `flow.rs` / `body/try_flow.rs` | 已实现 | finally return 覆盖原 return；finally 中赋值后 break 出口读取通过；调用前未赋值的异常路径拒绝 | S06/S12b |
@@ -662,7 +663,7 @@ func main() {
 
 预期无错误；删除 finally 的赋值后读取 x 被拒绝。
 条件中的赋值在未命中分支时仍保留；恒真前项后的 elif 条件不可达，
-for-in 的迭代表达式必求值一次，其赋值可在循环后读取。
+for-in 的迭代表达式必求值一次，其赋值可在循环后读取。协议隐式调用保留异常入口状态。
 try/catch/finally 对正常、return、throw、break、continue 分别汇合，调用/new/await
 记录可能抛出的入口状态，finally 初始化作用于实际跳转；不可达路径不产生未初始化读取错误。
 
@@ -722,3 +723,12 @@ JSON 原始文本精确保留 18446744073709551615，HIR 整数载荷改为 i128
 class 动态派发与闭包捕获不在交付范围。HIR 对暂不支持的 Future、Applied、Object、字节串、
 f-string、异常/异步等明确返回带源码位置的 BuildError；不会以丢弃实参、伪造具体类型或部分 HIR
 输出放行。没有提交、推送或更改系统/CI 配置；保留任务启动前的已有修改。
+
+## 2026-11-21 语法入口复核
+
+- 元组索引已能通过 `novella check`，赋值右侧沿用槽位的期望类型。HIR 会在索引处报告暂不支持降级。
+- `case (value = 1) => value` 保留分支箭头，`match` 至少需要一个 `case`。
+  命中分支不能读取仅由后续模式赋值的局部。
+  全部布尔分支均提前返回时，包含该 `match` 的变量初始化不会产生错误的落尾诊断。
+- 抽象方法使用继承链中最近的声明。`__str__` 和 `__str` 的覆写使用同一个规范名称。
+- `yield` 仍依 design §9.4 保留语法并报告未支持。编译器指令以 `@cfg` 为已定义范围。

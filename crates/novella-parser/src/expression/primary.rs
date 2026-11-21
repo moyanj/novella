@@ -126,6 +126,7 @@ impl Parser {
                 };
                 if let Some(type_args) = type_args
                     && self.check(TokenKind::OpenBrace)
+                    && !self.at_match_pattern_boundary()
                     && !self.in_match_subject
                     && !(self.with_stack > 0 && self.with_shield == 0)
                 {
@@ -139,7 +140,7 @@ impl Parser {
                 }
                 self.rollback(checkpoint);
                 // `x => ...`：标识符后紧接 `=>` 是单参数 lambda
-                if self.check(TokenKind::Arrow) {
+                if self.check(TokenKind::Arrow) && !self.at_match_pattern_boundary() {
                     return self.parse_single_param_lambda(&token, token.span.start, false);
                 }
                 // `x: T => ...`：单参数 lambda 带返回注解（文法 `typeAnnotation?`，
@@ -148,7 +149,10 @@ impl Parser {
                 if self.check(TokenKind::Colon) {
                     let checkpoint = self.checkpoint();
                     let (_, return_type) = self.parse_return_type();
-                    if return_type.is_some() && self.check(TokenKind::Arrow) {
+                    if return_type.is_some()
+                        && self.check(TokenKind::Arrow)
+                        && !self.at_match_pattern_boundary()
+                    {
                         return self.finish_single_param_lambda(
                             &token,
                             token.span.start,
@@ -196,7 +200,7 @@ impl Parser {
         if has_annotation && return_type.is_none() {
             return None;
         }
-        if !self.check(TokenKind::Arrow) {
+        if !self.check(TokenKind::Arrow) || self.at_match_pattern_boundary() {
             return None;
         }
         self.advance();

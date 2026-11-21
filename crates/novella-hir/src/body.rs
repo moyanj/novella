@@ -45,8 +45,8 @@ pub enum HirOperand {
     UntypedFloat { value: f64, span: Span },
     /// 布尔常量
     BoolConst(bool),
-    /// 字符串常量（内容已解析，不含源码引号 / 前缀）
-    StringConst(String),
+    /// 字符串常量（已解码为 UTF-16 码元，不含源码引号 / 前缀）
+    StringConst(Vec<u16>),
     /// 函数引用（取函数地址 / 构造函数指针）
     Function(HirFunctionId),
     /// 空引用（`null` 字面量；已在构造期确定目标类型来自上下文，此处只表示空值）

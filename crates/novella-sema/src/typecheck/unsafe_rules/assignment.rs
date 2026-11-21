@@ -104,8 +104,11 @@ fn lvalue_hint(sema: &Sema, ctx: &BodyCtx, expr: &Expression) -> Option<Ty> {
             };
             Some(crate::ty::substitute_type_params(&ty, &subst))
         }
-        Expression::IndexAccess { target, .. } => match lvalue_hint(sema, ctx, target)? {
+        Expression::IndexAccess { target, index, .. } => match lvalue_hint(sema, ctx, target)? {
             Ty::Array(inner) | Ty::Pointer(inner) => Some(*inner),
+            Ty::Tuple(elements) => {
+                crate::typecheck::call::tuple_element_hint(&elements, index).cloned()
+            }
             _ => None,
         },
         Expression::Unary {
@@ -149,8 +152,8 @@ pub(crate) fn check_arithmetic_compound(
     }
     match op {
         AssignOp::PlusAssign => {
-            if matches!(lhs, Ty::String) && matches!(rhs, Ty::String) {
-                return Ty::String;
+            if sema.is_string_type(lhs) && sema.is_string_type(rhs) {
+                return lhs.clone();
             }
             check_arithmetic(sema, ctx, BinaryOp::Plus, lhs, rhs, span)
         }

@@ -354,7 +354,7 @@ fn build_method_sig(
     }
     let special_ret = match crate::check::canonical_method_name(&method.name) {
         "__init" | "__destroy" | "__enter" | "__exit" => Some(Ty::Void),
-        "__str" => Some(Ty::String),
+        "__str" => Some(sema.string_type().unwrap_or(Ty::Error)),
         _ => None,
     };
     if let Some(expected) = special_ret {

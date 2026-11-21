@@ -23,8 +23,6 @@ pub enum HirType {
     Void,
     /// `bool`
     Boolean,
-    /// `string`（内置类型；具体布局（指针+长度 / 对象引用）由 codegen 决定）
-    String,
     /// 已定型整数
     Int(IntTy),
     /// 已定型浮点
@@ -220,7 +218,6 @@ impl HirType {
             })),
             TypeView::Void => Ok(HirType::Void),
             TypeView::Boolean => Ok(HirType::Boolean),
-            TypeView::String => Ok(HirType::String),
             TypeView::Int(name) => IntTy::from_name(name)
                 .map(HirType::Int)
                 .ok_or_else(|| BuildError::at(BuildErrorKind::UnknownTypeName { name })),

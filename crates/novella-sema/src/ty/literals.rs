@@ -40,7 +40,6 @@ pub(crate) fn classify_number_literal(raw: &str) -> Option<Ty> {
 
 /// 预定义类型名归类（design.md §5.1）。
 ///
-/// `string` 已由设计移出 `PredefinedType`，与 `PredefinedType` 枚举一并在此按名处理；
 /// 返回 None 表示非预定义名，调用方继续走符号查找。
 pub(crate) fn predefined_from_name(name: &str) -> Option<Ty> {
     if let Some(kind) = IntKind::from_name(name) {
@@ -50,7 +49,6 @@ pub(crate) fn predefined_from_name(name: &str) -> Option<Ty> {
         return Some(Ty::Float(kind));
     }
     match name {
-        "string" => Some(Ty::String),
         "boolean" => Some(Ty::Boolean),
         "void" => Some(Ty::Void),
         "null" => Some(Ty::Null),

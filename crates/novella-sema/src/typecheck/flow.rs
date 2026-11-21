@@ -1,7 +1,7 @@
 //! 返回路径检查：退出集合的顺序组合与分支合并，不把 break 当作返回。
 
-use novella_ast::expr::{Expression, Literal};
-use novella_ast::stmt::{Block, ForKind, IfBranch, Statement};
+use novella_ast::expr::{AssignOp, BinaryOp, Expression, Literal, MatchCaseBody, MatchPattern};
+use novella_ast::stmt::{Block, ForInit, ForKind, IfBranch, Statement, VariableStmt};
 use novella_core::Span;
 
 use crate::{Sema, module::ModuleId, ty::Ty};
@@ -98,16 +98,22 @@ fn constant_bool_inner(expr: &Expression) -> Option<bool> {
 fn loop_exits(
     body: &Statement,
     condition: Option<bool>,
+    update: Option<&Expression>,
     exhaustive: &dyn Fn(Span) -> bool,
 ) -> Exits {
     if condition == Some(false) {
         return Exits::normal();
     }
     let inner = statement(body, exhaustive);
+    let update = if inner.normal || inner.continues {
+        expressions(update, exhaustive)
+    } else {
+        Exits::default()
+    };
     Exits {
-        normal: condition != Some(true) || inner.breaks,
-        returns: inner.returns,
-        throws: inner.throws,
+        normal: condition != Some(true) || inner.breaks || update.breaks,
+        returns: inner.returns || update.returns,
+        throws: inner.throws || update.throws,
         ..Exits::default()
     }
 }
@@ -132,16 +138,30 @@ pub(super) fn block_falls_through(sema: &Sema, module: ModuleId, body: &Block) -
     .normal
 }
 
+pub(super) fn expr_falls_through(sema: &Sema, module: ModuleId, expr: &Expression) -> bool {
+    expression(expr, &|span| {
+        sema.exhaustive_matches.contains(&(module, span))
+    })
+    .normal
+}
+
+fn declarations(decls: &[VariableStmt], exhaustive: &dyn Fn(Span) -> bool) -> Exits {
+    expressions(
+        decls.iter().filter_map(|decl| decl.value.as_ref()),
+        exhaustive,
+    )
+}
+
 fn statement_inner(stmt: &Statement, exhaustive: &dyn Fn(Span) -> bool) -> Exits {
     match stmt {
-        Statement::Return { .. } => Exits {
+        Statement::Return { value, .. } => expressions(value, exhaustive).then(Exits {
             returns: true,
             ..Exits::default()
-        },
-        Statement::Throw { .. } => Exits {
+        }),
+        Statement::Throw { expr, .. } => expressions(expr, exhaustive).then(Exits {
             throws: true,
             ..Exits::default()
-        },
+        }),
         Statement::Break { .. } => Exits {
             breaks: true,
             ..Exits::default()
@@ -163,6 +183,15 @@ fn statement_inner(stmt: &Statement, exhaustive: &dyn Fn(Span) -> bool) -> Exits
                     IfBranch::ElseIf {
                         condition, block, ..
                     } => {
+                        let condition_exits = expression(condition, exhaustive);
+                        exits = exits.union(Exits {
+                            normal: false,
+                            ..condition_exits
+                        });
+                        if !condition_exits.normal {
+                            remaining = false;
+                            continue;
+                        }
                         if constant_bool(condition) != Some(false) {
                             exits = exits.union(statement(block, exhaustive));
                         }
@@ -181,14 +210,37 @@ fn statement_inner(stmt: &Statement, exhaustive: &dyn Fn(Span) -> bool) -> Exits
         }
         Statement::While {
             condition, body, ..
-        } => loop_exits(body, constant_bool(condition), exhaustive),
+        } => expression(condition, exhaustive).then(loop_exits(
+            body,
+            constant_bool(condition),
+            None,
+            exhaustive,
+        )),
         Statement::For(value) => match &value.condition {
-            ForKind::ForIn(_) => loop_exits(&value.block, None, exhaustive),
-            ForKind::ForLoop(cond) => loop_exits(
-                &value.block,
-                cond.condition.as_ref().map_or(Some(true), constant_bool),
-                exhaustive,
-            ),
+            ForKind::ForIn(cond) => {
+                let iter = expression(&cond.right, exhaustive);
+                finish_for_header(iter, loop_exits(&value.block, None, None, exhaustive))
+            }
+            ForKind::ForLoop(cond) => {
+                let init = match &cond.init {
+                    Some(ForInit::Declaration {
+                        declarations: decls,
+                        ..
+                    }) => declarations(decls, exhaustive),
+                    Some(ForInit::Expression { expr, .. }) => expression(expr, exhaustive),
+                    None => Exits::normal(),
+                };
+                let header = init.then(expressions(&cond.condition, exhaustive));
+                finish_for_header(
+                    header,
+                    loop_exits(
+                        &value.block,
+                        cond.condition.as_ref().map_or(Some(true), constant_bool),
+                        cond.update.as_ref(),
+                        exhaustive,
+                    ),
+                )
+            }
         },
         Statement::Try(value) => {
             let mut exits = block(&value.block, exhaustive);
@@ -217,13 +269,40 @@ fn statement_inner(stmt: &Statement, exhaustive: &dyn Fn(Span) -> bool) -> Exits
             }
             exits
         }
-        Statement::With(value) => block(&value.block, exhaustive),
+        Statement::With(value) => {
+            expression(&value.expr, exhaustive).then(block(&value.block, exhaustive))
+        }
         Statement::Expression(expr) => expression(expr, exhaustive),
-        Statement::Variable(_)
-        | Statement::VariableList { .. }
-        | Statement::Empty { .. }
-        | Statement::Yield { .. } => Exits::normal(),
+        Statement::Variable(decl) => expressions(&decl.value, exhaustive),
+        Statement::VariableList {
+            declarations: decls,
+            ..
+        } => declarations(decls, exhaustive),
+        Statement::Yield { value, .. } => expressions(value, exhaustive),
+        Statement::Empty { .. } => Exits::normal(),
     }
+}
+
+fn finish_for_header(header: Exits, inner: Exits) -> Exits {
+    let mut exits = header.then(inner);
+    exits.normal |= header.breaks;
+    exits.breaks = false;
+    exits.continues = false;
+    exits
+}
+
+fn expressions<'a>(
+    values: impl IntoIterator<Item = &'a Expression>,
+    exhaustive: &dyn Fn(Span) -> bool,
+) -> Exits {
+    let mut exits = Exits::normal();
+    for value in values {
+        if !exits.normal {
+            break;
+        }
+        exits = exits.then(expression(value, exhaustive));
+    }
+    exits
 }
 
 /// match 的已证明穷尽性属于 sema 事实，返回路径分析与 HIR 共用它。
@@ -235,31 +314,117 @@ fn expression(expr: &Expression, exhaustive: &dyn Fn(Span) -> bool) -> Exits {
 
 fn expression_inner(expr: &Expression, exhaustive: &dyn Fn(Span) -> bool) -> Exits {
     match expr {
-        Expression::Paren { expr, .. } => expression(expr, exhaustive),
-        Expression::Match(node) => {
-            let mut exits = if exhaustive(node.span) {
-                Exits::default()
-            } else {
-                Exits::normal()
-            };
-            for body in node
-                .cases
+        Expression::Paren { expr, .. }
+        | Expression::Await { expr, .. }
+        | Expression::Cast { expr, .. } => expression(expr, exhaustive),
+        Expression::Unary { operand, .. } | Expression::Is { operand, .. } => {
+            expression(operand, exhaustive)
+        }
+        Expression::MemberAccess { target, .. } => expression(target, exhaustive),
+        Expression::Tuple { elements, .. } | Expression::ArrayLiteral { elements, .. } => {
+            expressions(elements, exhaustive)
+        }
+        Expression::ObjectLiteral { properties, .. }
+        | Expression::StructInit { properties, .. } => expressions(
+            properties
                 .iter()
-                .map(|case| &case.body)
-                .chain(node.default.iter())
-            {
-                let branch = match body {
-                    novella_ast::expr::MatchCaseBody::Block { block: body, .. } => {
-                        block(body, exhaustive)
-                    }
-                    novella_ast::expr::MatchCaseBody::Expr { expr, .. } => {
-                        expression(expr, exhaustive)
-                    }
-                };
-                exits = exits.union(branch);
+                .filter_map(|property| property.value.as_ref()),
+            exhaustive,
+        ),
+        Expression::Call { callee, args, .. }
+        | Expression::New {
+            target: callee,
+            args,
+            ..
+        } => expressions(std::iter::once(callee.as_ref()).chain(args), exhaustive),
+        Expression::IndexAccess { target, index, .. } => {
+            expressions([target.as_ref(), index.as_ref()], exhaustive)
+        }
+        Expression::Assignment {
+            target, op, value, ..
+        } => {
+            let (first, second) = if *op == AssignOp::Assign {
+                (value, target)
+            } else {
+                (target, value)
+            };
+            expressions([first.as_ref(), second.as_ref()], exhaustive)
+        }
+        Expression::Binary {
+            left, op, right, ..
+        } => {
+            let required = match op {
+                BinaryOp::LogicalAnd => constant_bool(left),
+                BinaryOp::LogicalOr => constant_bool(left).map(|value| !value),
+                BinaryOp::NullCoalesce => None,
+                _ => Some(true),
+            };
+            let left = expression(left, exhaustive);
+            if required == Some(false) || !left.normal {
+                return left;
+            }
+            let right = expression(right, exhaustive);
+            left.then(if required == Some(true) {
+                right
+            } else {
+                right.union(Exits::normal())
+            })
+        }
+        Expression::Ternary {
+            condition,
+            then_expr,
+            else_expr,
+            ..
+        } => {
+            let branches = match constant_bool(condition) {
+                Some(true) => expression(then_expr, exhaustive),
+                Some(false) => expression(else_expr, exhaustive),
+                None => expression(then_expr, exhaustive).union(expression(else_expr, exhaustive)),
+            };
+            expression(condition, exhaustive).then(branches)
+        }
+        Expression::Match(node) => {
+            let subject = expression(&node.subject, exhaustive);
+            let mut exits = Exits {
+                normal: false,
+                ..subject
+            };
+            let mut remaining = subject.normal;
+            for case in &node.cases {
+                if !remaining {
+                    break;
+                }
+                if let MatchPattern::Expr { expr, .. } = &case.pattern {
+                    let pattern = expression(expr, exhaustive);
+                    exits = exits.union(Exits {
+                        normal: false,
+                        ..pattern
+                    });
+                    remaining = pattern.normal;
+                }
+                if remaining {
+                    exits = exits.union(match_body(&case.body, exhaustive));
+                }
+            }
+            if remaining {
+                if let Some(default) = &node.default {
+                    exits = exits.union(match_body(default, exhaustive));
+                } else {
+                    exits.normal |= !exhaustive(node.span);
+                }
             }
             exits
         }
-        _ => Exits::normal(),
+        Expression::Literal { .. }
+        | Expression::Identifier { .. }
+        | Expression::This { .. }
+        | Expression::Lambda(_) => Exits::normal(),
+    }
+}
+
+fn match_body(body: &MatchCaseBody, exhaustive: &dyn Fn(Span) -> bool) -> Exits {
+    match body {
+        MatchCaseBody::Block { block: body, .. } => block(body, exhaustive),
+        MatchCaseBody::Expr { expr, .. } => expression(expr, exhaustive),
     }
 }

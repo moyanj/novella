@@ -47,7 +47,6 @@ pub(super) fn type_label(ty: &HirType) -> &'static str {
     match ty {
         HirType::Void => "void",
         HirType::Boolean => "boolean",
-        HirType::String => "string",
         HirType::Int(_) => "int",
         HirType::Float(_) => "float",
         HirType::Pointer(_) => "pointer",

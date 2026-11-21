@@ -132,7 +132,10 @@ fn analysis_options(
 ) -> Result<AnalysisOptions, Box<dyn std::error::Error>> {
     let flags = &args.options;
     let mut options = AnalysisOptions {
-        std_root: flags.std_root.clone(),
+        std_root: flags
+            .std_root
+            .clone()
+            .or_else(|| AnalysisOptions::default().std_root),
         module_only,
         ..Default::default()
     };

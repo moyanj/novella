@@ -32,7 +32,12 @@ pub(crate) fn check_module(sema: &mut Sema, module: ModuleId) {
             _ => &[],
         };
         for attribute in attributes {
-            sema.type_error(module, attribute.span, "装饰器展开尚未实现");
+            let message = if attribute.name == "no_std" {
+                "@no_std 必须在入口模块中写成独立指令 @no_std;，不能修饰声明"
+            } else {
+                "装饰器展开尚未实现"
+            };
+            sema.type_error(module, attribute.span, message);
         }
         match item {
             Item::Function(function) => {
@@ -63,8 +68,15 @@ pub(crate) fn check_module(sema: &mut Sema, module: ModuleId) {
                 }
             }
             // 装饰块：指令解释（@cfg 等）属后续期，块内跳过检查并提示
-            Item::DecoratorBlock { span, .. } => {
-                sema.type_error(module, *span, "装饰块展开尚未实现，不能完成语义检查");
+            Item::DecoratorBlock {
+                decorator, span, ..
+            } => {
+                let message = if decorator.name == "no_std" {
+                    "@no_std 不能用于指令块，请在入口模块中使用 @no_std;"
+                } else {
+                    "装饰块展开尚未实现，不能完成语义检查"
+                };
+                sema.type_error(module, *span, message);
             }
             Item::Decorator(decorator) => {
                 sema.type_error(module, decorator.span, "装饰器展开尚未实现")

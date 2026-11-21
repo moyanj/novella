@@ -24,9 +24,9 @@ impl Parser {
         let keyword = self.advance()?;
         let start = keyword.span.start;
         // 主体后紧跟的 `{` 是 match 块，不能交给 StructInit 当结构体字面量
-        self.in_match_subject = true;
+        let was_match_subject = std::mem::replace(&mut self.in_match_subject, true);
         let subject = self.parse_expression();
-        self.in_match_subject = false;
+        self.in_match_subject = was_match_subject;
         let subject = subject?;
         self.expect(TokenKind::OpenBrace)?;
         let mut cases = vec![];
@@ -74,6 +74,9 @@ impl Parser {
             self.advance();
         }
         let close = self.expect(TokenKind::CloseBrace)?;
+        if cases.is_empty() {
+            self.error_at_span(close.span, "match 至少需要一个 case 分支");
+        }
         Some(Expression::Match(Match {
             subject: Box::new(subject),
             cases,
@@ -111,16 +114,16 @@ impl Parser {
             self.advance();
             // 类型模式：类型之后紧跟分支箭头 `=>`，该 `=>` 属于 match 语法
             // 而非「类型位 `=>`」诊断对象（E-03 例外，同 lambda 返回注解）
-            self.allow_arrow_after_type = true;
+            let was_allowed = std::mem::replace(&mut self.allow_arrow_after_type, true);
             let ty = self.parse_type_expr();
-            self.allow_arrow_after_type = false;
+            self.allow_arrow_after_type = was_allowed;
             let ty = ty?;
             MatchPattern::Type {
                 span: ty.span(),
                 ty,
             }
         } else {
-            let expr = self.parse_expression()?;
+            let expr = self.parse_match_pattern_expression()?;
             MatchPattern::Expr {
                 span: expr.span(),
                 expr: Box::new(expr),
@@ -137,6 +140,57 @@ impl Parser {
             body,
             span: Span { start, end },
         })
+    }
+
+    pub(crate) fn at_match_pattern_boundary(&self) -> bool {
+        self.match_pattern_boundary
+            .is_some_and(|start| self.peek().is_some_and(|token| token.span.start == start))
+    }
+
+    fn parse_match_pattern_expression(&mut self) -> Option<Expression> {
+        let checkpoint = self.checkpoint();
+        let pattern = self.parse_expression();
+        if pattern.is_some() && (self.check(TokenKind::Arrow) || self.check(TokenKind::OpenBrace)) {
+            return pattern;
+        }
+        // 普通表达式可能把模式后的箭头或块吃进 lambda / struct 初始化。
+        // 只在未留下分支定界符时重试，保留合法的内层 lambda 与 struct 表达式。
+        if let Some(boundary) = self.match_pattern_delimiter(checkpoint.0) {
+            self.rollback(checkpoint);
+            let previous = self.match_pattern_boundary.replace(boundary);
+            let retry = self.parse_expression();
+            self.match_pattern_boundary = previous;
+            return retry;
+        }
+        pattern
+    }
+
+    fn match_pattern_delimiter(&self, start: usize) -> Option<usize> {
+        let mut depth = 0;
+        let mut block = None;
+        for token in &self.tokens[start..] {
+            match token.kind {
+                TokenKind::Arrow if depth == 0 => return Some(token.span.start),
+                TokenKind::OpenBrace => {
+                    if depth == 0 {
+                        block = Some(token.span.start);
+                    }
+                    depth += 1;
+                }
+                TokenKind::OpenParen | TokenKind::OpenBracket => depth += 1,
+                TokenKind::CloseBrace | TokenKind::CloseParen | TokenKind::CloseBracket
+                    if depth > 0 =>
+                {
+                    depth -= 1
+                }
+                TokenKind::Eof => break,
+                TokenKind::Case | TokenKind::Default | TokenKind::CloseBrace if depth == 0 => {
+                    break;
+                }
+                _ => {}
+            }
+        }
+        block
     }
 
     /// 解析分支的表达式体。

@@ -168,6 +168,25 @@ not 恰有一个参数；all/any 可为空（分别为 true/false）。所有参
 目标和 feature 由 AnalysisOptions 提供，默认宿主平台且 feature 集合为空。
 `@packed` / `@align` / `@extern` / `@deprecated` 等示例不构成已实现指令。
 
+#### 禁用标准库指令（2026-11-21）
+
+入口模块可声明一次独立的 `@no_std;`，对本次编译的整个导入闭包生效。
+指令在入口解析后、默认环境加载前处理；不读取标准库文件，不注入 `std:site`，
+也不把标准库模块送入 HIR 或链接阶段。显式 `std:` 导入（包括 `std:exception`）报错。
+依赖模块不能声明此指令；指令不接受参数，不能修饰声明或指令块。
+
+```novella
+@no_std;
+
+func main() -> int {
+    return 42;
+}
+```
+
+该模式下没有默认的 `String` / `string`，普通、raw、f-string 字面量需要标准库而报错；
+字节字面量 `b"..."` 仍按 `u8[]` 做语义检查。`@no_std` 仅禁用 Novella 标准库，
+不改变目标平台的启动代码、C 链接驱动或显式用户 `extern` 声明。
+
 ### 4.3 导入
 
 ```
@@ -403,6 +422,15 @@ statement: variableStatement | returnStatement | breakStatement | continueStatem
 | **unsafe（新增）** | `unsafe { }` | 唯一 unsafe 上下文入口（§6） |
 | 表达式语句 | `expression ;` | |
 
+#### `for ... in` 迭代协议
+
+- `for (pattern in expr)` 先求值一次 `expr`。数组按下标顺序遍历，绑定类型为数组元素类型。
+- 其他类型通过可访问的实例方法 `iter()` 提供迭代器。每次进入循环时调用一次 `iter()`，由实现负责返回独立的迭代状态。
+- 每轮先调用迭代器的 `hasNext() -> boolean`。返回 `false` 时结束。返回 `true` 时调用一次 `next() -> T`，再按 `T` 绑定变量或解构元组。`continue` 进入下一次 `hasNext()`，`break` 立即退出。
+- 三个方法都不声明方法级泛型或显式参数，实例接收者 `self` 可以按普通方法规则写出。`next()` 须返回非 `void` 类型。成员查找沿用普通可见性、继承、类型实参代入和 trait 约束规则。隐式调用也参与异常流检查。
+
+当前 `novella check` 支持该协议。HIR 的 `for-in` 降级目前覆盖数组路径。
+
 ### 4.10 表达式与优先级
 
 （ANTLR 左递归：**靠前备选 = 优先级更高**。下表自上而下优先级递减。
@@ -431,6 +459,9 @@ statement: variableStatement | returnStatement | breakStatement | continueStatem
 | 三元 | `? :` | `Ternary` |
 | lambda | `x => ...` / `(a, b) => ...`（含 `x: T => ...`，其中 `: T` 是返回注解） | `Lambda` |
 | 赋值 | `=` 与全部复合赋值 | `Assignment` |
+
+元组用零基整数字面量索引，支持括号和一元正负号。动态索引与越界索引报错。
+索引表达式的类型为对应槽位的类型。可写元组的槽位可以赋值。
 
 > **`as` 的优先级**（已确认：低绑式）：位于「加减」之后、「移位」之前——
 > 低于算术、高于关系比较，与 TS 观感一致：
@@ -990,6 +1021,8 @@ func main() {
 - 值 match 须穷尽：布尔 true/false、可判定联合类型模式可省 default，其他情况
   需 default。块分支为 void，禁止与值分支混合；重复常量、被前项覆盖的类型
   模式拒绝。void match 允许部分覆盖。
+- match 按顺序检查模式。命中分支的入口只继承已经求值的模式产生的赋值。
+  嵌套在其他表达式中的 match 块也可通过 `return`、`throw` 或循环跳转提前退出。
 - b 字符串为 u8[]，只允许单字节字符和字节转义；f-string 使用 {expr}、
   {{/}}，不支持格式说明符。f16 为 IEEE binary16，f8 为 E4M3FN，按最近偶数
   舍入的有限范围检查；usize/isize 使用显式 32/64 位分析配置，缺省为宿主。

@@ -3,7 +3,7 @@ use crate::{FileLoader, FsLoader, Sema, api::*, check, module, resolve, ty};
 use std::path::{Path, PathBuf};
 
 /// 分析输入配置；标准库必须提供真实声明，不使用不透明符号兜底。
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone)]
 pub struct AnalysisOptions {
     pub target: AnalysisTarget,
     pub cfg: crate::cfg::CfgOptions,
@@ -11,6 +11,19 @@ pub struct AnalysisOptions {
     pub std_root: Option<PathBuf>,
     /// 仅检查模块，不要求可执行程序的 main 入口。
     pub module_only: bool,
+}
+
+impl Default for AnalysisOptions {
+    fn default() -> Self {
+        let environment_root = std::env::var_os("NOVELLA_STD_ROOT").map(PathBuf::from);
+        let bundled_root = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../std");
+        Self {
+            target: AnalysisTarget::default(),
+            cfg: crate::cfg::CfgOptions::default(),
+            std_root: environment_root.or_else(|| bundled_root.is_dir().then_some(bundled_root)),
+            module_only: false,
+        }
+    }
 }
 
 /// 以真实文件系统分析入口文件及其全部导入闭包。
@@ -68,15 +81,15 @@ pub fn analyze_with_target(
 pub fn analyze_with_options(
     loader: &mut dyn FileLoader,
     entry: &Path,
-    options: AnalysisOptions,
+    mut options: AnalysisOptions,
 ) -> SemaResult {
     let mut sema = Sema::new();
     sema.module_only = options.module_only;
     sema.target = options.target;
-    sema.std_root = options.std_root.clone();
     // Phase 0：模块加载（含词法 / 语法分析）
     let (modules, global_diagnostics, module_by_path) =
-        module::load_modules(loader, entry, &mut sema.scopes, &options);
+        module::load_modules(loader, entry, &mut sema.scopes, &mut options);
+    sema.std_root = options.std_root;
     sema.modules = modules;
     sema.global_diagnostics = global_diagnostics;
     sema.module_by_path = module_by_path;
@@ -96,6 +109,7 @@ pub fn analyze_with_options(
             }
             resolve::bind_imports(&mut sema, id);
         }
+        resolve::bind_site_imports(&mut sema);
         // Phase 2b：构建类型注册表（字段 / 方法签名）
         for id in 0..sema.modules.len() {
             if loader.is_cancelled() {
@@ -149,6 +163,7 @@ pub fn analyze_with_options(
 
     let types = sema.type_summaries();
     let definitions = sema.definition_index();
+    let codegen_modules = crate::dependencies::codegen_modules(&sema);
 
     // 模块产物和诊断分别移入公开视图；源码、AST 不在此处深拷贝。
     let module_count = sema.modules.len();
@@ -160,6 +175,7 @@ pub fn analyze_with_options(
         let path = module.path;
         analyzed_modules.push(AnalyzedModule {
             id,
+            required_for_codegen: codegen_modules.contains(&id),
             path: path.clone(),
             source: module.source,
             tokens: module.tokens,

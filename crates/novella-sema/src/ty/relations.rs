@@ -8,7 +8,6 @@ pub(crate) fn ty_eq(a: &Ty, b: &Ty) -> bool {
         | (Ty::Void, Ty::Void)
         | (Ty::Null, Ty::Null)
         | (Ty::Boolean, Ty::Boolean)
-        | (Ty::String, Ty::String)
         // 同为未定型字面量即同类（数值差异由赋值点的范围判定处理）
         | (Ty::IntLiteral(..), Ty::IntLiteral(..))
         | (Ty::FloatLiteral(_), Ty::FloatLiteral(_)) => true,

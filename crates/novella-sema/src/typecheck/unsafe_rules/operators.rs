@@ -172,8 +172,7 @@ pub(super) fn check_binary_operands(
         | BinaryOp::LessThanEquals
         | BinaryOp::GreaterThan
         | BinaryOp::GreaterThanEquals => {
-            let ok = (lhs.is_numeric() && rhs.is_numeric() && unify_numeric(&lhs, &rhs).is_some())
-                || (matches!(lhs, Ty::String) && matches!(rhs, Ty::String));
+            let ok = lhs.is_numeric() && rhs.is_numeric() && unify_numeric(&lhs, &rhs).is_some();
             if !ok {
                 sema.type_error(
                     ctx.module,
@@ -187,8 +186,8 @@ pub(super) fn check_binary_operands(
             Ty::Boolean
         }
         BinaryOp::Plus => {
-            if matches!(lhs, Ty::String) && matches!(rhs, Ty::String) {
-                return Ty::String;
+            if sema.is_string_type(&lhs) && sema.is_string_type(&rhs) {
+                return lhs;
             }
             check_arithmetic(sema, ctx, op, &lhs, &rhs, span)
         }

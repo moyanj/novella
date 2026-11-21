@@ -14,7 +14,7 @@ pub(crate) fn check_literal(sema: &mut Sema, ctx: &mut BodyCtx, value: &Literal,
             }
             if raw.starts_with('f') {
                 check_fstring(sema, ctx, raw, span);
-                return Ty::String;
+                return require_string_type(sema, ctx, span);
             }
             // 普通 / 原始 / 字节 / 格式化字符串一律按 core 的唯一解码表校验转义
             // （design.md §3.3「非法转义留待语义阶段」；矩阵 L08）
@@ -23,13 +23,24 @@ pub(crate) fn check_literal(sema: &mut Sema, ctx: &mut BodyCtx, value: &Literal,
                 Err(error) => sema.type_error(ctx.module, span, error.to_string()),
             }
             check_fstring(sema, ctx, raw, span);
-            Ty::String
+            require_string_type(sema, ctx, span)
         }
         Literal::Number(raw) => classify_number_literal(raw).unwrap_or_else(|| {
             sema.type_error(ctx.module, span, format!("非法数字字面量 `{raw}`"));
             Ty::Error
         }),
     }
+}
+
+fn require_string_type(sema: &mut Sema, ctx: &BodyCtx, span: Span) -> Ty {
+    sema.string_type().unwrap_or_else(|| {
+        sema.type_error(
+            ctx.module,
+            span,
+            "字符串字面量需要标准库 std:String；@no_std 环境请使用字节字面量 b\"...\"",
+        );
+        Ty::Error
+    })
 }
 /// f-string（`f"..."` / `f'...'`）：校验插值表达式的语法与类型。
 ///

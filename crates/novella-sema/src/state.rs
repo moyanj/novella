@@ -47,6 +47,22 @@ pub(crate) struct Sema {
 }
 
 impl Sema {
+    pub(crate) fn string_type(&self) -> Option<ty::Ty> {
+        let root = self.std_root.as_deref()?;
+        let path = novella_core::path::module_key(&root.join("string.nov"));
+        let module = *self.module_by_path.get(&path)?;
+        matches!(
+            self.type_defs.get(&(module, "String".to_owned())),
+            Some(TypeDef::Class(_))
+        )
+        .then(|| ty::Ty::Class(module, "String".to_owned()))
+    }
+
+    pub(crate) fn is_string_type(&self, candidate: &ty::Ty) -> bool {
+        self.string_type()
+            .is_some_and(|string_type| ty::ty_eq(candidate, &string_type))
+    }
+
     /// 定义身份只在本次分析内有效；导入引用仍直达原始定义。
     pub(crate) fn definition_index(&self) -> HashMap<(ModuleId, Span), Definition> {
         let mut definitions = HashMap::new();

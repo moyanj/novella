@@ -3,7 +3,7 @@
 use std::collections::HashMap;
 use std::rc::Rc;
 
-use novella_ast::expr::Expression;
+use novella_ast::expr::{Expression, Literal, UnaryOp};
 use novella_ast::types::TypeExpr;
 use novella_core::Span;
 
@@ -14,7 +14,7 @@ use super::body::{BodyCtx, concrete};
 use super::expr::{IdentTarget, check_expr, check_expr_with_hint, classify_identifier};
 use super::unsafe_rules::require_unsafe;
 
-/// 索引访问 `a[i]`：数组 / 指针（S4，unsafe）/ 元组（需常量索引，暂不支持）。
+/// 索引访问 `a[i]`：数组、指针（unsafe）及零基字面量下标的元组。
 pub(crate) fn check_index_access(
     sema: &mut Sema,
     ctx: &mut BodyCtx,
@@ -30,6 +30,7 @@ pub(crate) fn check_index_access(
             index.span(),
             format!("索引必须是整数，实为 `{index_ty}`"),
         );
+        return Ty::Error;
     }
     match target_ty {
         Ty::Array(element) => *element,
@@ -38,14 +39,28 @@ pub(crate) fn check_index_access(
             require_unsafe(sema, ctx, span, "指针下标访问");
             *inner
         }
-        Ty::Tuple(_) => {
-            sema.type_error(
-                ctx.module,
-                span,
-                "元组索引需要常量下标，本期暂不支持（请用解构）",
-            );
-            Ty::Unknown
-        }
+        Ty::Tuple(elements) => match index_ty {
+            Ty::IntLiteral(negative, value) if signed_literal(index).is_some() => {
+                if let Some(element) = tuple_element(&elements, negative, value) {
+                    return element.clone();
+                }
+                let sign = if negative && value != 0 { "-" } else { "" };
+                sema.type_error(
+                    ctx.module,
+                    index.span(),
+                    format!(
+                        "元组下标 `{sign}{value}` 越界，元组长度为 {}",
+                        elements.len()
+                    ),
+                );
+                Ty::Error
+            }
+            Ty::Error => Ty::Error,
+            _ => {
+                sema.type_error(ctx.module, index.span(), "元组下标必须是整数字面量");
+                Ty::Error
+            }
+        },
         ty if ty.is_opaque() => Ty::Unknown,
         ty => {
             sema.type_error(ctx.module, span, format!("`{ty}` 不支持下标访问"));
@@ -53,6 +68,45 @@ pub(crate) fn check_index_access(
         }
     }
 }
+
+fn tuple_element(elements: &[Ty], negative: bool, value: u128) -> Option<&Ty> {
+    if negative && value != 0 {
+        return None;
+    }
+    elements.get(usize::try_from(value).ok()?)
+}
+
+/// 普通赋值先检查右侧，因此只按下标语法查询元组槽位，不读取左侧表达式。
+pub(super) fn tuple_element_hint<'a>(elements: &'a [Ty], index: &Expression) -> Option<&'a Ty> {
+    let (negative, raw) = signed_literal(index)?;
+    let Ty::IntLiteral(_, value) = crate::ty::classify_number_literal(raw)? else {
+        return None;
+    };
+    tuple_element(elements, negative, value)
+}
+
+fn signed_literal(mut index: &Expression) -> Option<(bool, &str)> {
+    let mut negative = false;
+    loop {
+        match index {
+            Expression::Paren { expr, .. } => index = expr,
+            Expression::Unary {
+                op: op @ (UnaryOp::Plus | UnaryOp::Minus),
+                operand,
+                ..
+            } => {
+                negative ^= *op == UnaryOp::Minus;
+                index = operand;
+            }
+            Expression::Literal {
+                value: Literal::Number(raw),
+                ..
+            } => return Some((negative, raw)),
+            _ => return None,
+        }
+    }
+}
+
 /// 函数调用：签名检查（个数/默认值/逐参兼容）+ E7 extern 调用须 unsafe + 泛型实参 arity。
 pub(crate) fn check_call(
     sema: &mut Sema,

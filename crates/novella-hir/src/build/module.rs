@@ -16,6 +16,9 @@ pub fn build_hir(sema: &SemaResult) -> Result<HirProgram, BuildError> {
             return Err(BuildError::at(BuildErrorKind::InvalidInput)
                 .with_site(module.id, Span { start: 0, end: 0 }));
         }
+        if !module.required_for_codegen {
+            continue;
+        }
         modules.push(build_module(sema, module)?);
     }
     // 同一默认表达式可能在多个调用点展开；无捕获 lambda 只有一个实体，

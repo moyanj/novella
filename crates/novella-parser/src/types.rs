@@ -92,7 +92,10 @@ impl Parser {
             }
             // `=>` 不是类型语法：lambda 返回注解 / match 类型模式之外的类型位
             // 遇到即报诊断并按 `->` 恢复（E-03）
-            if self.check(TokenKind::Arrow) && !self.allow_arrow_after_type {
+            if self.check(TokenKind::Arrow)
+                && !self.allow_arrow_after_type
+                && !self.at_match_pattern_boundary()
+            {
                 self.error_here("类型位不支持 `=>`，类型箭头应为 `->`");
                 self.advance();
                 return self.finish_arrow_function_type(elements, paren_span);
@@ -446,9 +449,9 @@ impl Parser {
     /// 解析期间置 [`Parser::allow_arrow_after_type`] 抑制「类型位 `=>`」诊断。
     pub(crate) fn parse_return_type(&mut self) -> (bool, Option<TypeExpr>) {
         if self.eat(TokenKind::ReturnArrow).is_some() || self.eat(TokenKind::Colon).is_some() {
-            self.allow_arrow_after_type = true;
+            let was_allowed = std::mem::replace(&mut self.allow_arrow_after_type, true);
             let ty = self.parse_type_expr();
-            self.allow_arrow_after_type = false;
+            self.allow_arrow_after_type = was_allowed;
             return (true, ty);
         }
         (false, None)

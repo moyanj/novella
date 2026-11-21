@@ -58,6 +58,7 @@ directImport: Import StringLiteral SemiColon;
 // ====================== 装饰器 ======================
 // decoratorStatement 两种形态，分别对应 `Item::Decorator` 与 `Item::DecoratorBlock`：
 //   - decorator SemiColon —— 独立装饰器语句，如 `@foo;`
+//     `@no_std;` 的入口限定与禁用标准库语义由 sema 在模块加载阶段处理。
 //   - decorator block     —— 装饰块，如 `@cfg(feature = "limine") { ... }`
 //
 // 文法只允许单条装饰器：代码显式报错「装饰器语句 / 装饰块只允许一个装饰器」
@@ -426,6 +427,7 @@ matchExpression:
 	Match expression '{' matchCase+ matchDefault? '}';
 
 // 分支（对应 `MatchCase`，模式为 `MatchPattern::Expr` 或 `MatchPattern::Type`）
+// 表达式歧义时须为分支保留 `=>` 或 `{`，例如 `case name => value` 与 `case name { ... }`。
 matchCase:
 	Case (expression | typeAnnotation) ('=>' expression | block);
 

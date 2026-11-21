@@ -268,18 +268,8 @@ fn check_stmt_inner(sema: &mut Sema, ctx: &mut BodyCtx, stmt: &Statement) {
             match &for_stmt.condition {
                 ForKind::ForIn(cond) => {
                     let iter_ty = check_expr(sema, &mut loop_ctx, &cond.right);
-                    let element_ty = match &iter_ty {
-                        Ty::Array(element) => (**element).clone(),
-                        _ if iter_ty.is_opaque() => Ty::Unknown,
-                        _ => {
-                            sema.type_error(
-                                ctx.module,
-                                cond.right.span(),
-                                format!("`for ... in` 只能遍历数组，实为 `{iter_ty}`"),
-                            );
-                            Ty::Unknown
-                        }
-                    };
+                    let element_ty =
+                        iteration::element_type(sema, &loop_ctx, iter_ty, cond.right.span());
                     bind_pattern(sema, &mut loop_ctx, &cond.left, &element_ty);
                 }
                 ForKind::ForLoop(cond) => {
@@ -471,5 +461,6 @@ pub(crate) fn expect_boolean(sema: &mut Sema, ctx: &mut BodyCtx, expr: &Expressi
 mod bindings;
 pub(crate) use bindings::*;
 
+mod iteration;
 mod try_flow;
 use try_flow::check_try;
