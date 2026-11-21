@@ -663,6 +663,11 @@ class 对象（堆）：
 - 对象头对语言层透明：用户看不到 refcount，`as` 不能把引用当整数；
 - class 引用默认可空：`null` 可赋给任意 class 引用；解引用前须判空。
 
+2026-11-21：runtime 已实现隐藏头部、对齐分配、原子强引用计数和归零析构回调。
+实际头部还保存原始分配地址及析构函数，以上图示不规定其二进制字段偏移。
+class 自动 ARC 降级尚未接通；底层实现与可执行示例见
+[runtime 说明](../crates/novella-runtime/README.md)。
+
 ### 7.3 引用计数规则（ARC）
 
 **守恒原则：每次产生引用拷贝必须 retain（+1），每次引用失效必须 release（-1）；
@@ -715,11 +720,19 @@ ARC 缺陷：`root.child = child; child.parent = root;`（全强）形成环，�
 - 语法：**仅字段**支持 `weak` 修饰（与 `static` 同位，文法
   `fieldDeclaration: decorator* accessModifier? Static? Weak? identifier ...`），
   局部变量不做；
-- 语义：`weak` 字段赋值不 retain；对象可能已被释放；
+- 类型：`weak` 字段必须保存 class 引用（包括别名与已实例化的泛型 class）；
+  struct 字段也可保存这样的弱引用。标量、裸指针、数组及不能证明为 class 的类型参数
+  不能标记为 `weak`；无注解字段在初值推导后检查；
+- 语义：`weak` 字段赋值不 retain，字段销毁也不 release；布局为普通 class 引用的
+  对象载荷指针，无独立控制块。对象可能已被释放，runtime 不追踪或自动置空弱字段；
 - **无空安全保证**（已确认）：`weak` 字段不提供判空/解引用的静态保证——
   读取过期对象属**未定义行为**，与裸指针的手动管理哲学一致；
   不使用「临时强引用」等运行时兜底；
 - 只读语义：`weak` 字段不可写原对象的非安全操作（与普通字段同规则）。
+
+当前 sema 已校验弱字段类型，HIR 保留 `is_weak`（包括继承字段）；runtime 契约与
+`examples/runtime-weak.nov` 覆盖显式弱回边。class 自动 ARC 与原生字段访问尚未接通，
+因此该示例通过 `unsafe` 裸指针与显式 retain/release 演示相同的所有权关系。
 
 ```novella
 class Tree {

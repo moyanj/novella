@@ -405,6 +405,7 @@ dependencies = [
  "novella-codegen",
  "novella-core",
  "novella-hir",
+ "novella-runtime",
  "novella-sema",
  "serde",
  "serde_json",
@@ -490,6 +491,10 @@ dependencies = [
  "novella-lexer",
  "stacker",
 ]
+
+[[package]]
+name = "novella-runtime"
+version = "0.1.0"
 
 [[package]]
 name = "novella-sema"

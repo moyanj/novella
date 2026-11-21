@@ -35,7 +35,7 @@
 | 继承布局 | 跨模块沿父链由父到子展开；类型定义与字段访问共用同一布局来源；不吞掉字段类型错误 |
 | match | subject 一次；case 模式按源码顺序、仅未命中时求下一个；分支作用域独立；值 match 必须有 default；全块分支为 Void |
 | lambda | 无捕获函数降级为独立项，实体键为 `m{module}::lambda#{span.start}`；同形函数不撞名，重复默认表达式展开复用同一实体并归属定义模块；捕获明确拒绝 |
-| 外部声明 | extern 产出 HirItem::ExternFunction；函数和方法使用一致的名义键 `m{module}::名称` / `m{module}::类型::方法` |
+| 外部声明 | extern 产出 HirItem::ExternFunction，HirFunction.link_name 保存真实 C 符号；内部查找仍用名义键；LLVM 支持标量/指针 C ABI 与传出函数地址作为回调 |
 | 字符串 | 普通单双引号与 r/R 原始字符串；普通字符串解析换行、回车、制表、空字符、引号和反斜杠转义；未知转义明确拒绝 |
 
 ## 3. 显式拒绝及后续期
@@ -52,7 +52,8 @@
 | 泛型定义/调用、联合及不透明类型 | 无单态化或具体可生成类型；不能因投影抹除信息而接受泛型类型定义 |
 | 动态对象字面量 | 尚无定型对象布局 |
 | 非数组 for-in | Sema 已检查 `iter()`、`hasNext()` 和 `next()`，HIR 尚未降级 |
-| 静态字段、weak 字段 | 静态存储与弱引用生命周期协议 |
+| 静态字段 | 静态存储 |
+| weak 字段的原生执行 | sema 校验 class 引用类型，HIR 布局保留 is_weak；自动 class ARC 与原生字段访问尚未接通。弱字段不 retain/release、不自动置空，读取不提升强引用 |
 | 有成员的 trait | sema 已携带方法签名；HIR 尚未实现 trait 派发，明确拒绝 |
 | 未证明穷尽的无 default 值 match、值/void 混合 | sema 拒绝；合法布尔穷尽 match 可由 exhaustive_matches 供 HIR 降级 |
 | 格式化串、字节串、未定义转义、聚合/string 身份比较 | 尚无对应展开或值表示契约 |

@@ -1,0 +1,28 @@
+@no_std;
+
+extern func novella_rt_alloc(size: usize, alignment: usize, destroy: (void*) -> void) -> void*;
+extern func novella_rt_retain(object: void*);
+extern func novella_rt_release(object: void*);
+extern func putchar(character: i32) -> i32;
+extern func abort();
+
+func destroy(object: void*) {
+    unsafe {
+        if (*(object as i32*) != 42) {
+            abort();
+        }
+        putchar(68);
+    }
+}
+
+func main() -> int {
+    unsafe {
+        let object = novella_rt_alloc(4, 4, destroy);
+        *(object as i32*) = 42;
+        novella_rt_retain(object);
+        novella_rt_release(object);
+        putchar(65);
+        novella_rt_release(object);
+    }
+    return 42;
+}

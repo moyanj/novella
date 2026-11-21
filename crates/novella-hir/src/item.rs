@@ -12,7 +12,7 @@ use novella_sema::ModuleId;
 use crate::body::HirBlock;
 use crate::ty::{HirFunctionId, HirType};
 
-/// 整个程序（全部已加载模块，入口模块为下标 0，与 `SemaResult.modules` 对齐）。
+/// 整个程序（仅保留需要发射的模块；模块 id 沿用 sema，可能不连续）。
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct HirProgram {
     pub modules: Vec<HirModule>,
@@ -21,14 +21,14 @@ pub struct HirProgram {
 impl HirProgram {
     /// 按 [`ModuleId`] 取模块。
     pub fn module(&self, id: ModuleId) -> Option<&HirModule> {
-        self.modules.get(id)
+        self.modules.iter().find(|module| module.id == id)
     }
 }
 
 /// 单个模块。
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct HirModule {
-    /// 模块 id（= 在 [`HirProgram::modules`] 中的下标）
+    /// 模块 id（沿用 sema 的模块身份，不一定等于 HIR 列表下标）
     pub id: ModuleId,
     /// 调用方传入的原始路径（与 `AnalyzedModule::path` 同源，供符号名 / 调试信息）
     pub path: String,
@@ -60,6 +60,8 @@ pub struct HirFunction {
     pub is_lambda: bool,
     /// 稳定符号键（codegen 用它作 LLVM 符号名）
     pub id: HirFunctionId,
+    /// extern 的真实链接符号；普通函数和 lambda 使用内部名义键。
+    pub link_name: Option<String>,
     /// 完整签名
     pub signature: crate::ty::FunctionSignature,
     /// 形参局部（按声明顺序，codegen 按 ABI 从 `get_nth_param` 拷入）
@@ -141,7 +143,8 @@ pub struct HirMethod {
 pub struct HirField {
     pub name: String,
     pub ty: HirType,
-    /// `weak` 标记：赋值不 retain、不参与引用计数（`docs/object-model.md`）
+    /// `weak` 标记：赋值与销毁不 retain/release，读取不提升为临时强引用
+    /// （`docs/design.md` §7.4）；布局与普通 class 引用一致，不自动置空。
     pub is_weak: bool,
     /// `static` 标记：不出现在实例布局里，而是一个全局
     pub is_static: bool,

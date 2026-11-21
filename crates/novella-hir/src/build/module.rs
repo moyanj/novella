@@ -254,6 +254,7 @@ impl<'a> ModuleBuilder<'a> {
             source_module: self.module,
             is_lambda: false,
             id,
+            link_name: function.is_extern.then(|| function.name.clone()),
             signature,
             params: body_builder.parameter_slots(),
             body,
@@ -307,10 +308,7 @@ fn validate_declaration(item: &Item, module: ModuleId) -> Result<(), BuildError>
     }
     for member in members {
         let (unsupported, span) = match member {
-            ClassMember::Field(field) => (
-                !field.attributes.is_empty() || field.modifiers.is_weak,
-                field.span,
-            ),
+            ClassMember::Field(field) => (!field.attributes.is_empty(), field.span),
             ClassMember::Method(method) => (
                 !method.attributes.is_empty() || !method.type_parameters.is_empty(),
                 method.span,
@@ -318,7 +316,7 @@ fn validate_declaration(item: &Item, module: ModuleId) -> Result<(), BuildError>
         };
         if unsupported {
             return Err(BuildError::at(BuildErrorKind::Unimplemented {
-                node: "decorated / generic / weak member",
+                node: "decorated / generic member",
             })
             .with_site(module, span));
         }

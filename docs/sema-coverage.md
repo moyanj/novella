@@ -108,6 +108,7 @@
 | D16S | 禁用标准库指令 | 用户补充（2026-11-21） | `module/loader.rs` / `check/decl.rs` | 已实现 | 入口独立 @no_std; 关闭整个导入闭包的标准库加载和 site 注入；拒绝 std: 导入、重复/带参/依赖模块/修饰声明或块的用法；字符串字面量缺少 std:String 报错 | 无参数指令 |
 | D17R | 多继承 | design §4.6（仅单父类） | `build_type_defs` 报错 | 已实现 | 反：两个父类报错 | — |
 | D18R | 继承环检测 | plan E12 | `resolve_class_parents` | 已实现 | 反：`A(B)`/`B(A)` 报错 | — |
+| D19R | weak 字段只保存 class 引用，初值推导后检查 | design §7.4 | `check/fields.rs::check_fields` | 已实现静态约束；class 自动 ARC 未接通 | 正：class 别名、泛型 class、struct 内弱字段；反：标量、裸指针、数组、裸类型参数 | — |
 
 ### 1.5 表达式
 

@@ -134,6 +134,21 @@ impl<'ctx> Body<'ctx, '_> {
                 .into_pointer_type()
                 .const_null()
                 .into()),
+            (
+                HirOperand::Function(id) | HirOperand::FunctionPtr(id),
+                HirType::Function(expected),
+            ) => {
+                let (function, signature) = self
+                    .functions
+                    .get(id)
+                    .ok_or_else(|| CodegenError(format!("未定义 HIR 函数 `{id}`")))?;
+                if crate::function_type(self.context, signature)?
+                    != crate::function_type(self.context, expected)?
+                {
+                    return Err(CodegenError(format!("函数 `{id}` 与回调签名不一致")));
+                }
+                Ok(function.as_global_value().as_pointer_value().into())
+            }
             _ => Err(CodegenError(format!(
                 "暂不支持该 HIR 操作数或类型不匹配：{operand:?} / {ty:?}"
             ))),
@@ -246,6 +261,9 @@ impl<'ctx> Body<'ctx, '_> {
                     .map(|(operand, ty)| self.operand(operand, ty).map(Into::into))
                     .collect::<Result<Vec<_>>>()?;
                 let call = self.builder.build_call(callee, &args, "call")?;
+                for (location, attribute) in crate::abi::extensions(self.context, signature) {
+                    call.add_attribute(location, attribute);
+                }
                 if let Some(dst) = dst {
                     let value = call
                         .try_as_basic_value()

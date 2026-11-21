@@ -38,6 +38,9 @@ impl<'ctx> Body<'ctx, '_> {
         if from == to {
             return Ok(value);
         }
+        if matches!((from, to), (HirType::Pointer(_), HirType::Pointer(_))) {
+            return Ok(value);
+        }
         if let (HirType::Int(kind), HirType::Int(_)) = (from, to) {
             let ty = value_type(self.context, to)?.into_int_type();
             return Ok(self

@@ -222,11 +222,17 @@ fn write_output(path: &Path, bytes: &[u8], link: bool) -> Result<(), Box<dyn std
         let staging = tempfile::tempdir_in(parent)?;
         let artifact = staging.path().join("artifact");
         if link {
+            if novella_runtime::TARGET_TRIPLE != novella_codegen::TARGET_TRIPLE {
+                return Err("runtime 与代码生成的目标平台不一致".into());
+            }
             let object = staging.path().join("program.o");
             fs::write(&object, bytes)?;
+            let runtime = staging.path().join("libnovella_rt.a");
+            fs::write(&runtime, novella_runtime::STATIC_ARCHIVE)?;
             let result = Command::new("clang")
                 .arg(format!("--target={}", novella_codegen::TARGET_TRIPLE))
                 .arg(&object)
+                .arg(&runtime)
                 .arg("-o")
                 .arg(&artifact)
                 .output()

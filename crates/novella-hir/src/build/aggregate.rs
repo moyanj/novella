@@ -255,6 +255,7 @@ impl<'a> BodyBuilder<'a> {
             source_module: self.module,
             is_lambda: true,
             id: signature.id.clone(),
+            link_name: None,
             signature: (*signature).clone(),
             params,
             body,

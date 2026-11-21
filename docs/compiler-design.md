@@ -270,16 +270,22 @@ match 顺序、无捕获 lambda 和复杂左值。P2 已完成扩展冒烟与 wo
 ELF 目标文件。先登记整个导入闭包的函数，再发射函数体。局部槽位统一在函数入口分配，
 初始化留在 HIR 指令位置；`continue` 进入 `step`，`break` / `return` 跳过 `step`。
 
-- 支持整数、布尔、标量取址和间接读写、分支、循环与跨模块直接调用。
+- 支持整数、布尔、标量取址和间接读写、指针转换、分支、循环与跨模块直接调用。
+- `extern` 使用 HIR 的显式 `link_name` 发射真实 C 符号；多模块同名声明合并并检查 ABI
+  一致性，窄整数在定义、声明和调用点携带 signext/zeroext。函数地址可以传给 C 回调，
+  但尚不支持 Novella 内的间接调用。
 - 整数加减乘按位宽回绕；除零、有符号最小值除以 `-1`（含取余）或移位量越界时陷阱，避免发射可执行的 LLVM 未定义操作。
 - `main` 返回 `int` 作为进程状态，`void` 通过入口包装返回 `0`；其他 Novella 符号仅在目标文件内部可见。
-- 浮点、指针算术、聚合、字符串、间接调用、全局与 `extern` ABI 仍未支持；发射时遇到不支持的类型或指令即报错。
+- 浮点、指针算术、聚合、字符串、间接调用、全局及聚合 FFI ABI 仍未支持；发射时遇到不支持的类型或指令即报错。
 
 ## 9. CLI 与诊断渲染（novella-cli）
 
 - `check <file>` 只做静态检查，不要求 `main`。`compile <file>` 默认经 HIR 生成目标文件并调用 `clang`，输出 `a.out`；`--emit obj` 输出 `output.o`。
 - `--emit ast` 保留旧 JSON 契约（`tokens` + `program` + `diagnostics`）；`--emit hir` 输出已通过入口检查的 HIR。两者均支持 `-o`。
 - 每个模块只分析一次。任一阶段失败均非零退出，不写入部分输出；链接和写入在输出目录内暂存，成功后才替换目标。
+- CLI 携带 `novella-runtime` 构建的目标平台静态库，最终链接按未定义符号抽取对象实现。
+  对象分配、原子引用计数及析构回调已实现，class 自动 ARC 生成仍待接通，详见
+  [runtime 说明](../crates/novella-runtime/README.md)。`@no_std` 不阻止显式调用 runtime。
 - 渲染：`render_diagnostic`（`cli/error.rs`）输出 rustc 风格
   `error: <msg>` / `--> 文件:行:列` + 源码行 + caret；展示列号 1-based、
   caret 按字符渲染（中文/emoji 不错位）。

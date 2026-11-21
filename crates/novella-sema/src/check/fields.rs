@@ -27,6 +27,7 @@ enum State {
 
 pub(crate) fn check_fields(sema: &mut Sema) {
     let mut keys = Vec::new();
+    let mut weak_fields = Vec::new();
     for module in 0..sema.modules.len() {
         if sema.modules[module].syntax_failed {
             continue;
@@ -49,6 +50,14 @@ pub(crate) fn check_fields(sema: &mut Sema) {
                 .collect();
             for member in members {
                 if let ClassMember::Field(field) = member {
+                    if field.modifiers.is_weak {
+                        weak_fields.push((
+                            module,
+                            name.clone(),
+                            field.name.clone(),
+                            field.name_span,
+                        ));
+                    }
                     if field.initializer.is_none() {
                         continue;
                     }
@@ -66,6 +75,21 @@ pub(crate) fn check_fields(sema: &mut Sema) {
     }
     for key in keys {
         resolve_field(sema, &key);
+    }
+    // 必须等初值推导结束再检查，避免无注解的 weak 字段绕过类型约束。
+    for (module, owner, name, span) in weak_fields {
+        let ty = field_type(sema, &(module, owner), &name);
+        let base = match &ty {
+            Ty::Applied(base, _) => base.as_ref(),
+            other => other,
+        };
+        if !base.is_opaque() && !matches!(base, Ty::Class(..)) {
+            sema.type_error(
+                module,
+                span,
+                format!("weak 字段 `{name}` 必须为 class 引用类型，实际为 `{ty}`"),
+            );
+        }
     }
 }
 

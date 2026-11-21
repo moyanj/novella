@@ -1,0 +1,44 @@
+@no_std;
+
+extern func novella_rt_alloc(size: usize, alignment: usize, destroy: (void*) -> void) -> void*;
+extern func novella_rt_retain(object: void*);
+extern func novella_rt_release(object: void*);
+extern func putchar(character: i32) -> i32;
+extern func abort();
+
+// x86-64 的一个指针槽位：父对象拥有 child，子对象非拥有地记录 parent。
+// 显式指针操作演示 runtime 契约；class 的自动 ARC 仍待编译器接通。
+func destroyParent(object: void*) {
+    unsafe {
+        novella_rt_release(*(object as void**));
+        putchar(80);
+    }
+}
+
+func destroyChild(object: void*) {
+    // parent 是 weak，不读取已过期的目标，也不对它调用 release。
+    unsafe {
+        putchar(67);
+    }
+}
+
+func main() -> int {
+    unsafe {
+        let parent = novella_rt_alloc(8, 8, destroyParent);
+        let child = novella_rt_alloc(8, 8, destroyChild);
+        novella_rt_retain(child);
+        *(parent as void**) = child;
+        *(child as void**) = parent;
+        if (*(child as void**) != parent) {
+            abort();
+        }
+        putchar(65);
+        // child 局部强引用仍存活，parent 必须可以独立析构。
+        novella_rt_release(parent);
+        // 清空仍存活对象里的弱字段，无需触碰已销毁的 parent。
+        *(child as void**) = null;
+        novella_rt_release(child);
+        putchar(90);
+    }
+    return 42;
+}

@@ -15,6 +15,9 @@
 因此目前不能把该库当作已可原生执行的 String 实现。sema 已将普通/raw/f-string 定型为
 标准库 String，HIR 普通/raw 字符串载荷为 UTF-16；格式化串与字节串的原生降级仍待实现。
 
+通用对象 runtime 已提供分配、原子引用计数和析构回调，见
+[runtime 说明](../crates/novella-runtime/README.md)；class 的自动调用生成仍待实现。
+
 入口写 `@no_std;` 可关闭整个导入闭包的标准库加载、默认环境及标准库链接。
 此时普通/raw/f-string 字面量和 `std:` 导入会报错，字节串仍能做静态检查。
 该指令不改变平台启动代码和 C 链接环境，也不限制用户自行声明 `extern`。
