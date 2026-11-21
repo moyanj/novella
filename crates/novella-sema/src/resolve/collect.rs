@@ -123,8 +123,8 @@ pub(crate) fn collect_module(sema: &mut Sema, module: ModuleId) {
                 define(sema, module, scope, symbol);
             }
             Item::Statement(stmt) => collect_toplevel_variables(sema, module, scope, stmt),
-            // 独立装饰器 / 装饰块：无符号产出（指令解释属后续期）
-            Item::Decorator(_) | Item::DecoratorBlock { .. } => {}
+            // 独立指令 / 指令块：无符号产出（指令解释属后续期）
+            Item::Directive(_) | Item::DirectiveBlock { .. } => {}
         }
     }
 }

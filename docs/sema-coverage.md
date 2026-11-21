@@ -104,7 +104,7 @@
 | D13R | 字段必须有类型标注或默认值 | plan §6（受 D03） | `build_field` | 已实现 | 反：`x;` 报错 | — |
 | D14R | 字段、顶层变量按依赖定型后检查函数体 | plan S05 | `check/fields.rs` / `check/globals.rs` | 已实现 | method-first/field-first、type-first/type-last 均拒绝 i32 返回给 string；前向调用通过 | S05 |
 | D15R | 无注解字段与顶层变量的推导环诊断 | plan S05 | `resolve_field` / `globals::resolve` | 已实现 | 静态字段环、跨类型实例字段环、顶层变量环拒绝；显式注解可打断类型依赖 | S05 |
-| D16R | 条件编译指令及未知指令拒绝 | 用户补充 TD04 | `cfg.rs` / `check/decl.rs` | 已实现 | @cfg 在声明收集前筛选；其他无定义指令报 error；支持函数/类型/成员及装饰块 | 设计纠偏 |
+| D16R | 条件编译指令及未知指令拒绝 | 用户补充 TD04 | `cfg.rs` / `check/decl.rs` | 已实现 | @cfg 在声明收集前筛选；其他无定义指令报 error；支持函数/类型/成员及指令块 | 设计纠偏 |
 | D16S | 禁用标准库指令 | 用户补充（2026-11-21） | `module/loader.rs` / `check/decl.rs` | 已实现 | 入口独立 @no_std; 关闭整个导入闭包的标准库加载和 site 注入；拒绝 std: 导入、重复/带参/依赖模块/修饰声明或块的用法；字符串字面量缺少 std:String 报错 | 无参数指令 |
 | D17R | 多继承 | design §4.6（仅单父类） | `build_type_defs` 报错 | 已实现 | 反：两个父类报错 | — |
 | D18R | 继承环检测 | plan E12 | `resolve_class_parents` | 已实现 | 反：`A(B)`/`B(A)` 报错 | — |

@@ -25,13 +25,13 @@ pub(crate) fn build_type_defs(sema: &mut Sema, module: ModuleId) {
                 let mut methods = HashMap::new();
                 let mut names = HashMap::new();
                 for member in &trait_item.members {
-                    let (name, span, attributes) = match member {
-                        ClassMember::Field(f) => (&f.name, f.name_span, &f.attributes),
-                        ClassMember::Method(m) => (&m.name, m.name_span, &m.attributes),
+                    let (name, span, directives) = match member {
+                        ClassMember::Field(f) => (&f.name, f.name_span, &f.directives),
+                        ClassMember::Method(m) => (&m.name, m.name_span, &m.directives),
                     };
                     check_member_collision(sema, module, &mut names, name, span);
-                    for attribute in attributes {
-                        sema.type_error(module, attribute.span, "成员装饰器展开尚未实现");
+                    for directive in directives {
+                        sema.type_error(module, directive.span, "成员上的编译器指令尚未实现");
                     }
                     match member {
                         ClassMember::Field(field) => sema.decl_error(

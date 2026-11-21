@@ -417,7 +417,7 @@ fn c_06_multi_binding_is_variable_list() {
 
 // ---------- D 类：AST 信息丢失 ----------
 
-/// D-03/E-01：字段装饰器保留。
+/// D-03/E-01：字段上的编译器指令保留。
 #[test]
 fn d_03_field_attributes_kept() {
     let result = parse_clean("class C { @obs count: i32; }");
@@ -427,7 +427,7 @@ fn d_03_field_attributes_kept() {
     let Some(ClassMember::Field(field)) = class.members.first() else {
         panic!("期望字段成员，实际：{:?}", class.members);
     };
-    assert_eq!(field.attributes.len(), 1, "字段装饰器丢失（D-03）");
+    assert_eq!(field.directives.len(), 1, "字段编译器指令丢失（D-03）");
 }
 
 /// D-04：trait 可见性保留。
@@ -440,7 +440,7 @@ fn d_04_trait_scope() {
     assert_eq!(trait_item.scope, Some(Scope::Public));
 }
 
-/// D-05：extern 函数装饰器保留。
+/// D-05：extern 函数上的编译器指令保留。
 #[test]
 fn d_05_extern_attributes() {
     let result = parse_clean("@link(\"c\") extern func puts(s: i8*): i32;");
@@ -448,7 +448,7 @@ fn d_05_extern_attributes() {
         panic!("期望 extern func，实际：{:?}", result.program.items);
     };
     assert!(func.is_extern);
-    assert_eq!(func.attributes.len(), 1, "extern 装饰器丢失（D-05）");
+    assert_eq!(func.directives.len(), 1, "extern 编译器指令丢失（D-05）");
 }
 
 /// D-06：struct 继承子句保留（是否允许由 sema 判定）。
@@ -461,7 +461,7 @@ fn d_06_struct_heritage_kept() {
     assert_eq!(struct_item.heritage.len(), 1, "struct 继承子句丢失（D-06）");
 }
 
-/// D-07/D-09：item 的 span 覆盖装饰器与可见性。
+/// D-07/D-09：item 的 span 覆盖编译器指令与可见性。
 #[test]
 fn d_07_d_09_item_span_starts_at_modifiers() {
     let src = "  async func f() {}\n  pub class C {}";

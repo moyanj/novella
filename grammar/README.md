@@ -39,7 +39,7 @@ antlr4 -lib target/antlr-align/gen/grammar -o target/antlr-align/gen grammar/Nov
 - **词法**：样例覆盖全部 105 种 token（含边界：`0xg`、`007`、`1.5e-3`、`f"…"`、Unicode 标识符、
   `/*` 被切成 `Divide`+`Multiply`、各类空白），ANTLR 词法器与 `novella-lexer` 的
   token 流（种类 + 原文，含 `Eof`）逐条一致，词法错误数量与错误 token 文本一致；
-- **语法**：覆盖 AST 全结构（导入 / 类型别名 / 类 / trait / 函数 / 装饰器 / 控制流 / match /
+- **语法**：覆盖 AST 全结构（导入 / 类型别名 / 类 / trait / 函数 / 编译器指令 / 控制流 / match /
   lambda / try / with / 各类字面量与运算符）的样例通过 `NovellaParser.program()`，0 syntax error。
 
 ## 已知的代码侧落差点（文法已按代码收紧，代码是否需要补齐由代码侧决定）

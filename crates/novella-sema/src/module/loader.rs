@@ -71,6 +71,7 @@ pub(crate) fn load_modules(
 
         // ---- 词法 / 语法分析（全流程唯一一次：下游一律消费本模块产物）----
         let file = path.display().to_string();
+        // 缓存命中
         let snapshot = loader
             .parsed_source(&path)
             .filter(|snapshot| snapshot.source == source);
@@ -116,7 +117,7 @@ pub(crate) fn load_modules(
         let mut directive_errors = Vec::new();
         let mut seen_no_std = false;
         program.items.retain(|item| {
-            let Item::Decorator(directive) = item else {
+            let Item::Directive(directive) = item else {
                 return true;
             };
             if directive.name != "no_std" {
@@ -142,6 +143,7 @@ pub(crate) fn load_modules(
             if no_std {
                 options.std_root = None;
             } else if let Some(std_root) = &options.std_root {
+                // 预导入 site.nov 模块
                 let site = std_root.join("site.nov");
                 worklist.push((site.clone(), loader.module_key(&site)));
             }

@@ -1,7 +1,7 @@
-//! 顶层遍历：import / trait / class / struct / 函数 / 装饰器块。
+//! 顶层遍历：import / trait / class / struct / 函数 / 指令块。
 
 use novella_ast::program::{
-    ClassItem, Decorator, FunctionItem, ImportItem, ImportKind, StructItem, TraitItem,
+    ClassItem, CompilerDirective, FunctionItem, ImportItem, ImportKind, StructItem, TraitItem,
 };
 
 use super::name::signature_text;
@@ -31,13 +31,13 @@ impl Walker<'_> {
             Item::Class(class) => self.class_item(class, parent),
             Item::Struct(struct_item) => self.struct_item(struct_item, parent),
             Item::Function(function) => self.function(function, parent),
-            Item::Decorator(decorator) => self.decorator(decorator),
-            Item::DecoratorBlock {
-                decorator,
+            Item::Directive(directive) => self.directive(directive),
+            Item::DirectiveBlock {
+                directive,
                 block,
                 span,
             } => {
-                self.decorator(decorator);
+                self.directive(directive);
                 if let Some(block) = block {
                     self.block(block, parent);
                 }
@@ -47,8 +47,8 @@ impl Walker<'_> {
         }
     }
 
-    pub(crate) fn decorator(&mut self, _decorator: &Decorator) {
-        // 装饰器参数是原始 token 流，不进符号树
+    pub(crate) fn directive(&mut self, _directive: &CompilerDirective) {
+        // 编译器指令参数是原始 token 流，不进符号树
     }
 
     /// 导入：命名空间导入出一个符号，具名导入每个说明符各出一个符号。

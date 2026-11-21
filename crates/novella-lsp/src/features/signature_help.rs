@@ -105,14 +105,14 @@ pub(crate) fn collect_program_calls(program: &Program, out: &mut Vec<CallSite>) 
             Item::Struct(struct_item) => collect_member_calls(&struct_item.members, out),
             Item::Trait(trait_item) => collect_member_calls(&trait_item.members, out),
             Item::Statement(statement) => collect_statement_calls(statement, out),
-            Item::DecoratorBlock { block, .. } => {
+            Item::DirectiveBlock { block, .. } => {
                 if let Some(block) = block {
                     for statement in &block.stmts {
                         collect_statement_calls(statement, out);
                     }
                 }
             }
-            Item::Import(_) | Item::TypeAlias(_) | Item::Decorator(_) => {}
+            Item::Import(_) | Item::TypeAlias(_) | Item::Directive(_) => {}
         }
     }
 }

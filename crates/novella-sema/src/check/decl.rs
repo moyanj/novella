@@ -24,20 +24,15 @@ pub(crate) fn check_module(sema: &mut Sema, module: ModuleId) {
     }
 
     for item in &items {
-        let attributes = match item {
-            Item::Function(f) => f.attributes.as_slice(),
-            Item::Class(c) => c.attributes.as_slice(),
-            Item::Struct(s) => s.attributes.as_slice(),
-            Item::Trait(t) => t.attributes.as_slice(),
+        let directives = match item {
+            Item::Function(f) => f.directives.as_slice(),
+            Item::Class(c) => c.directives.as_slice(),
+            Item::Struct(s) => s.directives.as_slice(),
+            Item::Trait(t) => t.directives.as_slice(),
             _ => &[],
         };
-        for attribute in attributes {
-            let message = if attribute.name == "no_std" {
-                "@no_std 必须在入口模块中写成独立指令 @no_std;，不能修饰声明"
-            } else {
-                "装饰器展开尚未实现"
-            };
-            sema.type_error(module, attribute.span, message);
+        for directive in directives {
+            sema.type_error(module, directive.span, "不合理的编译器指令位置");
         }
         match item {
             Item::Function(function) => {
@@ -67,19 +62,19 @@ pub(crate) fn check_module(sema: &mut Sema, module: ModuleId) {
                     typecheck::check_toplevel_statement(sema, module, stmt);
                 }
             }
-            // 装饰块：指令解释（@cfg 等）属后续期，块内跳过检查并提示
-            Item::DecoratorBlock {
-                decorator, span, ..
+            // 指令块：@cfg 已在 cfg 阶段消费，其余指令的处理属后续期，块内跳过检查并提示
+            Item::DirectiveBlock {
+                directive, span, ..
             } => {
-                let message = if decorator.name == "no_std" {
+                let message = if directive.name == "no_std" {
                     "@no_std 不能用于指令块，请在入口模块中使用 @no_std;"
                 } else {
-                    "装饰块展开尚未实现，不能完成语义检查"
+                    "该编译器指令尚未实现，不能完成语义检查"
                 };
                 sema.type_error(module, *span, message);
             }
-            Item::Decorator(decorator) => {
-                sema.type_error(module, decorator.span, "装饰器展开尚未实现")
+            Item::Directive(directive) => {
+                sema.type_error(module, directive.span, "该编译器指令尚未实现")
             }
             _ => {}
         }
@@ -88,12 +83,12 @@ pub(crate) fn check_module(sema: &mut Sema, module: ModuleId) {
 
 /// 字段初始化 / 方法体检查。
 fn check_member_body(sema: &mut Sema, module: ModuleId, member: &ClassMember, this_ty: &Ty) {
-    let attributes = match member {
-        ClassMember::Field(f) => &f.attributes,
-        ClassMember::Method(m) => &m.attributes,
+    let directives = match member {
+        ClassMember::Field(f) => &f.directives,
+        ClassMember::Method(m) => &m.directives,
     };
-    for attribute in attributes {
-        sema.type_error(module, attribute.span, "成员装饰器展开尚未实现");
+    for directive in directives {
+        sema.type_error(module, directive.span, "成员上的编译器指令尚未实现");
     }
     match member {
         ClassMember::Field(_) => {} // 已在字段定型阶段检查，不能再次登记初值。

@@ -87,16 +87,16 @@ pub(super) fn build_module(
             Item::Import(_) | Item::TypeAlias(_) => {}
             // 具名类型：字段布局走 `finish_types`
             Item::Struct(_) | Item::Class(_) | Item::Trait(_) => {}
-            // 装饰器语句 / 装饰块：修饰关系已在 sema 侧处理
-            Item::Decorator(decorator) => {
-                return Err(
-                    BuildError::at(BuildErrorKind::Unimplemented { node: "decorator" })
-                        .with_site(module_id, decorator.span),
-                );
-            }
-            Item::DecoratorBlock { span, .. } => {
+            // 指令语句 / 指令块：作用关系已在 sema 侧处理
+            Item::Directive(directive) => {
                 return Err(BuildError::at(BuildErrorKind::Unimplemented {
-                    node: "decorator block",
+                    node: "compiler directive",
+                })
+                .with_site(module_id, directive.span));
+            }
+            Item::DirectiveBlock { span, .. } => {
+                return Err(BuildError::at(BuildErrorKind::Unimplemented {
+                    node: "directive block",
                 })
                 .with_site(module_id, *span));
             }
@@ -149,9 +149,9 @@ impl<'a> ModuleBuilder<'a> {
             validate_declaration(item, self.module)?;
             match item {
                 Item::Function(function) => {
-                    if !function.attributes.is_empty() {
+                    if !function.directives.is_empty() {
                         return Err(BuildError::at(BuildErrorKind::Unimplemented {
-                            node: "function decorator",
+                            node: "function directive",
                         })
                         .with_site(self.module, function.span));
                     }
@@ -165,7 +165,7 @@ impl<'a> ModuleBuilder<'a> {
                 Item::Class(_) => self.class_items.push(item),
                 Item::Trait(_) => self.trait_items.push(item),
                 Item::Import(_) | Item::TypeAlias(_) => {}
-                Item::Decorator(_) | Item::DecoratorBlock { .. } => {}
+                Item::Directive(_) | Item::DirectiveBlock { .. } => {}
                 Item::Statement(_) => {
                     // 顶层可执行语句在 `build_module` 里统一报 Unimplemented
                 }
@@ -265,15 +265,15 @@ impl<'a> ModuleBuilder<'a> {
 
 /// sema 投影尚未携带这些语义，必须在丢失 AST 信息前拒绝。
 fn validate_declaration(item: &Item, module: ModuleId) -> Result<(), BuildError> {
-    let (attributes, parameters, members, span) = match item {
+    let (directives, parameters, members, span) = match item {
         Item::Struct(item) => (
-            &item.attributes,
+            &item.directives,
             &item.type_parameters,
             &item.members,
             item.span,
         ),
         Item::Class(item) => (
-            &item.attributes,
+            &item.directives,
             &item.type_parameters,
             &item.members,
             item.span,
@@ -286,7 +286,7 @@ fn validate_declaration(item: &Item, module: ModuleId) -> Result<(), BuildError>
                 .with_site(module, item.span));
             }
             (
-                &item.attributes,
+                &item.directives,
                 &item.type_parameters,
                 &item.members,
                 item.span,
@@ -300,23 +300,23 @@ fn validate_declaration(item: &Item, module: ModuleId) -> Result<(), BuildError>
         }
         _ => return Ok(()),
     };
-    if !attributes.is_empty() || !parameters.is_empty() {
+    if !directives.is_empty() || !parameters.is_empty() {
         return Err(BuildError::at(BuildErrorKind::Unimplemented {
-            node: "decorated / generic type",
+            node: "directive-decorated / generic type",
         })
         .with_site(module, span));
     }
     for member in members {
         let (unsupported, span) = match member {
-            ClassMember::Field(field) => (!field.attributes.is_empty(), field.span),
+            ClassMember::Field(field) => (!field.directives.is_empty(), field.span),
             ClassMember::Method(method) => (
-                !method.attributes.is_empty() || !method.type_parameters.is_empty(),
+                !method.directives.is_empty() || !method.type_parameters.is_empty(),
                 method.span,
             ),
         };
         if unsupported {
             return Err(BuildError::at(BuildErrorKind::Unimplemented {
-                node: "decorated / generic member",
+                node: "directive-decorated / generic member",
             })
             .with_site(module, span));
         }

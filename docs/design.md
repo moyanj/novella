@@ -130,7 +130,7 @@ novella 是一门类 TS/Rust 混合风格、面向系统编程的语言：TS 的
 program: sourceElement* EOF;        // 空文件合法
 sourceElement: moduleImport | typeAliasDeclaration | traitDeclaration
              | classDeclaration | structDeclaration | functionDeclaration
-             | externFunctionDeclaration | decoratorStatement | statement;
+             | externFunctionDeclaration | directiveStatement | statement;
 ```
 
 AST 根：`Program { items: Vec<Item>, span }`。
@@ -141,12 +141,12 @@ AST 根：`Program { items: Vec<Item>, span }`。
 |------|----------|------|
 | `Import` | `moduleImport` | 具名 / 命名空间导入 |
 | `TypeAlias` | `typeAliasDeclaration` | `type A<T> = ...;` |
-| `Trait` | `traitDeclaration` | 支持可见性与装饰器；成员同 class |
-| `Class` | `classDeclaration` | 支持继承、`pub`、装饰器、泛型 |
+| `Trait` | `traitDeclaration` | 支持可见性与编译器指令；成员同 class |
+| `Class` | `classDeclaration` | 支持继承、`pub`、编译器指令、泛型 |
 | `Struct`（**新增**） | `structDeclaration` | 值类型，见 §4.7 |
 | `Function` | `functionDeclaration` / `externFunctionDeclaration` | 顶层函数 / extern |
-| `Decorator` | `decoratorStatement`（`@foo;`） | 独立指令语句 |
-| `DecoratorBlock` | `decoratorStatement`（`@foo { }`） | 指令块 |
+| `Directive` | `directiveStatement`（`@foo;`） | 独立编译器指令语句 |
+| `DirectiveBlock` | `directiveStatement`（`@foo { }`） | 编译器指令块 |
 | `Statement` | `statement` | 顶层语句（含 `pub let`） |
 
 顶层可见性：`pub` 只允许修饰 `class` / `struct` / `trait` / `func` / `let` /
@@ -156,7 +156,7 @@ AST 根：`Program { items: Vec<Item>, span }`。
 
 #### 条件编译指令（2026-11-15）
 
-`@cfg(predicate)` 可修饰函数、class/struct/trait、字段、方法及顶层装饰块。
+`@cfg(predicate)` 可修饰函数、class/struct/trait、字段、方法及顶层指令块。
 多个 cfg 按 and 合并；false 的节点在导入扫描、声明收集前剔除，不参与名称和类型检查，
 但词法/语法错误仍报告。已处理的 cfg 不继续交给 HIR。独立 `@cfg(...);` 无修饰目标，报错。
 
@@ -266,16 +266,16 @@ typeParameter: identifier (Colon typeExpression)?;
   模块和声明位置区分；调用可从实参递归推导，不从期望返回类型反推，冲突或
   无法推导时报错。后端单态化是独立阶段。
 
-### 4.5 编译器指令 `@`（attribute 语义）
+### 4.5 编译器指令 `@`（directive 语义）
 
 ```
-decorator: At identifier ('(' decoratorArgument* ')')?;
-decoratorArgument: '(' decoratorArgument* ')' | ~(OpenParen | CloseParen);
+directive: At identifier ('(' directiveArgument* ')')?;
+directiveArgument: '(' directiveArgument* ')' | ~(OpenParen | CloseParen);
 ```
 
-**语义：编译器指令，等价于 Rust 的 attribute `#[...]`，而不是 Python 式
-运行时装饰器**——`@xxx(...)` 由编译器在**编译期**按 `xxx` 解释并作用于其修饰
-的声明/块（可影响布局、代码生成、检查等），不构造运行时包装。
+**语义：编译器指令，等价于 Rust 的 attribute `#[...]`**——`@xxx(...)` 由编译器
+在**编译期**按 `xxx` 解释并作用于其修饰的声明/块（可影响布局、代码生成、检查等），
+不构造运行时包装。
 
 - 括号内为**自由 token 流**（含嵌套括号，平铺保留），结构化解释延后到语义
   阶段（如 `@cfg(target_os = "linux")`、`@packed`、`@align(8)`、`@extern("C")`、
@@ -283,25 +283,25 @@ decoratorArgument: '(' decoratorArgument* ')' | ~(OpenParen | CloseParen);
 - `@name` 无括号简写等价于空 token 流；
 - 可修饰对象：独立指令语句 `@foo;`、指令块 `@foo { }`、`func` / `class` /
   `struct` / `trait` 声明与 class/struct 成员（方法与**字段**；字段指令
-  保留在 `FieldMember.attributes`，语义由语义分析解释）；
+  保留在 `FieldMember.directives`，语义由语义分析解释）；
 - 指令语句/块只允许单个指令；多个指令报错。
 
 ### 4.6 class / trait
 
 ```
-classDeclaration: decorator* Pub? Class identifier typeParameters? classHeritage? classBody;
+classDeclaration: directive* Pub? Class identifier typeParameters? classHeritage? classBody;
 classHeritage: '(' typeReference ')';              // 文法仅单父类，语言按多继承预留
 classBody: '{' classMember* '}';
-traitDeclaration: decorator* (Pub|Pri|Pkg)? Trait identifier typeParameters? traitBody;
+traitDeclaration: directive* (Pub|Pri|Pkg)? Trait identifier typeParameters? traitBody;
 classMember: methodDeclaration | fieldDeclaration;
-fieldDeclaration: decorator* accessModifier? Static? Weak? identifier typeAnnotation? (Assign expression)? SemiColon;
-methodDeclaration: decorator* accessModifier? Static? Func identifier typeParameters?
+fieldDeclaration: directive* accessModifier? Static? Weak? identifier typeAnnotation? (Assign expression)? SemiColon;
+methodDeclaration: directive* accessModifier? Static? Func identifier typeParameters?
     '(' parameterList? ')' typeAnnotation? ReturnArrow? typeExpression? (block | SemiColon);
 accessModifier: Pub | Pri;
 ```
 
-AST：`ClassItem { attributes, name, type_parameters, members, parent, scope }`；
-`TraitItem { attributes, name, type_parameters, members, scope }`；
+AST：`ClassItem { directives, name, type_parameters, members, parent, scope }`；
+`TraitItem { directives, name, type_parameters, members, scope }`；
 `ClassMember::Field` / `ClassMember::Method`；
 `MemberModifiers { scope: Option<Scope>, is_static, is_weak }`。
 
@@ -338,12 +338,12 @@ AST：`ClassItem { attributes, name, type_parameters, members, parent, scope }`�
 ### 4.7 struct（值类型，已确认新增）
 
 ```
-structDeclaration: decorator* (Pub|Pri|Pkg)? Struct identifier typeParameters? classHeritage? structBody;
+structDeclaration: directive* (Pub|Pri|Pkg)? Struct identifier typeParameters? classHeritage? structBody;
 structBody: '{' structMember* '}';
 structMember: methodDeclaration | fieldDeclaration;   // 复用 class 成员文法
 ```
 
-AST：`StructItem { attributes, name, type_parameters, heritage, members: Vec<ClassMember>, scope, span }`。
+AST：`StructItem { directives, name, type_parameters, heritage, members: Vec<ClassMember>, scope, span }`。
 
 语义定位（与 class 的分工见 §8）：
 
@@ -362,15 +362,15 @@ AST：`StructItem { attributes, name, type_parameters, heritage, members: Vec<Cl
 ### 4.8 函数
 
 ```
-functionDeclaration: decorator* Pub? Async? Func identifier typeParameters?
+functionDeclaration: directive* Pub? Async? Func identifier typeParameters?
     '(' parameterList? ')' typeAnnotation? ReturnArrow? typeExpression? block;
-externFunctionDeclaration: decorator* Pub? Extern Func identifier typeParameters?
+externFunctionDeclaration: directive* Pub? Extern Func identifier typeParameters?
     '(' parameterList? ')' typeAnnotation? ReturnArrow? typeExpression? SemiColon;
 parameterList: parameter (',' parameter)*;
 parameter: identifier typeAnnotation? (Assign expression)?;    // 形参默认值
 ```
 
-AST：`FunctionItem { attributes, name, r#type, block, scope, is_extern, is_async }`；
+AST：`FunctionItem { directives, name, r#type, block, scope, is_extern, is_async }`；
 `FunctionType { type_parameters, params, return_type }`；`Param { name, ty, default }`。
 
 - 返回类型注解 `: T` 与 `-> T` 两种写法等价；缺省返回类型按 `void` 处理；
@@ -718,7 +718,7 @@ ARC 缺陷：`root.child = child; child.parent = root;`（全强）形成环，�
 对策：**弱引用 `weak`**。
 
 - 语法：**仅字段**支持 `weak` 修饰（与 `static` 同位，文法
-  `fieldDeclaration: decorator* accessModifier? Static? Weak? identifier ...`），
+  `fieldDeclaration: directive* accessModifier? Static? Weak? identifier ...`），
   局部变量不做；
 - 类型：`weak` 字段必须保存 class 引用（包括别名与已实例化的泛型 class）；
   struct 字段也可保存这样的弱引用。标量、裸指针、数组及不能证明为 class 的类型参数
@@ -984,7 +984,7 @@ async func main_async() {
 // 路径导入（std 内置路径别名）
 from "std:exception" import ValueError, ZeroDivisionError;
 
-// 编译器指令（attribute 语义）
+// 编译器指令（directive，等价 Rust attribute）
 @deprecated
 class Vec2 { x: f32; y: f32 }
 

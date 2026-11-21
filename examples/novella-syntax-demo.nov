@@ -4,7 +4,7 @@
 // 本文件用 novella 语言本身编写，目标是对词法与语法做「全覆盖」示例：
 //   - 词法面：行注释、Unicode 标识符、普通/格式化/原始/字节字符串、四种进制数字、
 //             全部单字符与多字符运算符、关键字（含 and / or / not 拼写关键字）；
-//   - 语法面：模块导入、装饰器、类型系统（别名/泛型/联合/元组/数组/指针/函数类型）、
+//   - 语法面：模块导入、编译器指令、类型系统（别名/泛型/联合/元组/数组/指针/函数类型）、
 //             trait / class / struct 及其成员修饰符（pub / pri / static / weak）、
 //             函数与 extern 函数、全部语句（变量/跳转/if/while/for/try/with/unsafe/yield）、
 //             全部表达式（字面量/结构/访问/一元/二元/赋值/lambda/match/类型测试与转换）。
@@ -53,13 +53,13 @@ from "std:io" import println, print as log;
 // 命名空间导入：import "mod";（命名空间成员经 MemberAccess 访问，如 math.abs(x)）
 import "std:math";
 
-// ============ 第 2 节  装饰器 ============
-// decoratorStatement：`@name;`（独立装饰器语句）与 `@name(...) { ... }`（装饰块）。
+// ============ 第 2 节  编译器指令 ============
+// directiveStatement：`@name;`（独立指令语句）与 `@name(...) { ... }`（指令块）。
 // `@cfg` 为已支持的条件编译指令；未定义指令仅演示语法。
 @marker;
 @cfg(all(target_os = "linux", feature = "demo"))
 func fullLoad() { println("满载运行"); }
-// 声明前缀形态：装饰器可叠加（decorator*），分发到 func / class / trait
+// 声明前缀形态：编译器指令可叠加（directive*），分发到 func / class / trait
 @deprecated
 @info(author = "蓝汐")
 func legacyApi() {}
@@ -91,7 +91,7 @@ type VecInt = Box<int>;
 type Nested = Box<Box<int>>;
 
 // ============ 第 4 节  trait 声明 ============
-// traitDeclaration：decorator* trait 名 泛型? { 成员* }（trait 无 pub）
+// traitDeclaration：directive* trait 名 泛型? { 成员* }（trait 无 pub）
 // trait 成员同样走成员签名检查，故方法返回类型须已定义/已知。
 trait Drawable {
     // 方法成员（methodDeclaration，可用 pub / pri / static 修饰）
@@ -108,7 +108,7 @@ trait Comparator<T> {
 }
 
 // ============ 第 5 节  类声明 ============
-// classDeclaration：decorator* pub? class 名 泛型? (父类)? { 成员* }
+// classDeclaration：directive* pub? class 名 泛型? (父类)? { 成员* }
 // 父类必须是 class：示例原先拿 trait `Drawable` 当父类（不对），改为 class `Base`。
 // 同时类若有 `__init`，`new Shape(name)` 才会按 `__init` 签名校验——所以补上。
 class Base {
@@ -147,7 +147,7 @@ class Box<T> {
 }
 
 // ============ 第 6 节  struct 声明 ============
-// structDeclaration：decorator* pub? struct 名 泛型? { 成员* }
+// structDeclaration：directive* pub? struct 名 泛型? { 成员* }
 // 值语义：无继承、无构造器（字段初始化构造，见 structInit 表达式）
 pub struct Point {
     pub x: int;
@@ -163,7 +163,7 @@ let 未初始化: string;             // 允许无初始值
 let 空表: int[] = [];             // 空数组字面量 + 标注（顶层同样生效）
 
 // ============ 第 8 节  函数声明 ============
-// functionDeclaration：decorator* pub? async? func 名 泛型? (参数列表?) 返回注解 函数体
+// functionDeclaration：directive* pub? async? func 名 泛型? (参数列表?) 返回注解 函数体
 // 返回注解三种形态：无注解 / `: T` / `-> T`（皆允许，落在一个 return_type 字段）
 pub func add(a: int, b: int) -> int { return a + b; }
 async func fetch(url: string) -> string { return "data"; }    // async 并入 is_async
@@ -279,6 +279,10 @@ func readAll(path: string) { println(path); }
 let sysCtx: int = 0;
 func execute() {}
 func tick() {}
+func error() -> string {
+    log("warn");
+    return "server error";
+}
 
 // ============ 第 11 节  表达式（含字面量 / 结构 / 运算 / lambda / match） ============
 //
@@ -384,10 +388,7 @@ pub func exprs() -> int {
         // 每个 case 间无需分隔符：表达式 / 块结束后直接跟下一个 `case` 关键字
         case 200 => "ok"
         case 404 => "not found"
-        case 500 {
-            log("warn");
-            "server error";
-        }
+        case 500 => error()
         // 类型匹配（typeAnnotation 形态）：`: T` 中的 T 必须在类型位可解析，
         // 所以用本模块已定义的 class（Shape）而不是未定义的 Throws。
         case : Shape => "thrown"

@@ -1,5 +1,5 @@
 use novella_ast::{
-    program::Decorator,
+    program::CompilerDirective,
     program::{
         ClassItem, ClassMember, FieldMember, FunctionItem, ImportItem, ImportKind, ImportSpecifier,
         Item, MemberModifiers, MethodMember, Program, Scope, StructItem, TraitItem, TypeAliasItem,
@@ -296,7 +296,7 @@ impl Parser {
     /// 解析单个顶层 item（对应文法 `sourceElement`）。
     ///
     /// 固定三段顺序，把"修饰符在前、声明关键字在后"的位置约束集中在此处：
-    /// ① 装饰器列表（对应文法 `decorator*`，等价 Rust 的 `#[...]`）；
+    /// ① 编译器指令列表（对应文法 `directive*`，等价 Rust 的 `#[...]`）；
     /// ② 可见性 `pub` / `pri` / `pkg`（对应文法声明前的 `(Pub | Pri | Pkg)?`）；
     /// ③ 按当前 token 分发到各自的 `parse_xxx`。
     ///
@@ -304,16 +304,16 @@ impl Parser {
     /// 绝不回退；各 `parse_xxx` 的前置约定统一为"关键字已被消费，游标指向关键字之后"。
     ///
     /// 文法位置约束在此集中校验（对应示例里"`impl` 不能带 `pub`"那类检查）：
-    /// - 装饰器只允许修饰 `@foo;` / `@foo { ... }`（文法 `decoratorStatement`）
-    ///   与 `func` / `class` / `trait`（文法中仅这三者带 `decorator*`）；
+    /// - 编译器指令只允许修饰 `@foo;` / `@foo { ... }`（文法 `directiveStatement`）
+    ///   与 `func` / `class` / `trait` 等声明（文法中这些声明带 `directive*`）；
     /// - 可见性统一写在声明关键字之前，只允许修饰 `class` / `func` / `let` / `const`
     ///   与 `extern`（`pub extern func`，对应文法 `(Pub | Pri | Pkg)? Extern Func` 的
     ///   可见性位）；`extern` 之后不允许再出现可见性（`extern pub func` 是错误写法）。
     fn parse_item(&mut self) -> Option<Item> {
-        // item 的 span 起点覆盖装饰器与可见性（D-07/D-09：不能只从关键字起算）
+        // item 的 span 起点覆盖编译器指令与可见性（D-07/D-09：不能只从关键字起算）
         let item_start = self.peek().map(|token| token.span.start).unwrap_or(0);
-        // ① 先看有没有装饰器（属性）
-        let attributes = self.parse_decorators();
+        // ① 先看有没有编译器指令
+        let directives = self.parse_directives();
         // ② 再解析可见性
         let scope = self.parse_visibility();
 
@@ -324,7 +324,7 @@ impl Parser {
             other => other?,
         };
 
-        if !attributes.is_empty()
+        if !directives.is_empty()
             && !matches!(
                 kind,
                 TokenKind::SemiColon
@@ -340,7 +340,7 @@ impl Parser {
                     | TokenKind::Pkg
             )
         {
-            self.error_here("装饰器后应为 `;`、块 `{...}` 或声明（func / class / trait）");
+            self.error_here("编译器指令后应为 `;`、块 `{...}` 或声明（func / class / trait）");
             return None;
         }
         if scope.is_some() {
@@ -361,9 +361,9 @@ impl Parser {
 
         // ③ 根据下一个 token 分发
         match kind {
-            // 装饰器独立形态：`@foo;`（装饰器语句）与 `@foo { ... }`（装饰块）
-            TokenKind::SemiColon | TokenKind::OpenBrace if !attributes.is_empty() => {
-                self.parse_decorator_statement(attributes)
+            // 指令独立形态：`@foo;`（指令语句）与 `@foo { ... }`（指令块）
+            TokenKind::SemiColon | TokenKind::OpenBrace if !directives.is_empty() => {
+                self.parse_directive_statement(directives)
             }
             // 空语句 `;`：直接跳过，不产出 item
             TokenKind::SemiColon => {
@@ -380,20 +380,20 @@ impl Parser {
             }
             TokenKind::Trait => {
                 self.advance();
-                self.parse_trait(attributes, scope, item_start)
+                self.parse_trait(directives, scope, item_start)
             }
             TokenKind::Class => {
                 self.advance();
-                self.parse_class(attributes, scope, item_start)
+                self.parse_class(directives, scope, item_start)
             }
             TokenKind::Struct => {
                 self.advance();
-                self.parse_struct(attributes, scope, item_start)
+                self.parse_struct(directives, scope, item_start)
             }
-            TokenKind::Func => self.parse_function(attributes, scope, item_start),
+            TokenKind::Func => self.parse_function(directives, scope, item_start),
             TokenKind::Extern => {
                 self.advance();
-                self.parse_extern_function(attributes, scope, item_start)
+                self.parse_extern_function(directives, scope, item_start)
             }
             // 顶层 `pub let` / `pub const`（文法 `variableStatement: Pub? (Const | Let) ...`），
             // 与兜底分支同样包装成 [`Item::Statement`]
@@ -425,7 +425,7 @@ impl Parser {
     /// 解析导入语句（对应文法 `moduleImport`）。
     ///
     /// 前置：`from` / `import` 起始关键字已被 [`Parser::parse_item`] 消费；
-    /// `start` 为整条 item 的 span 起点（含装饰器 / 可见性，见 [`Parser::parse_item`]）。
+    /// `start` 为整条 item 的 span 起点（含编译器指令 / 可见性，见 [`Parser::parse_item`]）。
     ///
     /// - `fromImport`: `From StringLiteral Import importSpecifier (',' importSpecifier)* SemiColon`
     /// - `directImport`: `Import StringLiteral SemiColon`
@@ -545,13 +545,13 @@ impl Parser {
     /// 解析 trait 声明（对应文法 `traitDeclaration`）。
     ///
     /// 前置：`trait` 关键字已被 [`Parser::parse_item`] 消费，游标指向 trait 名。
-    /// `attributes` 为声明前的装饰器列表（对应文法 `decorator*`），
+    /// `directives` 为声明前的编译器指令列表（对应文法 `directive*`），
     /// `scope` 为可见性（对应文法 `(Pub|Pri|Pkg)?`，D-04），
     /// 均由 [`Parser::parse_item`] 传入；`start` 为整条 item 的 span 起点。
-    /// 语法：`decorator* (Pub|Pri|Pkg)? Trait identifier typeParameters? traitBody` → [`Item::Trait`]。
+    /// 语法：`directive* (Pub|Pri|Pkg)? Trait identifier typeParameters? traitBody` → [`Item::Trait`]。
     fn parse_trait(
         &mut self,
-        attributes: Vec<Decorator>,
+        directives: Vec<CompilerDirective>,
         scope: Option<Scope>,
         start: usize,
     ) -> Option<Item> {
@@ -559,7 +559,7 @@ impl Parser {
         let type_parameters = self.parse_type_parameters();
         let (members, end) = self.parse_member_block()?;
         Some(Item::Trait(TraitItem {
-            attributes,
+            directives,
             name: name.slice,
             type_parameters,
             members,
@@ -571,13 +571,13 @@ impl Parser {
     /// 解析类声明（对应文法 `classDeclaration`）。
     ///
     /// 前置：`class` 关键字已被 [`Parser::parse_item`] 消费，游标指向类名。
-    /// `_attributes` 为声明前的装饰器列表（对应文法 `decorator*`），
+    /// `_directives` 为声明前的编译器指令列表（对应文法 `directive*`），
     /// `_scope` 为可见性（对应文法 `Pub?`），均由 [`Parser::parse_item`] 传入。
-    /// 语法：`decorator* Pub? Class identifier typeParameters? classHeritage? classBody`
+    /// 语法：`directive* Pub? Class identifier typeParameters? classHeritage? classBody`
     /// → [`Item::Class`]。`start` 为整条 item 的 span 起点（见 [`Parser::parse_item`]）。
     fn parse_class(
         &mut self,
-        attributes: Vec<Decorator>,
+        directives: Vec<CompilerDirective>,
         scope: Option<Scope>,
         start: usize,
     ) -> Option<Item> {
@@ -586,7 +586,7 @@ impl Parser {
         let parent = self.parse_class_parent();
         let (members, end) = self.parse_member_block()?;
         Some(Item::Class(ClassItem {
-            attributes,
+            directives,
             name: name.slice,
             type_parameters,
             parent,
@@ -599,17 +599,17 @@ impl Parser {
     /// 解析 extern 函数声明（对应文法 `externFunctionDeclaration`）。
     ///
     /// 前置：`extern` 关键字已被 [`Parser::parse_item`] 消费。
-    /// `attributes` 为声明前的装饰器列表（D-05：文法补记 `decorator*`，装饰器
+    /// `directives` 为声明前的编译器指令列表（D-05：文法补记 `directive*`，指令
     /// 语义如链接名映射由语义分析解释）；`scope` 为可见性（对应文法
     /// `Pub? Extern Func ...` 的 `Pub?`），由 [`Parser::parse_item`] 在 `extern`
     /// 之前解析并传入；`extern` 之后不得再出现可见性修饰符（`extern pub func`
     /// 已在 [`Parser::parse_item`] 拦截报错）。`start` 为整条 item 的 span 起点。
-    /// 语法：`decorator* Pub? Extern Func identifier typeParameters? '(' parameterList? ')'`
+    /// 语法：`directive* Pub? Extern Func identifier typeParameters? '(' parameterList? ')'`
     /// `typeAnnotation? ReturnArrow? typeExpression? SemiColon`
     /// → [`FunctionItem`]（`is_extern: true`、`block: None`、`scope` 取自入参）。
     fn parse_extern_function(
         &mut self,
-        attributes: Vec<Decorator>,
+        directives: Vec<CompilerDirective>,
         scope: Option<Scope>,
         start: usize,
     ) -> Option<Item> {
@@ -635,7 +635,7 @@ impl Parser {
             },
         };
         Some(Item::Function(FunctionItem {
-            attributes,
+            directives,
             name: name.slice,
             r#type: Some(function_type),
             block: None,
@@ -698,12 +698,12 @@ impl Parser {
 
     /// 解析单个成员：字段声明或方法声明（对应文法 `fieldDeclaration` / `methodDeclaration`）。
     ///
-    /// 两者前缀相同（装饰器 + 可见性 + `static` + `weak`），区别只在于后面是
+    /// 两者前缀相同（编译器指令 + 可见性 + `static` + `weak`），区别只在于后面是
     /// `func`（方法）还是标识符（字段），因此统一处理前缀后再分派。
-    /// 成员的 span 起点覆盖装饰器与全部修饰符（与顶层 item 的 D-07/D-09 同一约定）。
+    /// 成员的 span 起点覆盖编译器指令与全部修饰符（与顶层 item 的 D-07/D-09 同一约定）。
     fn parse_member(&mut self) -> Option<ClassMember> {
         let member_start = self.peek().map(|token| token.span.start).unwrap_or(0);
-        let attributes = self.parse_decorators();
+        let directives = self.parse_directives();
         let scope = self.parse_visibility();
         let mut is_static = false;
         let mut is_weak = false;
@@ -764,7 +764,7 @@ impl Parser {
             };
             return Some(ClassMember::Method(MethodMember {
                 name_span: name.span,
-                attributes,
+                directives,
                 modifiers,
                 name: name.slice,
                 type_parameters,
@@ -777,7 +777,7 @@ impl Parser {
                 },
             }));
         }
-        // 字段：装饰器按 E-01 保留（合法性由语义分析判定）
+        // 字段：编译器指令按 E-01 保留（合法性由语义分析判定）
         let name = self.expect(TokenKind::Identifier)?;
         let mut ty = None;
         if self.eat(TokenKind::Colon).is_some() {
@@ -793,7 +793,7 @@ impl Parser {
         }
         Some(ClassMember::Field(FieldMember {
             name_span: name.span,
-            attributes,
+            directives,
             modifiers,
             name: name.slice,
             ty,
@@ -805,15 +805,15 @@ impl Parser {
         }))
     }
 
-    // ---------- 装饰器（attribute） ----------
+    // ---------- 编译器指令（directive） ----------
 
-    /// 解析单个装饰器（对应文法 `decorator`）：`@name` 或 `@name(...)`。
+    /// 解析单个编译器指令（对应文法 `directive`）：`@name` 或 `@name(...)`。
     ///
     /// 前置：游标位于 `@`。
-    /// 括号内为自由 token 流（允许嵌套括号），原样收集进 [`Decorator::tokens`]
+    /// 括号内为自由 token 流（允许嵌套括号），原样收集进 [`CompilerDirective::tokens`]
     /// （不含外层括号本身），结构化解释（如 `@cfg(target_os = "linux")`）
     /// 延后到语义分析阶段，符合「值语义延后」的项目约定。
-    fn parse_decorator(&mut self) -> Option<Decorator> {
+    fn parse_directive(&mut self) -> Option<CompilerDirective> {
         let at = self.expect(TokenKind::At)?;
         let start = at.span.start;
         let (name, name_end) = match self.peek() {
@@ -821,7 +821,7 @@ impl Parser {
                 (token.slice.clone(), token.span.end)
             }
             _ => {
-                self.error_here("`@` 后应有装饰器名");
+                self.error_here("`@` 后应有编译器指令名");
                 return None;
             }
         };
@@ -835,8 +835,8 @@ impl Parser {
                 end = token.span.end;
                 match token.kind {
                     TokenKind::Eof => {
-                        // 括号未闭合是装饰器的致命错误，直接失败返回
-                        self.error_here("装饰器括号未闭合");
+                        // 括号未闭合是指令的致命错误，直接失败返回
+                        self.error_here("编译器指令括号未闭合");
                         return None;
                     }
                     TokenKind::OpenParen => depth += 1,
@@ -851,62 +851,62 @@ impl Parser {
                 tokens.push(token);
             }
         }
-        Some(Decorator {
+        Some(CompilerDirective {
             name,
             tokens,
             span: Span { start, end },
         })
     }
 
-    /// 解析声明前的装饰器列表（对应文法 `decorator*`）。
+    /// 解析声明前的编译器指令列表（对应文法 `directive*`）。
     ///
     /// 收集零个或多个 `@name(...)?`，游标停在第一个非 `@` token 处；
-    /// 由 [`Parser::parse_item`] 调用，其归属（独立语句 / 装饰块 / 声明前缀）
+    /// 由 [`Parser::parse_item`] 调用，其归属（独立语句 / 指令块 / 声明前缀）
     /// 由 [`Parser::parse_item`] 按后续 token 决定。
-    fn parse_decorators(&mut self) -> Vec<Decorator> {
-        let mut decorators = vec![];
+    fn parse_directives(&mut self) -> Vec<CompilerDirective> {
+        let mut directives = vec![];
         while self.check(TokenKind::At) {
-            match self.parse_decorator() {
-                Some(decorator) => decorators.push(decorator),
+            match self.parse_directive() {
+                Some(directive) => directives.push(directive),
                 // 解析失败已报诊断；`@` 已被消费，循环自然退出
                 None => break,
             }
         }
-        decorators
+        directives
     }
 
-    /// 解析装饰器独立形态（对应文法 `decoratorStatement: decorator (SemiColon | block)`）。
+    /// 解析编译器指令独立形态（对应文法 `directiveStatement: directive (SemiColon | block)`）。
     ///
-    /// 前置：游标位于 `;` 或 `{`（尚未消费），`decorators` 为 [`Parser::parse_item`]
-    /// 已收集的非空装饰器列表；装饰器后接 `func` / `class` / `trait` 的声明前缀形态
+    /// 前置：游标位于 `;` 或 `{`（尚未消费），`directives` 为 [`Parser::parse_item`]
+    /// 已收集的非空指令列表；指令后接 `func` / `class` / `trait` 的声明前缀形态
     /// 不经本方法，由 [`Parser::parse_item`] 直接交给对应的 `parse_xxx`。
     ///
-    /// 文法只允许这两种形态各携带单个装饰器，多个装饰器在此报错。
-    fn parse_decorator_statement(&mut self, decorators: Vec<Decorator>) -> Option<Item> {
-        let start = decorators.first().map(|d| d.span.start)?;
-        if decorators.len() != 1 {
-            self.error_here("装饰器语句 / 装饰块只允许一个装饰器");
+    /// 文法只允许这两种形态各携带单个指令，多个指令在此报错。
+    fn parse_directive_statement(&mut self, directives: Vec<CompilerDirective>) -> Option<Item> {
+        let start = directives.first().map(|d| d.span.start)?;
+        if directives.len() != 1 {
+            self.error_here("指令语句 / 指令块只允许一个编译器指令");
             return None;
         }
-        let decorator = decorators.into_iter().next().expect("len == 1 已检查");
+        let directive = directives.into_iter().next().expect("len == 1 已检查");
         match self.peek().map(|t| t.kind) {
-            // `@foo;`：独立装饰器语句
+            // `@foo;`：独立指令语句
             Some(TokenKind::SemiColon) => {
                 let semi = self.advance().expect("已确认当前为分号");
-                Some(Item::Decorator(Decorator {
+                Some(Item::Directive(CompilerDirective {
                     span: Span {
                         start,
                         end: semi.span.end,
                     },
-                    ..decorator
+                    ..directive
                 }))
             }
-            // `@foo { ... }`：装饰块（调用方已限定当前 token 为 `;` 或 `{`）
+            // `@foo { ... }`：指令块（调用方已限定当前 token 为 `;` 或 `{`）
             _ => {
                 let block = self.parse_block()?;
                 let end = block.span.end;
-                Some(Item::DecoratorBlock {
-                    decorator,
+                Some(Item::DirectiveBlock {
+                    directive,
                     block: Some(block),
                     span: Span { start, end },
                 })
@@ -919,16 +919,16 @@ impl Parser {
     /// 解析函数声明（对应文法 `functionDeclaration`）。
     ///
     /// 前置：游标指向 `func` / `async`（本方法自行消费；[`Parser::parse_item`]
-    /// 不预消费）。`attributes` 为声明前的装饰器列表（对应文法 `decorator*`），
+    /// 不预消费）。`directives` 为声明前的编译器指令列表（对应文法 `directive*`），
     /// `scope` 为可见性（对应文法 `Pub?`），均由 [`Parser::parse_item`] 传入；
-    /// 无修饰时为空 / `None`。`start` 为整条 item 的 span 起点（含装饰器 /
+    /// 无修饰时为空 / `None`。`start` 为整条 item 的 span 起点（含编译器指令 /
     /// 可见性，D-07：不能用 `pos-1` 回推——`async func` 会取到 `async`）。
     ///
-    /// 语法：`decorator* Pub? Async? Func identifier typeParameters? '(' parameterList? ')'`
+    /// 语法：`directive* Pub? Async? Func identifier typeParameters? '(' parameterList? ')'`
     /// `typeAnnotation? ReturnArrow? typeExpression? block` → [`Item::Function`]。
     fn parse_function(
         &mut self,
-        attributes: Vec<Decorator>,
+        directives: Vec<CompilerDirective>,
         scope: Option<Scope>,
         start: usize,
     ) -> Option<Item> {
@@ -972,7 +972,7 @@ impl Parser {
             span: Span { start, end },
         };
         Some(Item::Function(FunctionItem {
-            attributes,
+            directives,
             name: name.slice,
             r#type: Some(function_type),
             block: Some(Box::new(Statement::Block(block))),
@@ -993,7 +993,7 @@ impl Parser {
     /// `start` 为整条 item 的 span 起点（见 [`Parser::parse_item`]）。
     fn parse_struct(
         &mut self,
-        attributes: Vec<Decorator>,
+        directives: Vec<CompilerDirective>,
         scope: Option<Scope>,
         start: usize,
     ) -> Option<Item> {
@@ -1002,7 +1002,7 @@ impl Parser {
         let heritage = self.parse_class_parent();
         let (members, end) = self.parse_member_block()?;
         Some(Item::Struct(StructItem {
-            attributes,
+            directives,
             name: name.slice,
             type_parameters,
             heritage,

@@ -4,6 +4,12 @@
 
 当前基线：`novella compile` 已能将支持的标量程序生成 Linux x86-64 可执行文件；`check`、AST/HIR 导出与目标文件输出独立可用。详细状态见[编译器设计](docs/compiler-design.md)、[语义覆盖矩阵](docs/sema-coverage.md)、[HIR 交接文档](docs/hir-handover.md)和[标准库设计草案](docs/stdlib-design.md)。
 
+## M-1: Bugfix
+
+- [ ] 函数返回值不进行类型推导
+- [ ] “ 类型模式不可能匹配目标类型”不应为错误，而应该为警告
+- [ ] 当无法读取模块文件时，仍然报符号不存在错误
+
 ## M0：接通 CLI 与 HIR
 
 - [x] 让 CLI 复用同一次语义分析的结果调用 `build_hir`；区分静态检查、AST/HIR 导出和原生编译，不再把 JSON 默认写为 `output.s`。保留现有 JSON 消费者的显式导出路径并记录迁移方式。

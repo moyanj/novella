@@ -13,7 +13,7 @@
 //!
 //! 分文件组织（同一次遍历的各阶段）：
 //! - `name`：名字区间定位与签名摘要文本；
-//! - `items`：顶层 item（import / trait / class / struct / 函数 / 装饰器）；
+//! - `items`：顶层 item（import / trait / class / struct / 函数 / 编译器指令）；
 //! - `members`：类型成员（字段、方法）与类型表达式、类型形参、参数；
 //! - `statements`：语句（块、控制流、变量声明、绑定模式、catch / with）；
 //! - `expressions`：表达式遍历（lambda、match 等嵌套结构）；

@@ -39,7 +39,7 @@ sourceElement:
 	| structDeclaration
 	| functionDeclaration
 	| externFunctionDeclaration
-	| decoratorStatement
+	| directiveStatement
 	| statement;
 
 // ====================== 模块系统 ======================
@@ -55,26 +55,27 @@ importSpecifier: identifier (As identifier)?;
 // 命名空间导入：`import "mod";`（整模块绑定，本地别名由语义分析按路径推导）
 directImport: Import StringLiteral SemiColon;
 
-// ====================== 装饰器 ======================
-// decoratorStatement 两种形态，分别对应 `Item::Decorator` 与 `Item::DecoratorBlock`：
-//   - decorator SemiColon —— 独立装饰器语句，如 `@foo;`
+// ====================== 编译器指令 ======================
+// directiveStatement 两种形态，分别对应 `Item::Directive` 与 `Item::DirectiveBlock`：
+//   - directive SemiColon —— 独立指令语句，如 `@no_std;`
 //     `@no_std;` 的入口限定与禁用标准库语义由 sema 在模块加载阶段处理。
-//   - decorator block     —— 装饰块，如 `@cfg(feature = "limine") { ... }`
+//   - directive block     —— 指令块，如 `@cfg(feature = "limine") { ... }`
 //
-// 文法只允许单条装饰器：代码显式报错「装饰器语句 / 装饰块只允许一个装饰器」
-//（`Parser::parse_decorator_statement`），故此处不是 `decorator*`。
-decoratorStatement: decorator (SemiColon | block);
+// 文法只允许单条指令：代码显式报错「指令语句 / 指令块只允许一个编译器指令」
+//（`Parser::parse_directive_statement`），故此处不是 `directive*`。
+directiveStatement: directive (SemiColon | block);
 
-// 装饰器（对应 `Decorator`）：`@name` 或 `@name(...)`。
+// 编译器指令（对应 `CompilerDirective`）：`@name` 或 `@name(...)`。
 //
-// 括号内为**自由 token 流**，原样收集进 `Decorator.tokens`（不含外层括号本身），
-// 结构化解释（如 `@cfg(target_os = "linux")`）延后到语义分析阶段——符合「值语义延后」约定。
-// 名字必须是标识符：代码中 `@` 后不是 `Identifier` 即报「`@` 后应有装饰器名」。
-decorator: At identifier ('(' decoratorArgument* ')')?;
+// 指令在编译期解释，不是运行时机制。括号内为**自由 token 流**，原样收集进
+// `CompilerDirective.tokens`（不含外层括号本身），结构化解释（如
+// `@cfg(target_os = "linux")`）延后到语义分析阶段——符合「值语义延后」约定。
+// 名字必须是标识符：代码中 `@` 后不是 `Identifier` 即报「`@` 后应有编译器指令名」。
+directive: At identifier ('(' directiveArgument* ')')?;
 
 // 括号内自由 token：允许嵌套括号（与代码的括号配对收集一致，嵌套括号平铺在 tokens 中）。
-// 括号未闭合属致命错误，由解析阶段的诊断报告（代码：`装饰器括号未闭合`）。
-decoratorArgument: '(' decoratorArgument* ')' | ~(OpenParen | CloseParen);
+// 括号未闭合属致命错误，由解析阶段的诊断报告（代码：`编译器指令括号未闭合`）。
+directiveArgument: '(' directiveArgument* ')' | ~(OpenParen | CloseParen);
 
 // ====================== 类型系统 ======================
 // 类型别名（对应 `TypeAliasItem`）
@@ -135,7 +136,7 @@ typeAnnotation: Colon typeExpression;
 // ====================== trait 与类声明 ======================
 // trait 声明（对应 `TraitItem`：attributes / name / type_parameters / members / scope）
 traitDeclaration:
-	decorator* (Pub | Pri | Pkg)? Trait identifier typeParameters? traitBody;
+	directive* (Pub | Pri | Pkg)? Trait identifier typeParameters? traitBody;
 
 traitBody: '{' traitMember* '}';
 
@@ -144,7 +145,7 @@ traitMember: methodDeclaration | fieldDeclaration;
 
 // 类声明（对应 `ClassItem`：attributes / name / type_parameters / members / parent / scope）
 classDeclaration:
-	decorator* (Pub | Pri | Pkg)? Class identifier typeParameters? classHeritage? classBody;
+	directive* (Pub | Pri | Pkg)? Class identifier typeParameters? classHeritage? classBody;
 
 // 继承子句 = 「父类 / trait」混合列表（以代码为准：parser 支持逗号分隔多项）。
 // 各项语义由 sema 按符号表分类——class 项是父类（仅首项生效，多于一个报多继承），
@@ -162,7 +163,7 @@ classMember: methodDeclaration | fieldDeclaration;
 // 继承子句按 classHeritage 语法解析后保留在 `StructItem.heritage`——struct 是否
 // 允许继承由语义分析判定（parser 只保留信息）；成员文法复用 class 成员。
 structDeclaration:
-	decorator* (Pub | Pri | Pkg)? Struct identifier typeParameters? classHeritage? structBody;
+	directive* (Pub | Pri | Pkg)? Struct identifier typeParameters? classHeritage? structBody;
 
 structBody: '{' classMember* '}';
 
@@ -171,7 +172,7 @@ structBody: '{' classMember* '}';
 // `Weak?` 弱引用修饰（仅 class / struct 字段，对应 object-model 的 weak 语法）：
 // 赋值不 retain、不参与引用计数，访问过期对象属未定义行为（无空安全保证）。
 fieldDeclaration:
-	decorator* accessModifier? Static? Weak? identifier typeAnnotation? (
+	directive* accessModifier? Static? Weak? identifier typeAnnotation? (
 		Assign expression
 	)? SemiColon;
 
@@ -181,7 +182,7 @@ fieldDeclaration:
 //（解析结果统一落在 `MethodMember.return_type` 一个字段上）；
 // `(block | SemiColon)` 对应 `MethodMember.block` 的 `Some` / `None`。
 methodDeclaration:
-	decorator* accessModifier? Static? Func identifier typeParameters? '(' parameterList? ')'
+	directive* accessModifier? Static? Func identifier typeParameters? '(' parameterList? ')'
 		typeAnnotation? ReturnArrow? typeExpression? (
 		block
 		| SemiColon
@@ -195,7 +196,7 @@ accessModifier: Pub | Pri | Pkg;
 // is_extern / is_async）。
 // `Async?` 对应 `FunctionItem.is_async`（此前的 `asyncStatement` 已并入本节点）。
 functionDeclaration:
-	decorator* (Pub | Pri | Pkg)? Async? Func identifier typeParameters? '(' parameterList? ')' typeAnnotation?
+	directive* (Pub | Pri | Pkg)? Async? Func identifier typeParameters? '(' parameterList? ')' typeAnnotation?
 		ReturnArrow? typeExpression? block;
 
 parameterList: parameter (',' parameter)*;
@@ -205,10 +206,10 @@ parameter: identifier typeAnnotation? (Assign expression)?;
 
 // extern 函数声明（对应 `FunctionItem`：is_extern = true、block = None，以 `;` 结束）。
 // 可见性写在 `extern` 之前（`pub extern func`）：代码中 `extern pub func` 会报
-//「`extern` 后不应有可见性修饰符」。装饰器（如 `@link("c")`）保留在
-// `FunctionItem.attributes`，语义由语义分析解释。
+//「`extern` 后不应有可见性修饰符」。编译器指令（如 `@link("c")`）保留在
+// `FunctionItem.directives`，语义由语义分析解释。
 externFunctionDeclaration:
-	decorator* (Pub | Pri | Pkg)? Extern Func identifier typeParameters? '(' parameterList? ')' typeAnnotation? ReturnArrow?
+	directive* (Pub | Pri | Pkg)? Extern Func identifier typeParameters? '(' parameterList? ')' typeAnnotation? ReturnArrow?
 		typeExpression? SemiColon;
 
 // ====================== 语句 ======================
@@ -436,7 +437,7 @@ matchDefault: Default ('=>' expression | block);
 
 // ====================== 标识符 ======================
 // 标识符：代码只接受 `TokenKind::Identifier` 这一种 token——
-// `Parser::except_identifier` 及各调用点（`parse_decorator` / `parse_variable_declaration` /
+// `Parser::except_identifier` 及各调用点（`parse_directive` / `parse_variable_declaration` /
 // `parse_function`）都要求当前 token 是 Identifier，词法层也没有上下文关键字机制。
 // 因此这里不列出「可作标识符的关键字」集合：关键字当前是硬保留字。
 // 若将来要支持软关键字（如 `obj.type`），需先在 parser 侧放宽这些校验，

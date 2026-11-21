@@ -1,6 +1,6 @@
 //! 条件编译在声明收集之前筛选 AST；词法、语法错误仍照常报告。
 use novella_ast::{
-    program::{ClassMember, Decorator, Item, Program},
+    program::{ClassMember, CompilerDirective, Item, Program},
     stmt::Statement,
 };
 use novella_core::{
@@ -32,15 +32,15 @@ impl Default for CfgOptions {
 pub(crate) fn configure(program: &mut Program, options: &CfgOptions) -> Vec<(Span, String)> {
     let mut errors = Vec::new();
     program.items.retain_mut(|item| {
-        let (attributes, members) = match item {
-            Item::Function(value) => (&mut value.attributes, None),
-            Item::Class(value) => (&mut value.attributes, Some(&mut value.members)),
-            Item::Struct(value) => (&mut value.attributes, Some(&mut value.members)),
-            Item::Trait(value) => (&mut value.attributes, Some(&mut value.members)),
-            Item::DecoratorBlock {
-                decorator, block, ..
-            } if decorator.name == "cfg" => {
-                let enabled = evaluate(decorator, options, &mut errors);
+        let (directives, members) = match item {
+            Item::Function(value) => (&mut value.directives, None),
+            Item::Class(value) => (&mut value.directives, Some(&mut value.members)),
+            Item::Struct(value) => (&mut value.directives, Some(&mut value.members)),
+            Item::Trait(value) => (&mut value.directives, Some(&mut value.members)),
+            Item::DirectiveBlock {
+                directive, block, ..
+            } if directive.name == "cfg" => {
+                let enabled = evaluate(directive, options, &mut errors);
                 if enabled && let Some(block) = block.take() {
                     *item = Item::Statement(Box::new(Statement::Block(block)));
                 }
@@ -48,16 +48,16 @@ pub(crate) fn configure(program: &mut Program, options: &CfgOptions) -> Vec<(Spa
             }
             _ => return true,
         };
-        if !enabled(attributes, options, &mut errors) {
+        if !enabled(directives, options, &mut errors) {
             return false;
         }
         if let Some(members) = members {
             members.retain_mut(|member| {
-                let attributes = match member {
-                    ClassMember::Field(value) => &mut value.attributes,
-                    ClassMember::Method(value) => &mut value.attributes,
+                let directives = match member {
+                    ClassMember::Field(value) => &mut value.directives,
+                    ClassMember::Method(value) => &mut value.directives,
                 };
-                enabled(attributes, options, &mut errors)
+                enabled(directives, options, &mut errors)
             });
         }
         true
@@ -66,25 +66,29 @@ pub(crate) fn configure(program: &mut Program, options: &CfgOptions) -> Vec<(Spa
 }
 
 fn enabled(
-    attributes: &mut Vec<Decorator>,
+    directives: &mut Vec<CompilerDirective>,
     options: &CfgOptions,
     errors: &mut Vec<(Span, String)>,
 ) -> bool {
     let mut result = true;
-    attributes.retain(|attribute| {
-        if attribute.name != "cfg" {
+    directives.retain(|directive| {
+        if directive.name != "cfg" {
             return true;
         }
         // 所有 cfg 均解析，不能因前一个为 false 吞掉后续参数错误。
-        result &= evaluate(attribute, options, errors);
+        result &= evaluate(directive, options, errors);
         false
     });
     result
 }
 
-fn evaluate(attribute: &Decorator, options: &CfgOptions, errors: &mut Vec<(Span, String)>) -> bool {
+fn evaluate(
+    directive: &CompilerDirective,
+    options: &CfgOptions,
+    errors: &mut Vec<(Span, String)>,
+) -> bool {
     let mut parser = Predicate {
-        tokens: &attribute.tokens,
+        tokens: &directive.tokens,
         index: 0,
         options,
     };
@@ -98,7 +102,7 @@ fn evaluate(attribute: &Decorator, options: &CfgOptions, errors: &mut Vec<(Span,
     match result {
         Ok(result) => result,
         Err(message) => {
-            errors.push((attribute.span, message));
+            errors.push((directive.span, message));
             false
         }
     }

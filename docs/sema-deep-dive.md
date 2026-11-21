@@ -419,10 +419,10 @@ load_modules(
 
 - `configure(program: &mut Program, options) -> Vec<(Span, String)>`（:32-66）：
   - `program.items.retain_mut`；
-  - `DecoratorBlock { name == "cfg" }` 单独 `evaluate`，enabled 且有 block → 降级成 `Item::Statement(Block)`；
+  - `DirectiveBlock { name == "cfg" }` 单独 `evaluate`，enabled 且有 block → 降级成 `Item::Statement(Block)`；
   - 其余 Function/Class/Struct/Trait 用 `enabled(attributes)`：false 则删整个 item，true 则对 members 同样 `retain_mut`。
 
-- `enabled`（:68-83）：所有 cfg 都 `evaluate`（`result &=`，**不短路**，防止后面的 cfg 错误被吞），并移除 cfg 装饰器。
+- `enabled`（:68-83）：所有 cfg 都 `evaluate`（`result &=`，**不短路**，防止后面的 cfg 错误被吞），并移除 cfg 编译器指令。
 
 - `evaluate`（:85-105）：解析 `Predicate` + 检查无多余 token（多余 → `"cfg 条件后有多余 token"`），错误收集进 `Vec<(Span,String)>` 并保守返回 false。
 
@@ -479,7 +479,7 @@ load_modules(
 - `Class`：`ClassDef { parent_type: None, trait_types: vec![], type_params, fields 空, methods 空, type_param_count, parent_resolved: None, name, span, trait_impls 空, ... }`；D04：括号列表先记 `trait_impls` 候选，Phase 2c 按符号表分类为父类/trait 实现（:55-78）。
 - `Struct`：`StructDef { type_params, fields 空, methods 空, type_param_count }`（:79-100）。
 - `Function`：**只放占位签名** `FunctionSig { module, name: None, params 空, ret: Unknown, type_param_count: 0, ..., is_async, is_extern, is_method: false }` + `Symbol { name, kind: Function, sig, visibility: function.scope, span, name_span }`（:101-124）。
-- `Item::Statement`：收顶层变量；`Decorator` / `DecoratorBlock`：无符号产出。
+- `Item::Statement`：收顶层变量；`CompilerDirective` / `DirectiveBlock`：无符号产出。
 
 **泛型参数身份**：`param_key(module, p) = format!("{}@m{}:{}", p.name, module, p.span.start)`（ty/generics.rs:4-6），源码位置参与身份，防不同声明的同名 `T` 串用。bound 在 Phase 2b `register_bounds` 注册。
 
@@ -802,7 +802,7 @@ analysis.rs:125-139 → generic_uses 校验 type_param_bounds
 分派处理四种 TypeDef：
 
 - **TypeAlias**（:13-18）：`resolve_type(alias.alias)`；循环检测在 `expand_alias` 用 `resolving_aliases: HashSet`，报"类型别名 `{}` 循环定义"；注释"未使用的循环/非法类型不能躲过诊断"。
-- **Trait**（:20-76）：字段 → "trait `{}` 不能声明字段 `{}`"；带 block 方法 → "trait `{}` 的方法 `{}` 暂不能带函数体（默认方法未实现）"；`check_special_method_name(true)`；`build_method_sig_trait`；回填 `def.methods`；attribute → "成员装饰器展开尚未实现"。
+- **Trait**（:20-76）：字段 → "trait `{}` 不能声明字段 `{}`"；带 block 方法 → "trait `{}` 的方法 `{}` 暂不能带函数体（默认方法未实现）"；`check_special_method_name(true)`；`build_method_sig_trait`；回填 `def.methods`；编译器指令 → "成员编译器指令展开尚未实现"。
 - **Class**（:77-129）：字段 `build_field`；方法 `check_member_collision(canonical)` + `check_special_method_name(true)` + `build_method_sig(owner = Ty::Class)`；`def.trait_impls = class.parent.clone()`（混合候选原样保存待 2c 分类）+ `def.span = class.span`；填 `def.fields` / `def.methods`。
 - **Struct**（:130-177）：`check_special_method_name(false)`；heritage 非空 → "struct 不支持继承"。
 
@@ -902,7 +902,7 @@ analysis.rs:125-139 → generic_uses 校验 type_param_bounds
 
 `is_main_return_type`（:142-149）仅 Void / Int(I32)，Unknown 放行，其他宽度拒绝（退出码语义只定义 32 位有符号整数）。
 
-**装饰器**：item attributes 逐条"装饰器展开尚未实现"；DecoratorBlock → "装饰块展开尚未实现，不能完成语义检查"；整块跳过检查靠诊断阻断下游。
+**编译器指令**：item attributes 逐条"编译器指令展开尚未实现"；DirectiveBlock → "指令块展开尚未实现，不能完成语义检查"；整块跳过检查靠诊断阻断下游。
 
 **函数/类/struct body**：
 

@@ -12,24 +12,26 @@ use crate::{
     types::{FunctionType, Param, TypeExpr, TypeParameter},
 };
 
-/// 装饰器（对应文法 `decorator`）：`@name` 或 `@name(...)`
+/// 编译器指令（对应文法 `directive`）：`@name` 或 `@name(...)`
 ///
-/// 语义等价于 Rust 的 attribute `#[name(...)]`：
-/// - `name` 为装饰器名（如 `@derive(Clone)` 中的 `derive`）；
+/// 这是**编译期**指令，语义等价于 Rust 的 attribute `#[name(...)]`，
+/// 不是 Python 那种在语言里另有对象的运行时机制：`@xxx(...)` 由编译器在编译期按 `xxx`
+/// 解释并作用于其修饰的声明 / 指令块（可影响布局、代码生成、检查等），
+/// 不构造运行时包装。
+/// - `name` 为指令名（如 `@cfg(target_os = "linux")` 中的 `cfg`）；
 /// - 圆括号内为**原始 token 树**（任意 token，允许嵌套括号与各类字面量），
-///   不在 AST 层做结构化解析，由语义分析阶段按 `name` 解释其含义
-///   （如 `@cfg(target_os = "linux")`、`@derive(Clone, Debug)`）。
+///   不在 AST 层做结构化解析，由语义分析阶段按 `name` 解释其含义。
 ///
 /// 出于「值语义延后」的项目约定，token 流原样保留（含字符串/进制前缀），
 /// 嵌套括号以 `OpenParen`/`CloseParen` 等 token 平铺在序列中，需要时可
 /// 按括号配对还原树形。`@name` 无括号的简写形式等价于空 token 流。
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Spanned)]
-pub struct Decorator {
-    /// 装饰器名：如 `@derive(Clone)` 中的 `derive`
+pub struct CompilerDirective {
+    /// 指令名：如 `@cfg(...)` 中的 `cfg`
     pub name: String,
     /// 圆括号内的原始 token 序列（不含外层括号本身）；`@name` 简写形式为空
     pub tokens: Vec<Token>,
-    /// 装饰器整体（含 `@` 与括号）覆盖的源码区间
+    /// 指令整体（含 `@` 与括号）覆盖的源码区间
     pub span: Span,
 }
 
@@ -116,11 +118,11 @@ pub struct TypeAliasItem {
 }
 
 /// trait 声明（对应文法
-/// `traitDeclaration: decorator* (Pub | Pri | Pkg)? Trait identifier typeParameters? traitBody`）
+/// `traitDeclaration: directive* (Pub | Pri | Pkg)? Trait identifier typeParameters? traitBody`）
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Spanned)]
 pub struct TraitItem {
-    /// trait 装饰器列表（对应文法 `traitDeclaration` 的 `decorator*`）
-    pub attributes: Vec<Decorator>,
+    /// trait 编译器指令列表（对应文法 `traitDeclaration` 的 `directive*`）
+    pub directives: Vec<CompilerDirective>,
     /// trait 名
     pub name: String,
     /// 泛型参数列表（对应文法 `typeParameters?`）
@@ -129,7 +131,7 @@ pub struct TraitItem {
     pub members: Vec<ClassMember>,
     /// 可见性（对应文法 `(Pub | Pri | Pkg)?`），None 表示缺省
     pub scope: Option<Scope>,
-    /// 整条 trait 声明覆盖的源码区间（含装饰器与可见性修饰符）
+    /// 整条 trait 声明覆盖的源码区间（含编译器指令与可见性修饰符）
     pub span: Span,
 }
 
@@ -145,13 +147,13 @@ pub struct MemberModifiers {
     pub is_weak: bool,
 }
 
-/// 类字段成员（对应文法 `fieldDeclaration`：`decorator* accessModifier? Static? identifier typeAnnotation? (Assign expression)? SemiColon`）
+/// 类字段成员（对应文法 `fieldDeclaration`：`directive* accessModifier? Static? identifier typeAnnotation? (Assign expression)? SemiColon`）
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Spanned)]
 pub struct FieldMember {
     /// 字段标识符位置（成员绑定与重命名使用）。
     pub name_span: Span,
-    /// 字段装饰器列表（对应文法 `fieldDeclaration` 的 `decorator*`）
-    pub attributes: Vec<Decorator>,
+    /// 字段编译器指令列表（对应文法 `fieldDeclaration` 的 `directive*`）
+    pub directives: Vec<CompilerDirective>,
     /// 可见性与静态修饰符
     pub modifiers: MemberModifiers,
     /// 字段名
@@ -164,7 +166,7 @@ pub struct FieldMember {
     pub span: Span,
 }
 
-/// 类方法成员（对应文法 `methodDeclaration`：`decorator* accessModifier? Static? Func identifier typeParameters? '(' parameterList? ')' typeAnnotation? ReturnArrow? typeExpression? (block | SemiColon)`）
+/// 类方法成员（对应文法 `methodDeclaration`：`directive* accessModifier? Static? Func identifier typeParameters? '(' parameterList? ')' typeAnnotation? ReturnArrow? typeExpression? (block | SemiColon)`）
 ///
 /// 不复用 [`FunctionItem`]：其 `r#type: FunctionType` 要求必填返回类型，
 /// 无法表达 `func foo() {}` 这类缺省返回注解的形态；且方法独有的
@@ -173,8 +175,8 @@ pub struct FieldMember {
 pub struct MethodMember {
     /// 方法标识符位置（不覆盖参数列表与函数体）。
     pub name_span: Span,
-    /// 方法装饰器列表（对应文法 `methodDeclaration` 的 `decorator*`）
-    pub attributes: Vec<Decorator>,
+    /// 方法编译器指令列表（对应文法 `methodDeclaration` 的 `directive*`）
+    pub directives: Vec<CompilerDirective>,
     /// 可见性与静态修饰符
     pub modifiers: MemberModifiers,
     /// 方法名
@@ -201,11 +203,11 @@ pub enum ClassMember {
 }
 
 /// 类声明（对应文法
-/// `classDeclaration: decorator* Pub? Class identifier typeParameters? classHeritage? classBody`）
+/// `classDeclaration: directive* Pub? Class identifier typeParameters? classHeritage? classBody`）
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Spanned)]
 pub struct ClassItem {
-    /// 类装饰器列表（对应文法 `classDeclaration` 的 `decorator*`）
-    pub attributes: Vec<Decorator>,
+    /// 类编译器指令列表（对应文法 `classDeclaration` 的 `directive*`）
+    pub directives: Vec<CompilerDirective>,
     pub name: String,
     pub type_parameters: Vec<TypeParameter>,
     pub members: Vec<ClassMember>,
@@ -223,8 +225,8 @@ pub struct ClassItem {
 /// `extern func foo();`（仅签名，`block` 为 None）。
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Spanned)]
 pub struct FunctionItem {
-    /// 函数装饰器列表（对应文法 `functionDeclaration` / `methodDeclaration` 的 `decorator*`）
-    pub attributes: Vec<Decorator>,
+    /// 函数编译器指令列表（对应文法 `functionDeclaration` / `methodDeclaration` 的 `directive*`）
+    pub directives: Vec<CompilerDirective>,
     pub name: String,
     pub r#type: Option<FunctionType>,
     /// 函数体（对应文法 `block`），None 表示纯声明形态（`SemiColon`）。
@@ -248,8 +250,8 @@ pub struct FunctionItem {
 /// 不识别 `__` 前缀特殊方法。
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Spanned)]
 pub struct StructItem {
-    /// struct 装饰器列表（对应文法 `structDeclaration` 的 `decorator*`）
-    pub attributes: Vec<Decorator>,
+    /// struct 编译器指令列表（对应文法 `structDeclaration` 的 `directive*`）
+    pub directives: Vec<CompilerDirective>,
     pub name: String,
     pub type_parameters: Vec<TypeParameter>,
     /// 成员列表（复用 `ClassMember`：Field / Method）
@@ -261,7 +263,7 @@ pub struct StructItem {
     pub heritage: Vec<TypeExpr>,
     /// 可见性（对应文法 `Pub?`）
     pub scope: Option<Scope>,
-    /// 整条 struct 声明覆盖的源码区间（含装饰器与可见性修饰符）
+    /// 整条 struct 声明覆盖的源码区间（含编译器指令与可见性修饰符）
     pub span: Span,
 }
 
@@ -282,16 +284,16 @@ pub enum Item {
     Struct(StructItem),
     /// 函数声明（对应文法 `functionDeclaration` / `externFunctionDeclaration`）
     Function(FunctionItem),
-    /// 顶层独立装饰器语句（对应文法 `decoratorStatement` 的 `decorator SemiColon` 形态，如 `@foo;`）
-    Decorator(Decorator),
-    /// 装饰块：装饰器直接修饰一个语句块（对应文法 `decoratorStatement` 的 `decorator block` 形态，
+    /// 顶层独立编译器指令语句（对应文法 `directiveStatement` 的 `directive SemiColon` 形态，如 `@no_std;`）
+    Directive(CompilerDirective),
+    /// 编译器指令块：指令直接作用于一个语句块（对应文法 `directiveStatement` 的 `directive block` 形态，
     /// 如 `@cfg(feature = "limine") { ... }`，语义等价 Rust 的 `#[cfg(...)] { ... }`）
-    DecoratorBlock {
-        /// 装饰器
-        decorator: Decorator,
-        /// 被装饰的语句块
+    DirectiveBlock {
+        /// 编译器指令
+        directive: CompilerDirective,
+        /// 被指令修饰的语句块
         block: Option<Block>,
-        /// 装饰块整体覆盖的源码区间
+        /// 指令块整体覆盖的源码区间
         span: Span,
     },
     /// 顶层语句（`Box` 承载以控制枚举尺寸，避免 clippy `large-enum-variant`）

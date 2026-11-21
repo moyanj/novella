@@ -105,14 +105,14 @@ fn walk_item_variables(doc: &SourceDoc, item: &Item, out: &mut Vec<InlayHint>) {
         Item::Struct(struct_item) => walk_member_variables(doc, &struct_item.members, out),
         Item::Trait(trait_item) => walk_member_variables(doc, &trait_item.members, out),
         Item::Statement(statement) => walk_statement_variables(doc, statement, out),
-        Item::DecoratorBlock { block, .. } => {
+        Item::DirectiveBlock { block, .. } => {
             if let Some(block) = block {
                 for statement in &block.stmts {
                     walk_statement_variables(doc, statement, out);
                 }
             }
         }
-        Item::Import(_) | Item::TypeAlias(_) | Item::Decorator(_) => {}
+        Item::Import(_) | Item::TypeAlias(_) | Item::Directive(_) => {}
     }
 }
 

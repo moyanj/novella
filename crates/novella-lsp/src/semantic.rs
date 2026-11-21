@@ -65,7 +65,7 @@ pub fn token_type_index(kind: novella_core::token::TokenKind) -> Option<u32> {
         | IdentityEquals | IdentityNotEquals | LessThanEquals | GreaterThanEquals | And | Or
         | NullCoalesce | Arrow | ReturnArrow | MultiplyAssign | DivideAssign | ModulusAssign
         | PlusAssign | MinusAssign | BitAndAssign | BitXorAssign | BitOrAssign
-        // 单字符运算符与语法标记（`@` 装饰器前缀）
+        // 单字符运算符与语法标记（`@` 编译器指令前缀）
         | Assign | QuestionMark | Plus | Minus | BitNot | Not | Multiply | Divide | Modulus
         | LessThan | MoreThan | BitAnd | BitXOr | BitOr | At => OPERATOR,
 
