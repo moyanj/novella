@@ -219,7 +219,7 @@ pub(crate) fn validate(sema: &mut Sema) {
         &sema.declaration_types,
     ] {
         for ((module, span), ty) in table {
-            if bare && floating(sema, ty, &mut HashSet::new()) {
+            if !sema.build_target.has_float() && floating(sema, ty, &mut HashSet::new()) {
                 violations.insert((
                     *module,
                     *span,

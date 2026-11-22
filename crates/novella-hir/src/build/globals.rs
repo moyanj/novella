@@ -237,6 +237,20 @@ fn constant(
         } => {
             let left = constant(sema, module, left, expected, visiting)?;
             let right = constant(sema, module, right, expected, visiting)?;
+            if let (HirOperand::FloatConst(left), HirOperand::FloatConst(right)) = (&left, &right) {
+                let value = match op {
+                    BinaryOp::Plus => left + right,
+                    BinaryOp::Minus => left - right,
+                    BinaryOp::Multiply => left * right,
+                    BinaryOp::Divide => left / right,
+                    BinaryOp::Modulus => left % right,
+                    _ => return Err(fail()),
+                };
+                return value
+                    .is_finite()
+                    .then_some(HirOperand::FloatConst(value))
+                    .ok_or_else(fail);
+            }
             let (HirOperand::IntConst(left), HirOperand::IntConst(right)) = (left, right) else {
                 return Err(fail());
             };

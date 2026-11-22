@@ -139,6 +139,13 @@ impl BuildTarget {
     pub const fn is_bare_metal(self) -> bool {
         matches!(self.platform, TargetPlatform::BareMetalX86_64)
     }
+    /// 当前目标的执行环境是否允许浮点；与是否链接托管运行时无关。
+    pub const fn has_float(self) -> bool {
+        match self.platform {
+            TargetPlatform::LinuxX86_64 => true,
+            TargetPlatform::BareMetalX86_64 => false,
+        }
+    }
     pub const fn bare_metal() -> Self {
         TargetPlatform::BareMetalX86_64.build_target()
     }

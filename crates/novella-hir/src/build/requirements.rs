@@ -52,7 +52,7 @@ pub(super) fn validate(
     }
     let mut required = false;
     for module in modules {
-        if sema.build_target.is_bare_metal() {
+        if !sema.build_target.has_float() {
             // 浮点在所有声明中都禁用，但纯类型中的托管字段仍不构成实际运行时依赖。
             for definition in &module.types {
                 let (fields, methods) = match definition {
@@ -91,7 +91,7 @@ pub(super) fn validate(
                     block(sema, &function.body, module.id, &mut required)?;
                 }
                 HirItem::ExternFunction(function) => {
-                    if sema.build_target.is_bare_metal()
+                    if !sema.build_target.has_float()
                         && (function.signature.params.iter().any(floating)
                             || floating(&function.signature.ret))
                     {
@@ -114,7 +114,7 @@ fn check_type(
     module: ModuleId,
     required: &mut bool,
 ) -> Result<(), BuildError> {
-    if sema.build_target.is_bare_metal() && floating(ty) {
+    if !sema.build_target.has_float() && floating(ty) {
         return Err(BuildError::at(BuildErrorKind::Unimplemented {
             node: "bare-metal floating point",
         })

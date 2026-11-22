@@ -160,12 +160,13 @@ AST 根：`Program { items: Vec<Item>, span }`。
 多个 cfg 按 and 合并；false 的节点在导入扫描、声明收集前剔除，不参与名称和类型检查，
 但词法/语法错误仍报告。已处理的 cfg 不继续交给 HIR。独立 `@cfg(...);` 无修饰目标，报错。
 
-predicate 支持 `true` / `false` / `unix` / `windows`，
+predicate 支持 `true` / `false` / `unix` / `windows` / `target_has_float`，
 `target_os = "linux"`、`target_arch = "x86_64"`、`target_family = "unix"`、
 `feature = "name"`，以及递归 `all(...)` / `any(...)` / `not(...)`。
 not 恰有一个参数；all/any 可为空（分别为 true/false）。所有参数都解析，
 未知键、未知组合及多余 token 均报错，不因其他条件 false 而掩盖错误。
-目标和 feature 由 AnalysisOptions 提供，默认宿主平台且 feature 集合为空。
+目标和 feature 由 AnalysisOptions 提供，默认宿主平台且 feature 集合为空；`target_has_float`
+由实际 BuildTarget 决定，Linux x86-64 为 true，裸机 x86-64 为 false。
 `@packed` / `@align` / `@extern` / `@deprecated` 等示例不构成已实现指令。
 
 #### 禁用标准库指令（2026-11-21）

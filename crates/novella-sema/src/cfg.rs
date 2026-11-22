@@ -29,7 +29,11 @@ impl Default for CfgOptions {
     }
 }
 
-pub(crate) fn configure(program: &mut Program, options: &CfgOptions) -> Vec<(Span, String)> {
+pub(crate) fn configure(
+    program: &mut Program,
+    options: &CfgOptions,
+    target: novella_core::target::BuildTarget,
+) -> Vec<(Span, String)> {
     let mut errors = Vec::new();
     program.items.retain_mut(|item| {
         let (directives, members) = match item {
@@ -40,7 +44,7 @@ pub(crate) fn configure(program: &mut Program, options: &CfgOptions) -> Vec<(Spa
             Item::DirectiveBlock {
                 directive, block, ..
             } if directive.name == "cfg" => {
-                let enabled = evaluate(directive, options, &mut errors);
+                let enabled = evaluate(directive, options, target, &mut errors);
                 if enabled && let Some(block) = block.take() {
                     *item = Item::Statement(Box::new(Statement::Block(block)));
                 }
@@ -48,7 +52,7 @@ pub(crate) fn configure(program: &mut Program, options: &CfgOptions) -> Vec<(Spa
             }
             _ => return true,
         };
-        if !enabled(directives, options, &mut errors) {
+        if !enabled(directives, options, target, &mut errors) {
             return false;
         }
         if let Some(members) = members {
@@ -57,7 +61,7 @@ pub(crate) fn configure(program: &mut Program, options: &CfgOptions) -> Vec<(Spa
                     ClassMember::Field(value) => &mut value.directives,
                     ClassMember::Method(value) => &mut value.directives,
                 };
-                enabled(directives, options, &mut errors)
+                enabled(directives, options, target, &mut errors)
             });
         }
         true
@@ -68,6 +72,7 @@ pub(crate) fn configure(program: &mut Program, options: &CfgOptions) -> Vec<(Spa
 fn enabled(
     directives: &mut Vec<CompilerDirective>,
     options: &CfgOptions,
+    target: novella_core::target::BuildTarget,
     errors: &mut Vec<(Span, String)>,
 ) -> bool {
     let mut result = true;
@@ -76,7 +81,7 @@ fn enabled(
             return true;
         }
         // 所有 cfg 均解析，不能因前一个为 false 吞掉后续参数错误。
-        result &= evaluate(directive, options, errors);
+        result &= evaluate(directive, options, target, errors);
         false
     });
     result
@@ -85,12 +90,14 @@ fn enabled(
 fn evaluate(
     directive: &CompilerDirective,
     options: &CfgOptions,
+    target: novella_core::target::BuildTarget,
     errors: &mut Vec<(Span, String)>,
 ) -> bool {
     let mut parser = Predicate {
         tokens: &directive.tokens,
         index: 0,
         options,
+        target,
     };
     let result = parser.parse().and_then(|result| {
         if parser.index == parser.tokens.len() {
@@ -112,6 +119,7 @@ struct Predicate<'a> {
     tokens: &'a [Token],
     index: usize,
     options: &'a CfgOptions,
+    target: novella_core::target::BuildTarget,
 }
 
 impl Predicate<'_> {
@@ -180,6 +188,7 @@ impl Predicate<'_> {
             };
         }
         match name {
+            "target_has_float" => Ok(self.target.has_float()),
             "true" => Ok(true),
             "false" => Ok(false),
             "unix" | "windows" => Ok(self.options.target_family == name),

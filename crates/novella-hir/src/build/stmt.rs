@@ -289,8 +289,23 @@ impl<'a> BodyBuilder<'a> {
             (HirOperand::UntypedFloat { value, .. }, HirType::Float(_)) => {
                 return Ok(HirOperand::FloatConst(*value));
             }
-            (HirOperand::UntypedFloat { value, .. }, HirType::Int(_)) => {
-                return Ok(HirOperand::IntConst(*value as i128));
+            (HirOperand::UntypedFloat { value, .. }, HirType::Int(kind)) => {
+                let truncated = value.trunc();
+                let bits = kind.bit_width();
+                let (min, max) = if kind.is_signed() {
+                    (
+                        -(2_f64).powi((bits - 1) as i32),
+                        (2_f64).powi((bits - 1) as i32),
+                    )
+                } else {
+                    (0.0, (2_f64).powi(bits as i32))
+                };
+                if !value.is_finite() || truncated < min || truncated >= max {
+                    return Err(
+                        BuildError::at(BuildErrorKind::InvalidInput).with_site(self.module, span)
+                    );
+                }
+                return Ok(HirOperand::IntConst(truncated as i128));
             }
             _ => {}
         }

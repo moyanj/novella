@@ -113,7 +113,7 @@ pub(crate) fn load_modules(
         let syntax_diagnostic_count = diagnostics.len();
 
         // cfg 在声明收集和导入扫描之前生效，关闭的声明不参与名称解析。
-        let cfg_errors = crate::cfg::configure(&mut program, &options.cfg);
+        let cfg_errors = crate::cfg::configure(&mut program, &options.cfg, options.build_target);
         // 在入口第一次解析后决定默认环境，避免 @no_std 仍读取标准库文件。
         let mut directive_errors = Vec::new();
         let mut seen_no_std = false;

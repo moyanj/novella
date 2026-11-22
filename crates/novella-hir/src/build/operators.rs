@@ -2,6 +2,19 @@
 
 use super::*;
 
+fn is_float_literal_expression(expr: &Expression) -> bool {
+    match expr {
+        Expression::Literal {
+            value: novella_ast::expr::Literal::Number(raw),
+            ..
+        } => raw.contains('.') || raw.contains(['e', 'E']),
+        Expression::Paren { expr, .. } | Expression::Unary { operand: expr, .. } => {
+            is_float_literal_expression(expr)
+        }
+        _ => false,
+    }
+}
+
 impl BodyBuilder<'_> {
     pub(super) fn build_unary(
         &mut self,
@@ -89,6 +102,36 @@ impl BodyBuilder<'_> {
         }
         let left_type = self.expr_type(left.span()).ok();
         let right_type = self.expr_type(right.span()).ok();
+        let common = [left_type.as_ref(), right_type.as_ref()]
+            .into_iter()
+            .flatten()
+            .find(|ty| matches!(ty, HirType::Float(_)))
+            .cloned()
+            .or_else(|| {
+                (is_float_literal_expression(left) && is_float_literal_expression(right))
+                    .then_some(HirType::Float(crate::FloatTy::F32))
+            });
+        if let Some(common) = common {
+            let lhs = self.build_typed_expression(left, &common, block)?;
+            let rhs = self.build_typed_expression(right, &common, block)?;
+            let result_ty = self.expr_type_pref(span, preferred)?;
+            let dst = self.fresh_local(result_ty.clone());
+            block.push(HirStmt::Instr(HirInstr::Binary {
+                op: binary_op_of(op).ok_or_else(|| {
+                    BuildError::at(BuildErrorKind::Unimplemented {
+                        node: binary_node_name(op),
+                    })
+                    .with_site(self.module, span)
+                })?,
+                lhs,
+                rhs,
+                lhs_ty: common.clone(),
+                rhs_ty: common,
+                dst,
+                dst_ty: result_ty,
+            }));
+            return Ok(HirOperand::Local(dst));
+        }
         if let (Some(left_type), Some(right_type)) = (&left_type, &right_type)
             && same_string_class(self.sema, left_type)
             && left_type == right_type
