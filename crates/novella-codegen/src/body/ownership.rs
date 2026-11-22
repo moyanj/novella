@@ -110,9 +110,17 @@ impl<'ctx> Body<'ctx, '_> {
 
     pub(super) fn runtime_alloc(&mut self, ty: &HirType) -> Result<PointerValue<'ctx>> {
         let aggregate = self.aggregate_type(ty)?;
-        let size = aggregate
-            .size_of()
-            .ok_or_else(|| CodegenError("class 布局不是定长类型".into()))?;
+        let layout = self.module.get_data_layout();
+        let target = inkwell::targets::TargetData::create(
+            layout
+                .as_str()
+                .to_str()
+                .map_err(|_| CodegenError("目标布局不是有效 UTF-8".into()))?,
+        );
+        let size = self
+            .context
+            .i64_type()
+            .const_int(target.get_abi_size(&aggregate), false);
         let alloc_ty = self
             .context
             .ptr_type(inkwell::AddressSpace::default())
@@ -133,11 +141,23 @@ impl<'ctx> Body<'ctx, '_> {
         let size = self
             .builder
             .build_int_cast(size, self.context.i64_type(), "object_size")?;
-        let alignment = self.context.i64_type().const_int(8, false);
+        let alignment = self
+            .context
+            .i64_type()
+            .const_int(u64::from(target.get_abi_alignment(&aggregate)), false);
+        // 实际分配才声明析构包装，未使用的 class 不产生 ARC 依赖。
+        let name = crate::ownership::destructor_name(ty)?;
+        let pointer = self.context.ptr_type(inkwell::AddressSpace::default());
         let destroy = self
             .module
-            .get_function(&crate::ownership::destructor_name(ty)?)
-            .ok_or_else(|| CodegenError("缺少 class 析构包装函数".into()))?
+            .get_function(&name)
+            .unwrap_or_else(|| {
+                self.module.add_function(
+                    &name,
+                    self.context.void_type().fn_type(&[pointer.into()], false),
+                    Some(inkwell::module::Linkage::Internal),
+                )
+            })
             .as_global_value()
             .as_pointer_value();
         let call = self.builder.build_call(
@@ -243,8 +263,11 @@ impl<'ctx> Body<'ctx, '_> {
             let malloc_ty = pointer_type.fn_type(&[self.context.i64_type().into()], false);
             let malloc = self
                 .module
-                .get_function("malloc")
-                .unwrap_or_else(|| self.module.add_function("malloc", malloc_ty, None));
+                .get_function("novella_rt_malloc")
+                .unwrap_or_else(|| {
+                    self.module
+                        .add_function("novella_rt_malloc", malloc_ty, None)
+                });
             let bytes = value
                 .len()
                 .checked_mul(std::mem::size_of::<u16>())
@@ -254,7 +277,7 @@ impl<'ctx> Body<'ctx, '_> {
                 .build_call(malloc, &[bytes.into()], "string_bytes")?
                 .try_as_basic_value()
                 .basic()
-                .ok_or_else(|| CodegenError("malloc 没有返回字符串缓冲区".into()))?
+                .ok_or_else(|| CodegenError("novella_rt_malloc 没有返回字符串缓冲区".into()))?
                 .into_pointer_value()
         };
         if !value.is_empty() {

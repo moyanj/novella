@@ -82,6 +82,20 @@ impl Server {
         messages
     }
 
+    /// 客户端通知磁盘文件变化时刷新快照；清单在每次分析任务中重新读取。
+    pub(crate) fn did_change_watched_files(&mut self, params: Option<&Value>) -> Vec<Value> {
+        let Some(changes) = params
+            .and_then(|params| params.get("changes"))
+            .and_then(Value::as_array)
+        else {
+            return Vec::new();
+        };
+        if changes.is_empty() {
+            return Vec::new();
+        }
+        self.publish("")
+    }
+
     /// 一次重建所有打开工程，依赖文件的诊断也随之刷新。
     pub(crate) fn publish(&mut self, _uri: &str) -> Vec<Value> {
         self.generation = self.generation.wrapping_add(1);

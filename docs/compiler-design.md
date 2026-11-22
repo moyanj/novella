@@ -266,18 +266,22 @@ match 顺序、无捕获 lambda 和复杂左值。P2 已完成扩展冒烟与 wo
 
 ## 8. 代码生成（novella-codegen）
 
-接收 `HirProgram`，用 inkwell 0.11 对接 LLVM 23.1，生成 `x86_64-unknown-linux-gnu`
-ELF 目标文件。先登记整个导入闭包的函数，再发射函数体。局部槽位统一在函数入口分配，
+接收 `HirProgram`，用 inkwell 0.11 对接 LLVM 23.1，按共享 `BuildTarget` 生成
+`x86_64-unknown-linux-gnu` 或 `x86_64-unknown-none-elf` ELF 目标文件。裸机采用静态重定位、
+small/kernel 模型、无红区与无浮点/SIMD 环境；具体契约见 [裸机支持](freestanding.md)。
+先登记整个导入闭包的函数与静态全局，再发射函数体。局部槽位统一在函数入口分配，
 初始化留在 HIR 指令位置；`continue` 进入 `step`，`break` / `return` 跳过 `step`。
 
 - 支持整数、布尔、标量取址和间接读写、指针转换、分支、循环与跨模块直接调用。
 - `extern` 使用 HIR 的显式 `link_name` 发射真实 C 符号；多模块同名声明合并并检查 ABI
   一致性，窄整数在定义、声明和调用点携带 signext/zeroext。函数地址可以传给 C 回调，
-  但尚不支持 Novella 内的间接调用。
+  Novella 也能通过定型的局部或全局函数指针间接调用，共用直接调用的 ABI 和返回值所有权。
 - 整数加减乘按位宽回绕；除零、有符号最小值除以 `-1`（含取余）或移位量越界时陷阱，避免发射可执行的 LLVM 未定义操作。
-- `main` 返回 `int` 作为进程状态，`void` 通过入口包装返回 `0`；其他 Novella 符号仅在目标文件内部可见。
+- hosted `main` 返回 `int` 作为进程状态，`void` 通过入口包装返回 `0`；`@no_main` 禁止入口包装，
+  `@export("symbol")` 以 C ABI 导出函数，其余 Novella 符号在目标文件内部可见。
 - 已支持 f16/f32/f64 基本运算、数值提升、指针算术、struct/tuple/数组、动态 UTF-16 String、class ARC 与 weak。数组保存长度和连续元素，索引越界陷阱；struct/tuple 复制递归维护拥有成员。
-- f8、float→int 转换、动态派发、全局存储及聚合 FFI ABI 等未支持路径仍明确报错；异常展开、异步与捕获闭包尚未实现。
+- 无托管全局支持零初始化、标量/指针/struct 常量初值与取址；不执行动态初始化。
+- f8、float→int 转换、动态派发及聚合 FFI ABI 等未支持路径仍明确报错；异常展开、异步与捕获闭包尚未实现。
 
 ## 9. CLI 与诊断渲染（novella-cli）
 

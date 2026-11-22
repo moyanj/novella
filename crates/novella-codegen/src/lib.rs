@@ -1,17 +1,19 @@
-//! 从已定型的 HIR 发射 Linux x86-64 目标文件；链接由调用方负责。
+//! 从已定型的 HIR 发射 x86-64 Linux 或裸机目标文件；链接由调用方负责。
 
 mod abi;
 mod body;
+mod globals;
 mod identity;
 mod operators;
 mod ownership;
+mod target;
 
 pub use identity::llvm_library_path;
 
 /// 当前原生目标；缓存身份与链接驱动必须和 LLVM 发射保持一致。
 pub const TARGET_TRIPLE: &str = "x86_64-unknown-linux-gnu";
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 use inkwell::context::Context;
 use inkwell::module::Linkage;
@@ -20,6 +22,7 @@ use inkwell::targets::{
 };
 use inkwell::types::{BasicMetadataTypeEnum, BasicType, BasicTypeEnum, FunctionType, StructType};
 use inkwell::{AddressSpace, OptimizationLevel};
+use novella_core::target::{CodeModel as TargetCodeModel, RuntimeRequirements};
 use novella_hir::{
     FunctionSignature, HirFunction, HirFunctionId, HirItem, HirProgram, HirType, HirTypeDef, IntTy,
 };
@@ -75,6 +78,7 @@ fn entry(program: &HirProgram) -> Result<&HirFunction> {
 }
 
 pub(crate) struct Types<'ctx> {
+    bare_metal: bool,
     aggregates: HashMap<(usize, String), StructType<'ctx>>,
     fields: HashMap<(usize, String), Vec<novella_hir::HirField>>,
     destructors: HashMap<(usize, String), HirFunctionId>,
@@ -101,6 +105,7 @@ impl<'ctx> Types<'ctx> {
             }
         }
         let types = Self {
+            bare_metal: program.target.is_bare_metal(),
             aggregates,
             fields: HashMap::new(),
             destructors: HashMap::new(),
@@ -138,6 +143,7 @@ impl<'ctx> Types<'ctx> {
             }
         }
         Ok(Self {
+            bare_metal: types.bare_metal,
             aggregates: types.aggregates,
             fields: fields_by_type,
             destructors,
@@ -191,6 +197,9 @@ fn value_type<'ctx>(
     types: &Types<'ctx>,
     ty: &HirType,
 ) -> Result<BasicTypeEnum<'ctx>> {
+    if types.bare_metal {
+        target::validate_type(ty)?;
+    }
     match ty {
         HirType::Int(kind) => Ok(match kind {
             IntTy::U8 | IntTy::I8 => context.i8_type(),
@@ -255,22 +264,49 @@ fn function_type<'ctx>(
     }
 }
 
-/// 验证 LLVM 模块并发射 ELF 目标文件字节。
+/// 目标文件字节及其实际运行时依赖，供 CLI 链接与缓存共同使用。
+pub struct ObjectArtifact {
+    pub bytes: Vec<u8>,
+    pub requirements: RuntimeRequirements,
+}
+
+/// 兼容仅消费目标文件字节的既有调用方。
 pub fn emit_object(program: &HirProgram) -> Result<Vec<u8>> {
-    let entry = entry(program)?;
+    emit_artifact(program).map(|artifact| artifact.bytes)
+}
+
+/// 验证 LLVM 模块并发射带依赖契约的 ELF 目标文件。
+pub fn emit_artifact(program: &HirProgram) -> Result<ObjectArtifact> {
+    program.target.validate().map_err(CodegenError)?;
+    let entry = if program.no_main {
+        None
+    } else {
+        Some(entry(program)?)
+    };
     Target::initialize_x86(&InitializationConfig::default());
-    let triple = TargetTriple::create(TARGET_TRIPLE);
+    let triple = TargetTriple::create(program.target.triple());
     let target = Target::from_triple(&triple).map_err(|error| CodegenError(error.to_string()))?;
     let machine = target
         .create_target_machine(
             &triple,
             "generic",
-            "",
+            if program.target.is_bare_metal() {
+                target::FEATURES
+            } else {
+                ""
+            },
             OptimizationLevel::None,
-            RelocMode::PIC,
-            CodeModel::Default,
+            if program.target.is_bare_metal() {
+                RelocMode::Static
+            } else {
+                RelocMode::PIC
+            },
+            match program.target.code_model {
+                TargetCodeModel::Small => CodeModel::Small,
+                TargetCodeModel::Kernel => CodeModel::Kernel,
+            },
         )
-        .ok_or_else(|| CodegenError("无法创建 x86-64 Linux 目标机器".into()))?;
+        .ok_or_else(|| CodegenError("无法创建 x86-64 目标机器".into()))?;
     let context = Context::create();
     let types = Types::build(&context, program)?;
     let module = context.create_module("novella");
@@ -279,16 +315,14 @@ pub fn emit_object(program: &HirProgram) -> Result<Vec<u8>> {
 
     let mut functions = HashMap::new();
     let mut external_abis = HashMap::new();
+    let mut definitions = HashSet::new();
+    let mut user_externs = HashSet::new();
+    globals::declare(&context, &module, &types, program)?;
     for source in &program.modules {
         for item in &source.items {
             let function = match item {
                 HirItem::Function(function) | HirItem::ExternFunction(function) => function,
-                HirItem::Global(global) => {
-                    return Err(CodegenError(format!(
-                        "{}：暂不支持全局变量 `{}`",
-                        source.path, global.name
-                    )));
-                }
+                HirItem::Global(_) => continue,
             };
             let contextualize = |error: CodegenError| {
                 CodegenError(format!("{}：{}：{}", source.path, function.id, error.0))
@@ -300,25 +334,60 @@ pub fn emit_object(program: &HirProgram) -> Result<Vec<u8>> {
                     "HIR 外部声明与链接名不一致".into(),
                 )));
             }
+            if external && function.export_name.is_some() {
+                return Err(contextualize(CodegenError(
+                    "extern 不能同时指定导出名".into(),
+                )));
+            }
             let ty = function_type(&context, &types, &function.signature).map_err(contextualize)?;
             let (name, linkage) = if let Some(name) = &function.link_name {
-                if name.is_empty() || name == "main" {
+                if name.is_empty() || name.contains('\0') || (entry.is_some() && name == "main") {
                     return Err(contextualize(CodegenError(
                         "外部链接名为空或与 main 入口冲突".into(),
                     )));
                 }
                 (name.as_str(), Linkage::External)
-            } else if function.id == entry.id && entry.signature.ret != HirType::Void {
+            } else if let Some(name) = &function.export_name {
+                if name.is_empty() || name.contains('\0') || (entry.is_some() && name == "main") {
+                    return Err(contextualize(CodegenError(
+                        "导出链接名为空或与 main 入口冲突".into(),
+                    )));
+                }
+                (name.as_str(), Linkage::External)
+            } else if entry.is_some_and(|entry| {
+                function.id == entry.id && entry.signature.ret != HirType::Void
+            }) {
                 ("main", Linkage::External)
             } else {
                 (function.id.0.as_str(), Linkage::Internal)
             };
+            if name.starts_with("__novella_drop_") || name.starts_with("llvm.") {
+                return Err(contextualize(CodegenError(format!(
+                    "链接符号 `{name}` 使用后端保留命名空间"
+                ))));
+            }
             if functions.contains_key(&function.id) {
                 return Err(contextualize(CodegenError("重复的 HIR 函数符号".into())));
             }
-            // 多模块可声明同一个 C 符号，但它们的 ABI 必须完全一致。
+            if external {
+                user_externs.insert(name.to_owned());
+            }
+            if module.get_global(name).is_some() {
+                return Err(contextualize(CodegenError(format!(
+                    "链接符号 `{name}` 与静态数据冲突"
+                ))));
+            }
+            if !external && !definitions.insert(name) {
+                return Err(contextualize(CodegenError(format!(
+                    "链接符号 `{name}` 有多个定义"
+                ))));
+            }
+            // 多模块可声明同一个 C 符号，也可引用本程序的导出定义；次序不影响结果。
             let value = if let Some(existing) = module.get_function(name) {
-                if !external || existing.get_type() != ty {
+                if linkage != Linkage::External
+                    || existing.get_type() != ty
+                    || existing.get_linkage() != Linkage::External
+                {
                     return Err(contextualize(CodegenError(format!(
                         "链接符号 `{name}` 的声明冲突"
                     ))));
@@ -328,8 +397,7 @@ pub fn emit_object(program: &HirProgram) -> Result<Vec<u8>> {
                 module.add_function(name, ty, Some(linkage))
             };
             let extensions = abi::extensions(&context, &function.signature);
-            if external
-                && let Some(previous) = external_abis.insert(name, extensions.clone())
+            if let Some(previous) = external_abis.insert(name, extensions.clone())
                 && previous != extensions
             {
                 return Err(contextualize(CodegenError(format!(
@@ -342,7 +410,7 @@ pub fn emit_object(program: &HirProgram) -> Result<Vec<u8>> {
             functions.insert(function.id.clone(), (value, &function.signature));
         }
     }
-    ownership::emit_destructors(&context, &module, &types, &functions, program)?;
+    globals::initialize(&context, &module, &types, &functions, program)?;
     for source in &program.modules {
         for item in &source.items {
             if let HirItem::Function(function) = item {
@@ -352,18 +420,33 @@ pub fn emit_object(program: &HirProgram) -> Result<Vec<u8>> {
             }
         }
     }
-    if entry.signature.ret == HirType::Void {
+    ownership::emit_destructors(&context, &module, &types, &functions, program)?;
+    if let Some(entry) =
+        entry.filter(|entry| functions[&entry.id].0.get_name().to_bytes() != b"main")
+    {
         let main = module.add_function("main", context.i32_type().fn_type(&[], false), None);
         let builder = context.create_builder();
         builder.position_at_end(context.append_basic_block(main, "entry"));
-        builder.build_call(functions[&entry.id].0, &[], "")?;
-        builder.build_return(Some(&context.i32_type().const_zero()))?;
+        let call = builder.build_call(functions[&entry.id].0, &[], "")?;
+        let result = call
+            .try_as_basic_value()
+            .basic()
+            .map(|value| value.into_int_value())
+            .unwrap_or_else(|| context.i32_type().const_zero());
+        builder.build_return(Some(&result))?;
+    }
+    if program.target.is_bare_metal() {
+        target::attributes(&context, &module);
     }
     module
         .verify()
         .map_err(|error| CodegenError(error.to_string()))?;
-    machine
+    let buffer = machine
         .write_to_memory_buffer(&module, FileType::Object)
-        .map(|buffer| buffer.as_slice().to_vec())
-        .map_err(|error| CodegenError(error.to_string()))
+        .map_err(|error| CodegenError(error.to_string()))?;
+    let managed = target::audit(program, &module, &buffer, &user_externs)?;
+    Ok(ObjectArtifact {
+        bytes: buffer.as_slice().to_vec(),
+        requirements: RuntimeRequirements { managed },
+    })
 }

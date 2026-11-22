@@ -60,6 +60,27 @@ pub struct AnalysisOptionsArgs {
     pub target_arch: Option<String>,
     #[arg(long)]
     pub target_family: Option<String>,
+    /// 生成目标平台。
+    #[arg(long)]
+    pub target: Option<novella_core::target::TargetPlatform>,
+    /// 运行时模式。
+    #[arg(long)]
+    pub runtime: Option<novella_core::target::RuntimeMode>,
+    /// 目标代码模型。
+    #[arg(long)]
+    pub code_model: Option<novella_core::target::CodeModel>,
+    /// 链接驱动；裸机目标必须使用 ELF 链接器。
+    #[arg(long)]
+    pub linker: Option<PathBuf>,
+    /// 可执行文件入口符号。
+    #[arg(long)]
+    pub entry: Option<String>,
+    /// 链接脚本。
+    #[arg(long)]
+    pub linker_script: Option<PathBuf>,
+    /// 额外链接的目标文件，可重复指定。
+    #[arg(long)]
+    pub link_object: Vec<PathBuf>,
 }
 
 #[derive(Clone, Copy, ValueEnum)]
@@ -78,9 +99,5 @@ impl Emit {
             Self::Ast => "output.ast.json",
             Self::Hir => "output.hir.json",
         }
-    }
-
-    pub fn is_native(self) -> bool {
-        matches!(self, Self::Exe | Self::Obj)
     }
 }

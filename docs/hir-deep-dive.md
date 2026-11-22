@@ -1,5 +1,11 @@
 # novella-hir 深度技术文档
 
+> 历史快照说明（2026-11-22）：HIR 已新增共享 BuildTarget、no_main、运行时需求和
+> export_name，并支持 GlobalAddress/AggregateConst 及静态全局降级。本文逐行分析保留
+> 编写时状态，关于全局不支持及仅 Linux 后端的旧描述以 [裸机支持](freestanding.md)
+> 和当前类型定义为准。历史使用的 `hir_smoke` 调试 example 已删除，当前通过
+> `cargo run -p novella -- compile <file> --emit hir -o <output.json>` 导出 HIR。
+
 > 文档版本：2026-11-21
 > 适用代码：novella 编译器 workspace（`crates/novella-hir`，edition 2024）
 > 配套文档：`docs/hir-handover.md`（契约速查）、`docs/compiler-design.md`（整体设计 §7–9）、`docs/sema-deep-dive.md`（上游语义分析）、`docs/parser-deep-dive.md`（语法歧义消解）

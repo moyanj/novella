@@ -28,7 +28,8 @@ pub(crate) fn load_modules(
     // worklist 元素为 "(调用方路径, 规范化键)"：同一次加载中同一个文件可能先以
     // 相对、后以绝对路径出现，两次的键相同，但只有首次出现决定 `path` 回显值。
     let mut worklist = vec![(entry.to_path_buf(), loader.module_key(entry))];
-    let mut no_std = false;
+    // 独立检查裸机依赖模块时继承工程环境，不能因文件未写入口指令而装载宿主标准库。
+    let mut no_std = options.module_only && options.build_target.is_bare_metal();
 
     while let Some((path, key)) = worklist.pop() {
         if loader.is_cancelled() {
@@ -137,7 +138,8 @@ pub(crate) fn load_modules(
             if let Some(message) = error {
                 directive_errors.push((directive.span, message));
             }
-            false
+            // 保留入口标记，供语义产物与 HIR 传递入口模式。
+            true
         });
         if id == 0 {
             if no_std {
@@ -180,7 +182,7 @@ pub(crate) fn load_modules(
             .collect();
         for import in &imports {
             if no_std && import.prefix.as_deref() == Some("std") {
-                module.error(import.span, "入口已声明 @no_std，不能导入标准库模块");
+                module.error(import.span, "@no_std 环境不能导入标准库模块");
                 continue;
             }
             // crate 根懒查找（仅 `@:` 需要）；以规范化键为基准，避免相对路径

@@ -108,16 +108,34 @@ pub(crate) fn emit_destructors<'ctx>(
 ) -> Result<()> {
     let pointer = context.ptr_type(inkwell::AddressSpace::default());
     let signature = context.void_type().fn_type(&[pointer.into()], false);
-    // 先声明，确保跨模块/前向声明的父类包装也能被调用。
-    for source in &program.modules {
-        for definition in &source.types {
-            if let HirTypeDef::Class { name, .. } = definition {
-                module.add_function(
-                    &destructor_name(&HirType::Class(source.id, name.clone()))?,
-                    signature,
-                    Some(Linkage::Internal),
-                );
+    // 分配指令已登记根析构包装；沿继承链补齐父类，其他声明不发射。
+    loop {
+        let mut added = false;
+        for source in &program.modules {
+            for definition in &source.types {
+                let HirTypeDef::Class {
+                    name,
+                    parent: Some((parent_module, parent_name)),
+                    ..
+                } = definition
+                else {
+                    continue;
+                };
+                if module
+                    .get_function(&destructor_name(&HirType::Class(source.id, name.clone()))?)
+                    .is_some()
+                {
+                    let parent =
+                        destructor_name(&HirType::Class(*parent_module, parent_name.clone()))?;
+                    if module.get_function(&parent).is_none() {
+                        module.add_function(&parent, signature, Some(Linkage::Internal));
+                        added = true;
+                    }
+                }
             }
+        }
+        if !added {
+            break;
         }
     }
     for source in &program.modules {
@@ -132,9 +150,9 @@ pub(crate) fn emit_destructors<'ctx>(
                 continue;
             };
             let ty = HirType::Class(source.id, name.clone());
-            let function = module
-                .get_function(&destructor_name(&ty)?)
-                .expect("已经声明包装");
+            let Some(function) = module.get_function(&destructor_name(&ty)?) else {
+                continue;
+            };
             let builder = context.create_builder();
             builder.position_at_end(context.append_basic_block(function, "entry"));
             let object = function

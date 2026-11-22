@@ -116,6 +116,9 @@ impl BodyBuilder<'_> {
                     }
                     return Ok(self.local_address(local, block));
                 }
+                if let Some(address) = super::globals::address(self.sema, self.module, *span) {
+                    return Ok(address);
+                }
                 // with 接收者与 self 成员都走与显式字段相同的布局和地址指令。
                 if let Some((ty, value)) = self.with_receiver.clone()
                     && let Ok((index, field_ty)) = self.field_slot(&ty, name, *span)
@@ -151,6 +154,9 @@ impl BodyBuilder<'_> {
                 }
             }
             Expression::MemberAccess { target, name, span } => {
+                if let Some(address) = super::globals::address(self.sema, self.module, *span) {
+                    return Ok(address);
+                }
                 let target_ty = self.expr_type(target.span())?;
                 let (index, field_ty) = self.field_slot(&target_ty, name, *span)?;
                 let base = if matches!(target_ty, HirType::Struct(..)) {

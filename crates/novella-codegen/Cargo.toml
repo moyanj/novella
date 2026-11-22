@@ -6,6 +6,7 @@ license.workspace = true
 
 [dependencies]
 inkwell = { version = "0.11.0", default-features = false, features = ["llvm23-1-prefer-dynamic", "target-x86"] }
+novella-core = { version = "0.1.0", path = "../novella-core" }
 novella-hir = { version = "0.1.0", path = "../novella-hir" }
 
 [target."cfg(unix)".dependencies]

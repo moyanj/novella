@@ -19,6 +19,7 @@ pub(super) struct Record {
     pub compilation: String,
     pub inputs: Vec<Input>,
     pub object: String,
+    pub requirements: novella_core::target::RuntimeRequirements,
     pub diagnostics: Vec<CachedDiagnostic>,
 }
 

@@ -15,7 +15,7 @@ novella 语言编译器。Rust workspace（edition 2024，Apache-2.0）。
 | 语法分析 | `novella-parser` | ✅ 可用；完整语法演示含尚未实现的语义 |
 | 语义分析 | `novella-sema` | ✅ 第一期：导入系统 / 名称解析 / 基本类型检查 / unsafe 规则 |
 | HIR | `novella-hir` | ✅ 将已通过静态检查的程序降级为定型指令 |
-| 代码生成 | `novella-codegen` | 可生成 Linux x86-64 原生程序（标量、控制流、直接调用） |
+| 代码生成 | `novella-codegen` | Linux x86-64 原生程序与无 libc 的 x86-64 裸机/内核目标；见 [裸机支持](docs/freestanding.md) |
 
 ## 目录结构
 
@@ -57,7 +57,9 @@ cargo run -p novella -- compile examples/native-main.nov --emit obj -o out.o
 ```
 
 构建 `novella` 需 LLVM 23.1（`llvm-config` 可见，或通过 `LLVM_SYS_231_PREFIX`
-指向安装前缀）；链接可执行文件还需 `clang` 和 Linux x86-64 GNU 链接工具链。
+指向安装前缀）；Linux 可执行文件需要 `clang` 与 GNU 链接工具链。裸机目标直接使用
+ELF 链接器，显式提供入口、链接脚本与平台对象，不添加 CRT 或 libc；无堆及 managed
+两个内核和 QEMU 启动脚本见 [freestanding 示例](examples/freestanding/README.md)。
 旧 JSON 消费者改用 `compile <file> --emit ast -o out.json`，成功时仍是
 `tokens`、`program`、`diagnostics` 三个字段；失败时退出非零并保留已有输出。
 `check` 不要求 `main`，通过检查不代表能生成 HIR 或原生代码。
@@ -81,7 +83,7 @@ novella build
 ### 编译缓存
 
 `novella build` 默认把成功生成的 LLVM 目标文件缓存到项目根的
-`target/.novella-cache/v1/`。输入未变化时跳过词法、语法、语义分析、HIR 降级和 LLVM 发射，
+`target/.novella-cache/v2/`。输入未变化时跳过词法、语法、语义分析、HIR 降级和 LLVM 发射，
 重放编译诊断，并重新链接到指定的输出路径。链接失败仍保留已有可执行文件。
 
 ```bash

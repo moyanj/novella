@@ -206,6 +206,7 @@ pub(crate) fn check_method_body(
     // 从注册表读取方法签名以绑定形参
     let method_sig = lookup_method_def(sema, this_ty, &method.name).map(|m| m.sig.clone());
     if let Some(sig) = &method_sig {
+        crate::freestanding::check_body_signature(sema, module, method.span, sig);
         ctx.expected_return = Some(sig.ret.clone());
         for (syntax, param) in method.params.iter().zip(&sig.params) {
             define_local(

@@ -131,7 +131,7 @@ pub(crate) fn check_lambda(
                 .unwrap_or_else(|| infer_block_return(sema, &lambda_ctx, block, "lambda"))
         }
     };
-    Ty::Function(Rc::new(FunctionSig {
+    let signature = FunctionSig {
         // 匿名 lambda 不在类型注册表内，没有名义键
         module: lambda_ctx.module,
         name: None,
@@ -143,7 +143,9 @@ pub(crate) fn check_lambda(
         is_async: lambda.is_async,
         is_extern: false,
         is_method: false,
-    }))
+    };
+    crate::freestanding::check_body_signature(sema, ctx.module, lambda.span, &signature);
+    Ty::Function(Rc::new(signature))
 }
 
 /// 只合并自身的可达返回；落尾等价于 void，不从调用点反向猜测。

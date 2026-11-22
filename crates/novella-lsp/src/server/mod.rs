@@ -46,6 +46,8 @@ pub struct Server {
     analyses: Vec<novella_sema::SemaResult>,
     versions: HashMap<String, i32>,
     options: novella_sema::AnalysisOptions,
+    /// 保留显式 cfg 项，逐项目目标解析后校验冲突。
+    cfg_overrides: [Option<String>; 3],
     entries: Vec<std::path::PathBuf>,
     /// stdio 模式延后语义分析，单元级 handle 仍可同步使用。
     background: bool,

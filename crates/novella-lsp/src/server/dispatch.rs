@@ -91,6 +91,7 @@ impl Server {
             DidOpenTextDocument::METHOD => self.did_open(params),
             DidChangeTextDocument::METHOD => self.did_change(params),
             DidCloseTextDocument::METHOD => self.did_close(params),
+            "workspace/didChangeWatchedFiles" => self.did_change_watched_files(params),
             Exit::METHOD => {
                 // 规范：未经 shutdown 直接 exit 属异常退出，退出码非 0
                 self.exit_code = Some(if self.shutdown_requested { 0 } else { 1 });

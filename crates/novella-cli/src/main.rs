@@ -1,6 +1,6 @@
 use std::fs;
 use std::path::{Path, PathBuf};
-use std::process::{Command, ExitCode};
+use std::process::ExitCode;
 
 use clap::Parser;
 use novella_core::diagnostic::{Diagnostic, DiagnosticLocation};
@@ -14,7 +14,9 @@ use crate::error::render_diagnostic;
 mod build;
 mod cache;
 mod cli;
+mod config;
 mod error;
+mod link;
 mod project;
 
 fn main() -> ExitCode {
@@ -72,11 +74,18 @@ fn run(command: cli::Command) -> Result<bool, Box<dyn std::error::Error>> {
             )),
         ),
     };
-    let native = output.as_ref().is_some_and(|(emit, _)| emit.is_native());
+    let config = config::resolve(&args)?;
+    if output
+        .as_ref()
+        .is_some_and(|(emit, _)| matches!(emit, Emit::Exe))
+    {
+        link::validate_config(&config)?;
+    }
     let module_only = output
         .as_ref()
         .is_none_or(|(emit, _)| matches!(emit, Emit::Ast));
-    let result = analyze(&args, module_only, native)?;
+    let options = analysis_options(&args, module_only, &config)?;
+    let result = analyze_with_options(&mut FsLoader, &args.file, options);
     render_diagnostics(&result);
     if result.diagnostics.has_errors() {
         return Ok(false);
@@ -85,7 +94,7 @@ fn run(command: cli::Command) -> Result<bool, Box<dyn std::error::Error>> {
         return Ok(true);
     };
     if matches!(emit, Emit::Ast) {
-        write_output(&output, &ast_json(&result, &args.file)?, false)?;
+        write_output(&output, &ast_json(&result, &args.file)?)?;
         return Ok(true);
     }
     let Some(hir) = lower(&result) else {
@@ -93,11 +102,15 @@ fn run(command: cli::Command) -> Result<bool, Box<dyn std::error::Error>> {
     };
     match emit {
         Emit::Hir => {
-            write_output(&output, &serde_json::to_vec_pretty(&hir)?, false)?;
+            write_output(&output, &serde_json::to_vec_pretty(&hir)?)?;
         }
         Emit::Obj | Emit::Exe => {
-            let object = novella_codegen::emit_object(&hir)?;
-            write_output(&output, &object, matches!(emit, Emit::Exe))?;
+            let artifact = novella_codegen::emit_artifact(&hir)?;
+            if matches!(emit, Emit::Exe) {
+                link::write_executable(&output, &artifact, &config)?;
+            } else {
+                write_output(&output, &artifact.bytes)?;
+            }
         }
         Emit::Ast => unreachable!("AST 在 HIR 降级前处理"),
     }
@@ -116,19 +129,10 @@ fn render_diagnostics(result: &SemaResult) {
     }
 }
 
-fn analyze(
-    args: &AnalysisArgs,
-    module_only: bool,
-    native: bool,
-) -> Result<SemaResult, Box<dyn std::error::Error>> {
-    let options = analysis_options(args, module_only, native)?;
-    Ok(analyze_with_options(&mut FsLoader, &args.file, options))
-}
-
 fn analysis_options(
     args: &AnalysisArgs,
     module_only: bool,
-    native: bool,
+    config: &novella_core::project_config::ResolvedBuildConfig,
 ) -> Result<AnalysisOptions, Box<dyn std::error::Error>> {
     let flags = &args.options;
     let mut options = AnalysisOptions {
@@ -137,36 +141,14 @@ fn analysis_options(
             .clone()
             .or_else(|| AnalysisOptions::default().std_root),
         module_only,
+        build_target: config.target,
         ..Default::default()
     };
+    options.target.pointer_width = novella_sema::PointerWidth::Bits64;
     options.cfg.features.extend(flags.features.iter().cloned());
-    if native {
-        options.target.pointer_width = novella_sema::PointerWidth::Bits64;
-        for (flag, value, expected) in [
-            ("target-os", flags.target_os.as_deref(), "linux"),
-            ("target-arch", flags.target_arch.as_deref(), "x86_64"),
-            ("target-family", flags.target_family.as_deref(), "unix"),
-        ] {
-            if let Some(value) = value.filter(|value| *value != expected) {
-                return Err(format!(
-                    "原生后端只支持 x86_64-unknown-linux-gnu，不能指定 --{flag}={value}"
-                )
-                .into());
-            }
-        }
-        options.cfg.target_os = "linux".into();
-        options.cfg.target_arch = "x86_64".into();
-        options.cfg.target_family = "unix".into();
-    }
-    if let Some(value) = &flags.target_os {
-        options.cfg.target_os.clone_from(value);
-    }
-    if let Some(value) = &flags.target_arch {
-        options.cfg.target_arch.clone_from(value);
-    }
-    if let Some(value) = &flags.target_family {
-        options.cfg.target_family.clone_from(value);
-    }
+    options.cfg.target_os = config.target.os().into();
+    options.cfg.target_arch = config.target.arch().into();
+    options.cfg.target_family = config.target.family().into();
     Ok(options)
 }
 
@@ -212,42 +194,13 @@ fn ast_json(result: &SemaResult, file: &Path) -> Result<Vec<u8>, Box<dyn std::er
     Ok(serde_json::to_vec_pretty(&output)?)
 }
 
-fn write_output(path: &Path, bytes: &[u8], link: bool) -> Result<(), Box<dyn std::error::Error>> {
-    let parent = path
-        .parent()
-        .filter(|parent| !parent.as_os_str().is_empty())
-        .unwrap_or(Path::new("."));
+fn write_output(path: &Path, bytes: &[u8]) -> Result<(), Box<dyn std::error::Error>> {
+    let parent = link::output_parent(path);
     let result = (|| -> Result<(), Box<dyn std::error::Error>> {
-        // 临时目录与输出同文件系统；只在生成或链接成功后替换最终文件。
+        // 临时目录与输出同文件系统；只在生成成功后替换最终文件。
         let staging = tempfile::tempdir_in(parent)?;
         let artifact = staging.path().join("artifact");
-        if link {
-            if novella_runtime::TARGET_TRIPLE != novella_codegen::TARGET_TRIPLE {
-                return Err("runtime 与代码生成的目标平台不一致".into());
-            }
-            let object = staging.path().join("program.o");
-            fs::write(&object, bytes)?;
-            let runtime = staging.path().join("libnovella_rt.a");
-            fs::write(&runtime, novella_runtime::STATIC_ARCHIVE)?;
-            let result = Command::new("clang")
-                .arg(format!("--target={}", novella_codegen::TARGET_TRIPLE))
-                .arg(&object)
-                .arg(&runtime)
-                .arg("-o")
-                .arg(&artifact)
-                .output()
-                .map_err(|error| format!("无法运行链接驱动 clang：{error}"))?;
-            if !result.status.success() {
-                return Err(format!(
-                    "clang 链接失败（{}）：{}",
-                    result.status,
-                    String::from_utf8_lossy(&result.stderr).trim()
-                )
-                .into());
-            }
-        } else {
-            fs::write(&artifact, bytes)?;
-        }
+        fs::write(&artifact, bytes)?;
         fs::rename(artifact, path)?;
         Ok(())
     })();

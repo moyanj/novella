@@ -251,6 +251,16 @@ pub enum FStringPart {
 /// 各字段都是**只读视图**：语义阶段内部状态（作用域树、符号表、类型注册表、
 /// 加载器）不外泄，下游只能查询模块产物、诊断、绑定与类型层级。
 pub struct SemaResult {
+    /// 实际用于平台整数范围检查的分析配置；旧 API 仍允许仅做 32 位静态分析。
+    pub analysis_target: crate::AnalysisTarget,
+    /// 入口与链接策略由语义阶段传递，后续阶段不得重新猜测。
+    pub build_target: novella_core::target::BuildTarget,
+    /// 入口模块显式关闭语言 main 入口检查与包装。
+    pub no_main: bool,
+    /// 入口模块显式关闭默认标准库环境。
+    pub no_std: bool,
+    /// 顶层函数声明位置对应的已验证 C 导出符号。
+    pub exports: HashMap<(ModuleId, Span), String>,
     /// 由实际 std 根目录解析出的字符串名义身份；下游不得按文件名猜测。
     pub string_type: Option<TypeView>,
     /// f-string 已检查的片段；下游复用 AST，不重复词法/语法分析。

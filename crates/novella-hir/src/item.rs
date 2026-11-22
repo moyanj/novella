@@ -15,6 +15,12 @@ use crate::ty::{HirFunctionId, HirType};
 /// 整个程序（仅保留需要发射的模块；模块 id 沿用 sema，可能不连续）。
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct HirProgram {
+    /// 经过语义校验的目标配置，发射与链接必须沿用。
+    pub target: novella_core::target::BuildTarget,
+    /// 关闭语言入口包装，允许仅包含导出函数的目标文件。
+    pub no_main: bool,
+    /// 根据实际指令、参数槽位与全局数据计算出的运行时需求。
+    pub requirements: novella_core::target::RuntimeRequirements,
     pub modules: Vec<HirModule>,
 }
 
@@ -62,6 +68,8 @@ pub struct HirFunction {
     pub id: HirFunctionId,
     /// extern 的真实链接符号；普通函数和 lambda 使用内部名义键。
     pub link_name: Option<String>,
+    /// C ABI 对外定义符号，与 extern 链接引用独立。
+    pub export_name: Option<String>,
     /// 完整签名
     pub signature: crate::ty::FunctionSignature,
     /// 形参局部（按声明顺序，codegen 按 ABI 从 `get_nth_param` 拷入）

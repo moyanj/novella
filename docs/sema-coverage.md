@@ -107,6 +107,9 @@
 | D15R | 无注解字段与顶层变量的推导环诊断 | plan S05 | `resolve_field` / `globals::resolve` | 已实现 | 静态字段环、跨类型实例字段环、顶层变量环拒绝；显式注解可打断类型依赖 | S05 |
 | D16R | 条件编译指令及未知指令拒绝 | 用户补充 TD04 | `cfg.rs` / `check/decl.rs` | 已实现 | @cfg 在声明收集前筛选；其他无定义指令报 error；支持函数/类型/成员及指令块 | 设计纠偏 |
 | D16S | 禁用标准库指令 | 用户补充（2026-11-21） | `module/loader.rs` / `check/decl.rs` | 已实现 | 入口独立 @no_std; 关闭整个导入闭包的标准库加载和 site 注入；拒绝 std: 导入、重复/带参/依赖模块/修饰声明或块的用法；字符串字面量缺少 std:String 报错 | 无参数指令 |
+| D16T | 禁用自动入口 | 裸机计划 / design §4.2 | `module/loader.rs` / `freestanding.rs` | 已实现 | @no_main 仅入口独立一次且无参；依赖、重复、带参、修饰声明或块均拒绝 | 无参数指令 |
+| D16U | C ABI 函数导出 | 裸机计划 / design §4.2 | `freestanding.rs` / `check/decl.rs` | 已实现 | @export 唯一合法符号；拒绝泛型/async/extern/无体/非顶层函数、聚合与托管 ABI、重复及 extern 碰撞 | 标量、裸指针与函数指针 |
+| D16V | 裸机目标与无托管模式 | 裸机计划 | `core::target` / `freestanding.rs` | 已实现 | 裸机强制 no_std+no_main，拒绝浮点含嵌套及 extern；runtime=none 拒绝实际托管值/ARC/weak/数组，纯 class 声明不要求堆 | 真实 file/span 定位 |
 | D17R | 多继承 | design §4.6（仅单父类） | `build_type_defs` 报错 | 已实现 | 反：两个父类报错 | — |
 | D18R | 继承环检测 | plan E12 | `resolve_class_parents` | 已实现 | 反：`A(B)`/`B(A)` 报错 | — |
 | D19R | weak 字段只保存 class 引用，初值推导后检查 | design §7.4 | `check/fields.rs::check_fields` | 已实现静态约束及原生 weak upgrade/ARC | 正：class 别名、泛型 class、struct 内弱字段；反：标量、裸指针、数组、裸类型参数 | — |
@@ -697,7 +700,8 @@ func main() {
 }
 ```
 
-使用 `rtk cargo run -q -p novella-hir --example hir_smoke -- case.nov --json`。
+当前使用 `rtk cargo run -q -p novella -- compile case.nov --emit hir -o case.hir.json`；
+重复的 `hir_smoke` 调试 example 已移除。
 实际 Call 顺序是 value、index、index、value；复合赋值在调用 RHS 前已读取旧值。
 JSON 原始文本精确保留 18446744073709551615，HIR 整数载荷改为 i128，不能经 JS Number
 比较这个 u64 边界。sema 对 `a[x] = (x = 1)` 也按 RHS 优先，复合版本读取未赋值 x 则拒绝。
