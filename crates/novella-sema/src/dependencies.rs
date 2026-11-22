@@ -44,7 +44,10 @@ pub(crate) fn codegen_modules(sema: &Sema) -> HashSet<ModuleId> {
 fn type_dependencies(ty: &Ty, targets: &mut HashSet<ModuleId>) {
     match ty {
         Ty::Struct(module, _) | Ty::Class(module, _) | Ty::Trait(module, _) => {
-            targets.insert(*module);
+            // `Exception` 根使用 `ModuleId::MAX` 作为编译器内建名义身份，没有对应模块。
+            if *module != ModuleId::MAX {
+                targets.insert(*module);
+            }
         }
         Ty::Pointer(inner) | Ty::Array(inner) | Ty::Future(inner) => {
             type_dependencies(inner, targets);

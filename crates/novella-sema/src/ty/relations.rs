@@ -44,7 +44,7 @@ pub(crate) fn sig_eq(a: &FunctionSig, b: &FunctionSig) -> bool {
         && ty_eq(&a.ret, &b.ret)
 }
 
-/// `target ← source` 可赋值性（不引入隐式数值转换；`sema` 需继承链信息，
+/// `target ← source` 可赋值性（数值只放行同符号无损扩宽；`sema` 需继承链信息，
 /// class 父子判定由调用方通过 `is_subclass` 闭包注入）。
 pub(crate) fn assignable(
     target: &Ty,
@@ -68,6 +68,15 @@ pub(crate) fn assignable(
         }
         (Ty::Int(kind), Ty::IntLiteral(true, value)) => {
             int_negated_literal_fits(target_int_kind(*kind, width), *value)
+        }
+        // 同符号整数的无损扩宽（design.md §5.2.1）：`i32 → i64`、`u8 → u16`。
+        // 目标为平台宽度整数时先按平台位宽折算，再判同符号 + 位宽更大；
+        // 源为 `usize` / `isize` 时其位宽随目标平台，折算按 32 位最窄口径（保守）。
+        // 窄化与跨符号仍是错误，必须显式 `as`。
+        (Ty::Int(target), Ty::Int(source)) => {
+            let target_width = target_int_kind(*target, width);
+            let source_width = target_int_kind(*source, width);
+            source_width.widens_to(target_width)
         }
         // 浮点字面量：目标类型能有限表示即可（L05–L06）
         (Ty::Float(kind), Ty::FloatLiteral(value)) => float_literal_fits(*kind, *value),

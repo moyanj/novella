@@ -576,7 +576,7 @@ pub(crate) use relations::*;
 
 整个 `ty` 模块对 crate 外不可见（无 `pub mod`）。对外公开面是 `api.rs` 的 `TypeView` / `FunctionView`：内部 `Ty` 因持有 `Rc<FunctionSig>` 与内部定义类型无法直接导出，故 `Ty::view()` / `FunctionSig::view()` 负责投影（api.rs:155 注释明确此设计）。
 
-**设计基调**（mod.rs 顶部 doc）：`int ≡ i32`、`float ≡ f32` 解析时即归一化；数值字面量先记为未定型 `IntLiteral` / `FloatLiteral`；**不做隐式数值转换**；隐式转换仅三类——`null → 任意指针/class`、`void* ↔ 任意 T*`、子类 → 父类。
+**设计基调**（mod.rs 顶部 doc）：`int ≡ i32`、`float ≡ f32` 解析时即归一化；数值字面量先记为未定型 `IntLiteral` / `FloatLiteral`；**数值只隐式放行同符号无损扩宽**（`i32 → i64`、`u8 → u16`，窄化与跨符号须 `as`）；其余隐式转换三类——`null → 任意指针/class`、`void* ↔ 任意 T*`、子类 → 父类。
 
 ### 6.1 类型枚举 `Ty`（mod.rs:176-222）
 

@@ -4,7 +4,7 @@
 //! - `int` ≡ `i32`、`float` ≡ `f32`（design.md 既定等价），解析时直接归一化；
 //! - 数值字面量先记为未定型的 [`Ty::IntLiteral`] / [`Ty::FloatLiteral`]，
 //!   可赋给任意同族数值类型（按目标类型的溢出检查属后续期）；
-//! - 不做隐式数值转换：已定型值跨数值种类赋值一律报错；
+//! - 数值隐式转换只允许同符号无损扩宽（`i32 → i64`）；窄化与跨符号一律报错；
 //! - 隐式转换仅 `null → 任意指针/class`、`void* ↔ 任意 T*`、子类 → 父类。
 
 use std::collections::HashMap;
@@ -80,6 +80,28 @@ impl IntKind {
             self,
             IntKind::I8 | IntKind::I16 | IntKind::I32 | IntKind::I64 | IntKind::Isize
         )
+    }
+
+    /// 位宽（位）。
+    ///
+    /// `usize` / `isize` 的位宽取决于目标平台：sema 阶段按 64 位判定，与
+    /// [`int_literal_fits_non_negative`] 的范围判定口径一致。
+    fn bit_width(self) -> u32 {
+        match self {
+            IntKind::U8 | IntKind::I8 => 8,
+            IntKind::U16 | IntKind::I16 => 16,
+            IntKind::U32 | IntKind::I32 => 32,
+            IntKind::U64 | IntKind::I64 | IntKind::Usize | IntKind::Isize => 64,
+        }
+    }
+
+    /// `self → target` 是否为同符号整数的**无损扩宽**（design.md §5.2.1）。
+    ///
+    /// 只有「同符号且目标位宽更大」才允许：`i32 → i64`、`u8 → u16` 可行，
+    /// `i64 → i32`（窄化）、`i32 → u64`（跨符号）、`u32 → u64` 之外的任意组合
+    /// 一律不可。窄化与跨符号必须显式 `as`。
+    pub(crate) fn widens_to(self, target: IntKind) -> bool {
+        self.is_signed() == target.is_signed() && self.bit_width() < target.bit_width()
     }
 }
 

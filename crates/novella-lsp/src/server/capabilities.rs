@@ -41,10 +41,10 @@ impl Server {
         }
 
         if let Some(config) = params.and_then(|p| p.get("initializationOptions")) {
-            self.options.std_root = config
-                .get("stdRoot")
-                .and_then(Value::as_str)
-                .map(Into::into);
+            // 未指定 stdRoot 时，保留环境变量或内置标准库目录。
+            if let Some(std_root) = config.get("stdRoot").and_then(Value::as_str) {
+                self.options.std_root = Some(std_root.into());
+            }
             for (index, key) in ["targetOs", "targetArch", "targetFamily"]
                 .iter()
                 .enumerate()
