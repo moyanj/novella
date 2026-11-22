@@ -66,7 +66,7 @@ func legacyApi() {}
 
 // ============ 第 3 节  类型系统 ============
 // typeAliasDeclaration：type 名 泛型? = typeExpression ;
-// 基础类型：int / float / boolean / string / void / null / u8..u64 / i8..i64 / f8..f64 / usize / isize
+// 基础类型：int / float / boolean / string / void / null / u8..u64 / i8..i64 / f16..f64 / usize / isize
 type Seed = usize;
 // 数组类型（后缀 []，可多层）
 type Matrix = int[][];

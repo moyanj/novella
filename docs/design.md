@@ -184,7 +184,7 @@ func main() -> int {
 }
 ```
 
-该模式下没有默认的 `String` / `string`，普通、raw、f-string 字面量需要标准库而报错；
+该模式下没有默认的 `String` / `string`；普通和 raw 字符串字面量降为只读 UTF-16 静态指针，f-string 仍需要标准库而报错；
 字节字面量 `b"..."` 仍按 `u8[]` 做语义检查。`@no_std` 仅禁用 Novella 标准库，
 不改变目标平台的启动代码、C 链接驱动或显式用户 `extern` 声明。
 
@@ -518,7 +518,7 @@ statement: variableStatement | returnStatement | breakStatement | continueStatem
 
 | 变体 | 形态 | 说明 |
 |------|------|------|
-| `Predefined` | `int` / `float` / `boolean` / `string` / `void` / `u8..u64` / `i8..i64` / `f8..f64` / `usize` / `isize` / `null` | 类型名在词法层是普通 `Identifier`，由语义按名字归类 |
+| `Predefined` | `int` / `float` / `boolean` / `string` / `void` / `u8..u64` / `i8..i64` / `f16..f64` / `usize` / `isize` / `null` | 类型名在词法层是普通 `Identifier`，由语义按名字归类 |
 | `Reference` | `Foo` / `Foo<T>` / `mod.Foo` | 类型引用（class / struct / 别名）；`qualifier` 承载命名空间限定段（经导入的模块别名解析，多级限定 `a.b.T` 本期不支持） |
 | `Array` | `T[]` | 数组类型 |
 | `Tuple` | `(T1, T2)` | 元组类型（≥2 元素；`()` / `(T,)` 非法；括号分组 `(T)` 即 `T` 本身） |
@@ -531,7 +531,7 @@ statement: variableStatement | returnStatement | breakStatement | continueStatem
 ### 5.2 预定义类型（`PredefinedType`）
 
 `Null` `Boolean` `Int` `Float` `Void` `U8` `U16` `U32` `U64` `I8` `I16`
-`I32` `I64` `F8` `F16` `F32` `F64` `Usize` `Isize`。
+`I32` `I64` `F16` `F32` `F64` `Usize` `Isize`。
 
 宽度整数 / 浮点类型直接映射目标平台原生类型；`usize` / `isize` 为指针宽度。
 **`int` ≡ `i32`、`float` ≡ `f32`**（语义阶段直接归一化，不存在独立的
@@ -1059,7 +1059,7 @@ func main() {
 - match 按顺序检查模式。命中分支的入口只继承已经求值的模式产生的赋值。
   嵌套在其他表达式中的 match 块也可通过 `return`、`throw` 或循环跳转提前退出。
 - b 字符串为 u8[]，只允许单字节字符和字节转义；f-string 使用 {expr}、
-  {{/}}，不支持格式说明符。f16 为 IEEE binary16，f8 为 E4M3FN，按最近偶数
+  {{/}}，不支持格式说明符。f16 为 IEEE binary16，按最近偶数舍入
   舍入的有限范围检查；usize/isize 使用显式 32/64 位分析配置，缺省为宿主。
 
 最小正反例、类型投影与 LSP/HIR 验证见覆盖矩阵的本轮验收记录。

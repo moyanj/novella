@@ -14,6 +14,14 @@ pub(crate) fn check_literal(sema: &mut Sema, ctx: &mut BodyCtx, value: &Literal,
             }
             if raw.starts_with('f') {
                 check_fstring(sema, ctx, raw, span);
+                if sema.no_std {
+                    sema.type_error(
+                        ctx.module,
+                        span,
+                        "no_std 环境不支持 f-string；请使用普通静态字符串字面量",
+                    );
+                    return Ty::Error;
+                }
                 return require_string_type(sema, ctx, span);
             }
             // 普通 / 原始 / 字节 / 格式化字符串一律按 core 的唯一解码表校验转义
@@ -33,6 +41,10 @@ pub(crate) fn check_literal(sema: &mut Sema, ctx: &mut BodyCtx, value: &Literal,
 }
 
 fn require_string_type(sema: &mut Sema, ctx: &BodyCtx, span: Span) -> Ty {
+    if sema.no_std {
+        // no_std 没有 std:String；普通字面量只读地指向编译期 UTF-16 数据。
+        return Ty::Pointer(Box::new(Ty::Int(crate::ty::IntKind::U16)));
+    }
     sema.string_type().unwrap_or_else(|| {
         sema.type_error(
             ctx.module,

@@ -24,7 +24,7 @@
 创建带析构回调的 String，并通过系统 `malloc` 分配 UTF-16 缓冲区。
 f-string 的插值按源码顺序各求值一次，接受 String、整数、boolean、f32/f64，以及提供
 `__str(self) -> String` 的 class/struct。裸整数插值按 i64/u64 定型，裸浮点插值按 f64 定型；
-f8/f16 和其他无转换契约的值明确报错。文本里的 `{{` / `}}` 表示字面花括号。
+f16 和其他无转换契约的值明确报错。文本里的 `{{` / `}}` 表示字面花括号。
 字节串 `b"..."` 降级为 `u8[]`，不依赖 String。可运行示例见
 `examples/string-literal.nov`、`examples/string-ops.nov` 和 `examples/string-format.nov`。
 

@@ -84,7 +84,6 @@ pub(crate) fn predefined_text(ty: PredefinedType) -> &'static str {
         P::I16 => "i16",
         P::I32 => "i32",
         P::I64 => "i64",
-        P::F8 => "f8",
         P::F16 => "f16",
         P::F32 => "f32",
         P::F64 => "f64",

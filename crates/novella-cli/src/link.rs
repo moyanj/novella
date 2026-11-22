@@ -123,6 +123,11 @@ pub(crate) fn write_executable(
                 .arg(script);
         }
     }
+    if !bare {
+        // LLVM 的浮点余数指令由 clang 降为 libm 的 fmod；即使当前模块未使用 `%`，
+        // -lm 也无副作用，且保持普通 Linux 目标的链接行为一致。
+        command.arg("-lm");
+    }
     command.arg("-o").arg(&output);
     let result = command
         .output()

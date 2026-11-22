@@ -361,7 +361,7 @@ pub enum IntTy { U8, U16, U32, U64, I8, I16, I32, I64, Usize, Isize }
 **`is_signed`（101-106 行）**区分有符号/无符号，影响 codegen 发射有符号除法还是无符号除法、比较指令选择等。
 
 ```rust
-pub enum FloatTy { F8, F16, F32, F64 }
+pub enum FloatTy { F16, F32, F64 }
 ```
 
 `FloatTy::from_name`（121-130）和 `bit_width`（133-140）同理。**当前 codegen 的 `value_type`（`codegen/src/lib.rs:67-81`）只接受 `Int` 和 `Boolean`（以及指向它们的 Pointer），遇到 `Float` 直接报"暂不支持值类型"**——所以浮点虽然在数据模型和 sema 里完整存在，但当前后端还发射不了。这是"HIR 支持 ≠ codegen 支持"的典型例子。

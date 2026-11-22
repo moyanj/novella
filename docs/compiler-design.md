@@ -281,7 +281,7 @@ small/kernel 模型、无红区与无浮点/SIMD 环境；具体契约见 [裸�
   `@export("symbol")` 以 C ABI 导出函数，其余 Novella 符号在目标文件内部可见。
 - 已支持 f16/f32/f64 基本运算、数值提升、指针算术、struct/tuple/数组、动态 UTF-16 String、class ARC 与 weak。数组保存长度和连续元素，索引越界陷阱；struct/tuple 复制递归维护拥有成员。
 - 无托管全局支持零初始化、标量/指针/struct 常量初值与取址；不执行动态初始化。
-- f8、float→int 转换、动态派发及聚合 FFI ABI 等未支持路径仍明确报错；异常展开、异步与捕获闭包尚未实现。
+- float→int 转换、动态派发及聚合 FFI ABI 等未支持路径仍明确报错；异常展开、异步与捕获闭包尚未实现。
 
 ## 9. CLI 与诊断渲染（novella-cli）
 

@@ -1,3 +1,58 @@
-pub func abs(a: int) -> int {
-    return a < 0 ? -a : a;
+// IEEE-754 双精度常量。
+pub const PI: f64 = 3.141592653589793;
+pub const E: f64 = 2.718281828459045;
+
+// 对 i64::MIN 也成立：先平移再取负，避免有符号溢出。
+pub func abs(x: i64) -> u64 {
+    if (x >= 0) { return x as u64; }
+    return (-(x + 1) as u64) + 1;
+}
+
+pub func min(a: i64, b: i64) -> i64 {
+    if (a < b) { return a; }
+    return b;
+}
+
+pub func max(a: i64, b: i64) -> i64 {
+    if (a > b) { return a; }
+    return b;
+}
+
+// 对有限 f64，超过整数精度范围的值本身已经没有小数部分，因此不需要
+// 转换成整数；余数算法也避免了 f64 → i64 的范围陷阱。
+pub func floor(x: f64) -> f64 {
+    let remainder = x % 1.0;
+    let truncated = x - remainder;
+    if (x < 0.0 and remainder != 0.0) { return truncated - 1.0; }
+    return truncated;
+}
+
+pub func ceil(x: f64) -> f64 {
+    let remainder = x % 1.0;
+    if (remainder == 0.0) { return x; }
+    let truncated = x - remainder;
+    if (x > 0.0) { return truncated + 1.0; }
+    return truncated;
+}
+
+pub func round(x: f64) -> f64 {
+    if (x >= 0.0) { return floor(x + 0.5); }
+    return ceil(x - 0.5);
+}
+
+// Newton 迭代。负数没有在当前标准库中约定 NaN，因此返回 0.0。
+pub func sqrt(x: f64) -> f64 {
+    if (x < 0.0) { return 0.0; }
+    if (x == 0.0) { return 0.0; }
+
+    let guess = x > 1.0 ? x / 2.0 : 1.0;
+    while (fabs(guess - x / guess) > 0.000000000000001 * guess) {
+        guess = (guess + x / guess) / 2.0;
+    }
+    return guess;
+}
+
+pub func fabs(x: f64) -> f64 {
+    if (x < 0.0) { return -x; }
+    return x;
 }

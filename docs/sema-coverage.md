@@ -67,7 +67,7 @@
 | T11 | 别名展开与循环别名检测 | design §4.4 | `resolve.rs` + `resolving_aliases` | 已实现 | 反：`type A = B; type B = A;` 报错 | S07 |
 | T12 | `T*` 嵌套右结合、`(A \| B)*` | design §5.3 | `parser` + `resolve.rs` | 已实现 | 正：`u8**` 为 `Pointer(Pointer(u8))` | — |
 | T13 | `void*` 解引用 / 算术报错 | design §6.5 S8 | `expr.rs::check_unary` / `unsafe_rules` | 已实现 | 反：`*vp` 报错 | — |
-| T14 | f16 binary16 / f8 E4M3FN 的范围 | 已确认 D07 | `ty/literals.rs::float_literal_fits` | 已实现 | 65504/-65504 合法；65520 与 f8 465 拒绝；最近偶数舍入阈值写明 | S04b |
+| T14 | f16 binary16 的范围 | 已确认 D07 | `ty/literals.rs::float_literal_fits` | 已实现 | 65504/-65504 合法；65520 拒绝；最近偶数舍入阈值写明 | S04b |
 | T15 | usize / isize 按分析目标的 32/64 位检查 | 已确认 D07 | `analyze_with_target` / `target_int_kind` | 已实现 | 4294967296 在 32 位 usize 拒绝、64 位通过，范围文案随配置变化 | S04b |
 
 ### 1.3 字面量（S04）
@@ -106,7 +106,7 @@
 | D14R | 字段、顶层变量按依赖定型后检查函数体 | plan S05 | `check/fields.rs` / `check/globals.rs` | 已实现 | method-first/field-first、type-first/type-last 均拒绝 i32 返回给 string；前向调用通过 | S05 |
 | D15R | 无注解字段与顶层变量的推导环诊断 | plan S05 | `resolve_field` / `globals::resolve` | 已实现 | 静态字段环、跨类型实例字段环、顶层变量环拒绝；显式注解可打断类型依赖 | S05 |
 | D16R | 条件编译指令及未知指令拒绝 | 用户补充 TD04 | `cfg.rs` / `check/decl.rs` | 已实现 | @cfg 在声明收集前筛选；其他无定义指令报 error；支持函数/类型/成员及指令块 | 设计纠偏 |
-| D16S | 禁用标准库指令 | 用户补充（2026-11-21） | `module/loader.rs` / `check/decl.rs` | 已实现 | 入口独立 @no_std; 关闭整个导入闭包的标准库加载和 site 注入；拒绝 std: 导入、重复/带参/依赖模块/修饰声明或块的用法；字符串字面量缺少 std:String 报错 | 无参数指令 |
+| D16S | 禁用标准库指令 | 用户补充（2026-11-21） | `module/loader.rs` / `check/decl.rs` | 已实现 | 入口独立 @no_std; 关闭整个导入闭包的标准库加载和 site 注入；普通字符串字面量降为只读 UTF-16 指针，f-string 仍需标准库 String；拒绝 std: 导入、重复/带参/依赖模块/修饰声明或块的用法 | 无参数指令 | |
 | D16T | 禁用自动入口 | 裸机计划 / design §4.2 | `module/loader.rs` / `freestanding.rs` | 已实现 | @no_main 仅入口独立一次且无参；依赖、重复、带参、修饰声明或块均拒绝 | 无参数指令 |
 | D16U | C ABI 函数导出 | 裸机计划 / design §4.2 | `freestanding.rs` / `check/decl.rs` | 已实现 | @export 唯一合法符号；拒绝泛型/async/extern/无体/非顶层函数、聚合与托管 ABI、重复及 extern 碰撞 | 标量、裸指针与函数指针 |
 | D16V | 裸机目标与无托管模式 | 裸机计划 | `core::target` / `freestanding.rs` | 已实现 | 裸机强制 no_std+no_main，拒绝浮点含嵌套及 extern；runtime=none 拒绝实际托管值/ARC/weak/数组，纯 class 声明不要求堆 | 真实 file/span 定位 |
@@ -189,7 +189,7 @@
 | S02 | E28R、L09 | **完成** |
 | S03 | E19R、E29R、S04R、E20R | **完成** |
 | S04a | L02–L04、T03 | **完成**（D02 成员语义 + 字面量范围检查均已落地） |
-| S04b | L05–L06、T14、T15 | 完成（f8/f16 表示与 32/64 位目标配置已确认并验证） |
+| S04b | L05–L06、T14、T15 | 完成（f16 表示与 32/64 位目标配置已确认并验证） |
 | S04c | L07–L10 | 完成（普通/raw/f/b 字符串，b 为 u8[]） |
 | S04c-trait | E01、D04 | **完成**（继承列表按名分类、trait 成员登记与实现一致性） |
 | S05 | D14R、D15R | 完成（字段与顶层声明依赖分阶段） |
@@ -213,7 +213,7 @@
 | D04 | class 实现 trait 的语法与检查 | D12R | 无（语法缺失） |
 | D05 | 显式泛型实参代入范围、推导、约束 | T08、T09 | 无 |
 | D06 | match 穷尽性、类型模式、块分支值 | E25R | 无 |
-| D07 | 匿名对象结构类型、b 字符串、转义、f8/f16 | E17R、L07、T14 | 无 |
+| D07 | 匿名对象结构类型、b 字符串、转义、f16 | E17R、L07、T14 | 无 |
 | D08 | Exception 来源、`Future<T>` 可写性、with 绑定值、特殊方法签名 | S07R、S08R、S14R、S16R、A02R、A03R | §9.1.4 / §9.3.2 部分 |
 
 ## 3. 执行记录
@@ -226,7 +226,7 @@
 - D03：读取局部前须在所有可达路径完成赋值；无注解普通形参继续容错，不启动普通参数推导。
 - D04/D05：trait 保持显式括号列表实现，无字段/默认实现；完整显式泛型代入，允许从调用实参递归推导泛型参数，不从期望返回类型反推；冲突或缺失报错；支持现有语法中的 trait 约束。
 - D06：值 match 必须穷尽；布尔与可判定联合类型模式可无 default，其他要求 default；块分支 void，不允许值/void 混合；重复常量与被前项覆盖的类型分支报错。
-- D07：匿名对象结构类型允许宽对象赋给窄对象；b 字符串 u8[]，仅单字节字符与字节转义；f16 IEEE binary16、f8 E4M3FN；分析目标配置指定 usize/isize 的 32/64 位宽，默认宿主宽度；f-string 仅 {表达式} 与 {{/}}，不增加格式说明符，沿用已确认转义。
+- D07：匿名对象结构类型允许宽对象赋给窄对象；b 字符串 u8[]，仅单字节字符与字节转义；f16 IEEE binary16；分析目标配置指定 usize/isize 的 32/64 位宽，默认宿主宽度；f-string 仅 {表达式} 与 {{/}}，不增加格式说明符，沿用已确认转义。
 - D08：编译器提供 std:exception 的 Exception 名义基类静态身份，throw/catch 仅其子类；throw; 仅 catch 内重抛，catch 不得被前项覆盖；内建可写 Future<T>，async 调用返回 Future<T>，仅 async 内可 await，main 保持同步；with as 绑定原资源，可选 __enter/__exit 无显式参数且返回 void，__init/__destroy 返回 void、__str 返回 string。仅实现静态协议，不实现运行时。
 - @cfg 已实现，其他未定义指令及保留 yield 报不支持错误。
 
@@ -428,7 +428,7 @@
   正：f32-max(3.4028235e38)、f64-max、float-lit-f32(1.5)、usize-ok、isize-min(-9223372036854775808) 无诊断
   反（整数侧补验）：isize-over(9223372036854775808) 报超出 isize 范围
 回归：fmt OK、clippy -D warnings 无问题、cargo test --workspace = 102 passed、hir_smoke --json 正常
-尚未通过：f8 / f16 表示标准（D07）；usize / isize 未随目标三元组（后续期，已在注释标明按 64 位）
+尚未通过：f16 表示标准（D07）；usize / isize 未随目标三元组（后续期，已在注释标明按 64 位）
 下一步：S04c 字符串前缀 r/b、转义校验、sema↔HIR 解码一致（L07–L10，涉及 D07）
 禁止覆盖的既有修改：无
 ```
@@ -440,7 +440,7 @@
 状态：验收通过（b 字符串类型语义仍待定）
 决策记录（用户已确认，2026-11-15）：按 design 现状最小闭环——
   转义集 \n \r \t \0 \\ \' \" \xHH \u{H...}；r"..." 不解释转义；
-  b"..." 本期按 string 处理（不引入 bytes 类型）；f8/f16 沿用 f32 口径
+  b"..." 本期按 string 处理（不引入 bytes 类型）；f16 沿用 f32 口径
 新增文件：
   crates/novella-core/src/string.rs（+ lib.rs 注册 pub mod string）
     DecodeError{NotAStringLiteral, UnknownEscape, BadHexEscape, BadUnicodeEscape,
@@ -462,7 +462,7 @@
       byte-string、f-string-escape、single-quote 均无诊断
 回归：fmt OK、clippy -D warnings 无问题、cargo test --workspace = 106 passed（含 core 4 个单测）、
       hir_smoke --json 正常
-尚未通过：b"..." 的字节串类型语义（需新 Ty 变体，待后续期决策）；f8/f16 表示标准（D07）
+尚未通过：b"..." 的字节串类型语义（需新 Ty 变体，待后续期决策）；f16 表示标准（D07）
 下一步：S04c 剩余 = trait 定义与实现（E01，D04）
 禁止覆盖的既有修改：无
 ```

@@ -108,7 +108,6 @@ impl IntKind {
 /// 浮点种类（`float` 已归一化为 `F32`）。
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub(crate) enum FloatKind {
-    F8,
     F16,
     F32,
     F64,
@@ -117,7 +116,6 @@ pub(crate) enum FloatKind {
 impl FloatKind {
     pub(crate) fn name(self) -> &'static str {
         match self {
-            FloatKind::F8 => "f8",
             FloatKind::F16 => "f16",
             FloatKind::F32 => "f32",
             FloatKind::F64 => "f64",
@@ -126,7 +124,6 @@ impl FloatKind {
 
     pub(crate) fn from_name(name: &str) -> Option<Self> {
         Some(match name {
-            "f8" => FloatKind::F8,
             "f16" => FloatKind::F16,
             // `float` 等价于 `f32`
             "f32" | "float" => FloatKind::F32,

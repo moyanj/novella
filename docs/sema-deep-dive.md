@@ -599,7 +599,7 @@ pub(crate) enum Ty {
 
 - **基础**：`Unknown`（前置诊断已报，抑制级联）、`Void`、`Null`（null 字面量专用，可隐式赋给任意指针/class）、`Boolean`、`String`（已移出 `PredefinedType`，按名归类）、`Int(IntKind)`、`Float(FloatKind)`。
 - `IntKind`（:28-84）：`U8/U16/U32/U64/I8/I16/I32/I64/Usize/Isize`；`name()` 返回静态串；`from_name()` 把 `"i32"|"int"` 都归一到 `I32`；`is_signed()` 带 `#[allow(dead_code)]`（供 codegen/移位诊断后续使用）。
-- `FloatKind`（:87-115）：`F8/F16/F32/F64`；`"f32"|"float"` 归一到 `F32`。
+- `FloatKind`（:87-115）：`F16/F32/F64`；`"f32"|"float"` 归一到 `F32`。
 - **字面量**：`IntLiteral(bool, u128)` 载荷是 `(是否取负, 绝对值)`——`42→(false,42)`、`-128→(true,128)`；数值只参与目标位宽范围判定，公开投影恒为 `TypeView::IntLiteral`。`FloatLiteral(f64)` 按 `f64` 解析，只用于有限性/范围判定。
 - **复合**：`Pointer` / `Array` / `Tuple` / `Union`（成员无序语义，由 `ty_eq` 的 `any` 判定体现）。
 - **函数**：`Function(Rc<FunctionSig>)`——唯一使用 `Rc` 的位置。
@@ -727,11 +727,11 @@ pub(crate) fn assignable(
   - `int_range_text(kind)`：`(min,max): (i128,i128)`，格式 `"{min}..={max}"`。
   - 负号由 `UnaryOp::Minus` 在 unary.rs:34-46 处理：`IntLiteral(negative,value) → IntLiteral(!negative, value)`——**保留未定型态**（提前 concrete 成 i32 会让 `let x:i8=-128` 误报，L04）。
 - **浮点范围**（:136-167）：
-  - `float_literal_fits(kind, value)`：先 `is_finite()`；F64 → true；F32 → `(value as f32).is_finite()`（判据是"舍入后仍有限"而非 `abs ≤ f32::MAX`——`3.4028235e38` 比 `f32::MAX` 略大但舍入后正好落在 f32::MAX，合法）；F16 → `value.abs() < 65520.0`（IEEE binary16 最近偶数舍入溢出阈值，最大有限 65504）；F8 → `value.abs() <= 464.0`（E4M3FN 最大有限 448、下一编码 NaN、中点 464）。
-  - `float_range_text(kind)`：F64≈±1.7976931348623157e308、F32≈±3.4028235e38、F16 ±65504、F8 ±448（短格式避免默认 Display 展开上百位）。
+  - `float_literal_fits(kind, value)`：先 `is_finite()`；F64 → true；F32 → `(value as f32).is_finite()`（判据是"舍入后仍有限"而非 `abs ≤ f32::MAX`——`3.4028235e38` 比 `f32::MAX` 略大但舍入后正好落在 f32::MAX，合法）；F16 → `value.abs() < 65520.0`（IEEE binary16 最近偶数舍入溢出阈值，最大有限 65504）。
+  - `float_range_text(kind)`：F64≈±1.7976931348623157e308、F32≈±3.4028235e38、F16 ±65504（短格式避免默认 Display 展开上百位）。
 - **`target_int_kind(kind, width)`**（:170-176）：仅范围判定时把 `Usize→U32`、`Isize→I32`（Bits32），其余原样；**不改变名义类型相等性**。
 
-**位宽/边界已用脚本复核**：u8 255、u16 65535、u32 4294967295、u64 18446744073709551615；i8 -128..127（|MIN|=128）、i16 -32768..32767、i32 -2147483648..2147483647、i64 全范围；f16 溢出中点 65520、f8 NaN 中点 464——与代码常量一致。
+**位宽/边界已用脚本复核**：u8 255、u16 65535、u32 4294967295、u64 18446744073709551615；i8 -128..127（|MIN|=128）、i16 -32768..32767、i32 -2147483648..2147483647、i64 全范围；f16 溢出中点 65520——与代码常量一致。
 
 **`concrete` 归一化**（bindings.rs:155-168）：`IntLiteral → Int(I32)`（注释称"取回符号"但代码 `let _ = (negative, value)` **丢弃载荷，一律落 i32**）、`FloatLiteral → Float(F32)`、递归 Tuple/Array、其余 clone。用于无标注变量/字段/数组元素/二元运算的默认定型。`let x:i8=-128` 靠赋值上下文的 `assignable` 正确通过；无标注 `let x=-128` 落 i32，符合默认定型设计。
 
@@ -1007,7 +1007,7 @@ Lambda           → check_lambda
   - opaque 早期返回（比较/逻辑 → Boolean，算术 → Unknown）；
   - `&&/||` Boolean；`??` 左须 `is_nullable`，返回 lhs 不隐式解引用；
   - `==/!=` 等：struct 禁比"struct 类型不支持 `==`/`!=` 比较"；
-  - 关系：数值或 String；`+`：字符串拼接或算术；`%`：整数；
+  - 关系：数值或 String；`+`：字符串拼接或算术；`%`：同类型整数或浮点数；
   - 位运算：同宽整数"整数操作数位宽不一致"；移位返回 `concrete(lhs)`；
 - `check_arithmetic`（:259-328）：`void*` → "void* 不支持指针算术" Error；指针 ± 整数需 unsafe、整数 + 指针、指针 - 指针 → isize；`unify_numeric`（:330-344）不隐式数值转换；
 - `comparable`（:346-354）/ `unify_types`（:356-376）；
@@ -1309,7 +1309,7 @@ pub(crate) struct BodyCtx {
 - **D04** trait 用括号列表显式实现；
 - **D05** 完整显式泛型代入 + 实参递归推导；
 - **D06** 值 match 必须穷尽；
-- **D07** 匿名对象结构类型、b 字符串 u8[]、f16 IEEE binary16、f8 E4M3FN、usize/isize 按目标位宽；
+- **D07** 匿名对象结构类型、b 字符串 u8[]、f16 IEEE binary16、usize/isize 按目标位宽；
 - **D08** 编译器提供 `std:exception` Exception 名义根、throw; 仅 catch 内、内建可写 `Future<T>`、with as 绑定原资源、特殊方法签名。
 
 ### 11.3 可改进点（精读中发现，非缺陷结论）
@@ -1323,7 +1323,7 @@ pub(crate) struct BodyCtx {
 5. **`sig_eq` 纯结构口径**：忽略 `is_async/is_extern/module/name/type_param_count`，函数类型相等可能与名义期望有张力。
 6. **`ty_eq` 的宽松相等**：`Unknown/Unknown`、`Error/Error`、`IntLiteral/IntLiteral` 均视为相等，与"避免级联"目标略有张力（两个不同来源的 Error 相等）。
 7. **`substitute_type_params` 不递归进 `Struct/Class/Trait`**：泛型实参挂在 `Applied` 上，这些变体本身无可代换形参（S05 注释自述未闭环）。
-8. **`float_literal_fits` 注释与常量出入**：注释写"标准未定、按不窄于 f32 放行"，实际已给出具体阈值（F8 464 / F16 65520），`float_range_text` 给的是最大有限值（448 / 65504），文案与判据口径不同——以代码常量为准。
+8. **`float_literal_fits` 注释与常量出入**：`f16` 溢出阈值为 65520，`float_range_text` 给出最大有限值 65504——以代码常量为准。
 9. **`build_function_sig` 重名**：重名时先定义者接收后定义者签名（Phase 1 已报重复定义，属恢复行为）。
 10. **`lookup_member_chain` 的 `static_only` 参数当前未用**（`_static_only`），静态过滤实际在各调用点（check_static_member / check_static_access）完成。
 11. **`register_reference` 对具名导入不支持再导出链**：`NamedImport{target: Some}` 只追一层目标模块符号，不递归追导入。

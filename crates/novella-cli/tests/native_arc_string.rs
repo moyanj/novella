@@ -60,7 +60,7 @@ fn string_arc_and_weak_examples() {
 }
 
 #[test]
-fn no_std_disables_string_but_keeps_user_classes() {
+fn no_std_static_string_keeps_user_classes() {
     let temporary = tempfile::tempdir().expect("创建 no_std 回归临时目录");
     // 用户同名类型及 string.nov 文件不得触发标准库 String 特殊降级。
     let source = temporary.path().join("string.nov");
@@ -72,15 +72,19 @@ fn no_std_disables_string_but_keeps_user_classes() {
     let source = temporary.path().join("no-std-string.nov");
     std::fs::write(
         &source,
-        "@no_std;\nfunc main() -> int { let value = \"unavailable\"; return 0; }\n",
+        "@no_std;\nfunc main() -> int { let value = \"static\"; return 0; }\n",
     )
-    .expect("写入禁用标准库示例");
-    let result = Command::new(env!("CARGO_BIN_EXE_novella"))
-        .args(["check", source.to_str().expect("源码路径")])
+    .expect("写入静态字符串示例");
+    let executable = temporary.path().join("no-std-string");
+    compile(&source, &executable);
+    assert_eq!(run(&executable).status.code(), Some(0));
+    let symbols = Command::new("nm")
+        .args(["-g", "--defined-only"])
+        .arg(&executable)
         .output()
-        .expect("运行语义检查");
-    assert!(!result.status.success(), "no_std 不应隐式提供 String");
-    assert!(String::from_utf8_lossy(&result.stderr).contains("String"));
+        .expect("检查静态字符串 ELF 定义符号");
+    assert!(symbols.status.success());
+    assert!(!String::from_utf8_lossy(&symbols.stdout).contains("novella_rt_"));
 }
 
 #[test]

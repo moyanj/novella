@@ -72,7 +72,6 @@ pub(crate) fn predefined_from_enum(ty: PredefinedType) -> Ty {
         PredefinedType::I16 => Ty::Int(IntKind::I16),
         PredefinedType::I32 => Ty::Int(IntKind::I32),
         PredefinedType::I64 => Ty::Int(IntKind::I64),
-        PredefinedType::F8 => Ty::Float(FloatKind::F8),
         PredefinedType::F16 => Ty::Float(FloatKind::F16),
         PredefinedType::F32 => Ty::Float(FloatKind::F32),
         PredefinedType::F64 => Ty::Float(FloatKind::F64),
@@ -135,8 +134,7 @@ pub(crate) fn int_range_text(kind: IntKind) -> String {
 ///
 /// - `f64`：字面量本身是 `f64`，只拒绝解析后非有限的值（`1e999` → `inf`）；
 /// - `f32`：须落在 `f32` 的有限范围内（最大值之外即溢出，`f32::MAX as f64` 上界）；
-/// - `f8` / `f16`：语言层尚未定义表示标准（矩阵 T14 / D07），本期按「不窄于 f32 的
-///   有限值即可」放行，等 D07 决策后再收紧。
+/// - `f16`：按 IEEE binary16 的舍入溢出阈值检查；
 pub(crate) fn float_literal_fits(kind: FloatKind, value: f64) -> bool {
     if !value.is_finite() {
         return false;
@@ -146,10 +144,8 @@ pub(crate) fn float_literal_fits(kind: FloatKind, value: f64) -> bool {
         // 判据是「按 f32 舍入后仍有限」，而不是「绝对值 ≤ f32::MAX」：
         // `3.4028235e38` 比 `f32::MAX` 略大，但舍入后正好落在 `f32::MAX` 上，合法。
         FloatKind::F32 => (value as f32).is_finite(),
-        // IEEE binary16 的最近偶数舍入溢出阈值为 65520；E4M3FN 的最大有限值
-        // 448，下一编码是 NaN，最近偶数舍入的有效范围含中点 464。
+        // IEEE binary16 的最近偶数舍入溢出阈值为 65520；最大有限值为 65504。
         FloatKind::F16 => value.abs() < 65520.0,
-        FloatKind::F8 => value.abs() <= 464.0,
     }
 }
 
@@ -158,9 +154,8 @@ pub(crate) fn float_range_text(kind: FloatKind) -> String {
     match kind {
         FloatKind::F64 => "≈±1.7976931348623157e308（f64）".to_string(),
         FloatKind::F32 => "≈±3.4028235e38（f32）".to_string(),
-        // f8 / f16 的表示标准未定（T14 / D07），文案按当前放行口径标注
+        // f16 使用 IEEE binary16 表示
         FloatKind::F16 => "±65504（IEEE binary16，按最近偶数舍入）".to_string(),
-        FloatKind::F8 => "±448（E4M3FN，按最近偶数舍入）".to_string(),
     }
 }
 

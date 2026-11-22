@@ -107,7 +107,6 @@ impl IntTy {
 /// 浮点种类：与 sema 内部 `FloatKind` 一一对应（`float` 已归一化为 `F32`）。
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
 pub enum FloatTy {
-    F8,
     F16,
     F32,
     F64,
@@ -119,7 +118,6 @@ impl FloatTy {
     pub fn from_name(name: &str) -> Option<Self> {
         Some(match name {
             "float" => FloatTy::F32,
-            "f8" => FloatTy::F8,
             "f16" => FloatTy::F16,
             "f32" => FloatTy::F32,
             "f64" => FloatTy::F64,
@@ -130,7 +128,6 @@ impl FloatTy {
     /// 位宽。
     pub fn bit_width(self) -> u32 {
         match self {
-            FloatTy::F8 => 8,
             FloatTy::F16 => 16,
             FloatTy::F32 => 32,
             FloatTy::F64 => 64,

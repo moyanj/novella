@@ -2592,7 +2592,7 @@ entry:
 | 实例方法（receiver） | `lib.rs:126-133` | 含 struct/class 方法 |
 | async 函数 | `lib.rs:126-133` | 需状态机 |
 | 泛型函数 | `lib.rs:126-133` | 需单态化 |
-| 浮点类型与运算（float/f8/f16/f32/f64） | `lib.rs:80`, `operators.rs:27/48/79` | HIR 支持，后端不支持 |
+| 浮点类型与运算（float/f16/f32/f64） | `lib.rs:80`, `operators.rs:27/48/79` | HIR 支持 |
 | 字符串 | `lib.rs:80`, `body.rs:137` | 布局/运行时 ABI 未定 |
 | 数组 / 元组 | `lib.rs:80`, `body.rs:275-287` | 11 条指令拒绝 |
 | struct / class / trait | `lib.rs:80`, `body.rs:275-287` | 字段访问/虚表未实现 |

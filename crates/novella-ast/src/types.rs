@@ -17,7 +17,7 @@ pub struct TypeParameter {
 
 /// 预定义的基础类型
 ///
-/// u/i/f8/16/32/64 宽度类型、usize/isize、boolean 均为特殊的基础类型，
+/// u/i/f16/32/64 宽度类型、usize/isize、boolean 均为特殊的基础类型，
 /// 在语义/代码生成阶段直接映射到目标平台的原生类型，而不是普通的类型引用。
 /// 该枚举是纯值，其源码区间由承载它的 `TypeExpr::Predefined` 提供。
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
@@ -48,8 +48,6 @@ pub enum PredefinedType {
     I32,
     /// 64 位有符号整数
     I64,
-    /// 8 位浮点数
-    F8,
     /// 16 位浮点数
     F16,
     /// 32 位浮点数
@@ -67,7 +65,7 @@ impl PredefinedType {
     ///
     /// 供补全、文档等需要枚举「全部基础类型」的消费者使用；新增变体时
     /// 编译器不会强制此处同步，但 `spellings_cover_enum` 测试会按数量比对。
-    pub const ALL: [PredefinedType; 19] = [
+    pub const ALL: [PredefinedType; 18] = [
         PredefinedType::Null,
         PredefinedType::Boolean,
         PredefinedType::Int,
@@ -81,7 +79,6 @@ impl PredefinedType {
         PredefinedType::I16,
         PredefinedType::I32,
         PredefinedType::I64,
-        PredefinedType::F8,
         PredefinedType::F16,
         PredefinedType::F32,
         PredefinedType::F64,
@@ -108,7 +105,6 @@ impl PredefinedType {
             PredefinedType::I16 => "i16",
             PredefinedType::I32 => "i32",
             PredefinedType::I64 => "i64",
-            PredefinedType::F8 => "f8",
             PredefinedType::F16 => "f16",
             PredefinedType::F32 => "f32",
             PredefinedType::F64 => "f64",

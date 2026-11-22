@@ -213,7 +213,6 @@ fn value_type<'ctx>(
             novella_hir::FloatTy::F16 => context.f16_type(),
             novella_hir::FloatTy::F32 => context.f32_type(),
             novella_hir::FloatTy::F64 => context.f64_type(),
-            novella_hir::FloatTy::F8 => return Err(CodegenError("LLVM 目标暂不支持 f8".into())),
         }
         .into()),
         HirType::Tuple(elements) => Ok(context

@@ -97,7 +97,7 @@ typeExpression:
 	| typeExpression '|' typeExpression;
 
 // 基础类型：只有 `null` 在词法层是独立 token（`Null`）。
-// 其余类型名（boolean / string / int / float / void / u8..u64 / i8..i64 / f8..f64 / usize / isize）
+// 其余类型名（boolean / string / int / float / void / u8..u64 / i8..i64 / f16..f64 / usize / isize）
 // 在词法层都是普通 Identifier，故不在此写死集合——也不在 parser 归类：parser 一律产出
 // `TypeExpr::Reference`，由语义分析按名字归入 `PredefinedType`，避免在词法层或语法层
 // 各维护一份类型名表而与 `TokenKind` 这一事实源冲突。

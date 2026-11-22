@@ -1,6 +1,8 @@
 //! 局部所有权、对象分配与字符串物化。
 
 use super::*;
+use std::collections::hash_map::DefaultHasher;
+use std::hash::{Hash, Hasher};
 
 impl<'ctx> Body<'ctx, '_> {
     pub(super) fn is_managed(ty: &HirType) -> bool {
@@ -230,6 +232,39 @@ impl<'ctx> Body<'ctx, '_> {
         value: &[u16],
         ty: &HirType,
     ) -> Result<PointerValue<'ctx>> {
+        let static_string_ty = HirType::Pointer(Box::new(HirType::Int(novella_hir::IntTy::U16)));
+        if *ty == static_string_ty {
+            let pointer_type = self.context.ptr_type(inkwell::AddressSpace::default());
+            if value.is_empty() {
+                return Ok(pointer_type.const_null());
+            }
+            let mut hasher = DefaultHasher::new();
+            value.hash(&mut hasher);
+            let name = format!("__novella_static_string_{:x}", hasher.finish());
+            let global = if let Some(global) = self.module.get_global(&name) {
+                global
+            } else {
+                let elements = value
+                    .iter()
+                    .map(|unit| self.context.i16_type().const_int(u64::from(*unit), false))
+                    .collect::<Vec<_>>();
+                let array = self.context.i16_type().const_array(&elements);
+                let global = self.module.add_global(array.get_type(), None, &name);
+                global.set_initializer(&array);
+                global.set_constant(true);
+                global
+            };
+            let zero = self.context.i64_type().const_zero();
+            let data = unsafe {
+                self.builder.build_gep(
+                    self.context.i16_type(),
+                    global.as_pointer_value(),
+                    &[zero, zero],
+                    "static_string",
+                )?
+            };
+            return Ok(data);
+        }
         let HirType::Class(_, name) = ty else {
             return Err(CodegenError(format!(
                 "字符串字面量的目标类型不是 class：{ty:?}"

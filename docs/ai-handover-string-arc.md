@@ -38,7 +38,7 @@ weak 字段不可取裸地址，避免把控制块 handle 当成载荷指针。�
 - `length()` 与索引按 UTF-16 码元，索引结果为只读 `u16`；`charCount()` 统计代理对形成的码点；`slice()` 按码元切片，允许孤立代理码元。
 - f-string 使用 sema 保存的已检查插值 AST，HIR 不重新解析插值。支持整数、boolean、f32/f64、String 和 class `__str`；不增加格式说明符。
 - 浮点格式化由标准库调用 C11 `strfromd` 固定 ABI，f32 使用 9 位、f64 使用 17 位有效数字；当前原生目标是 Linux x86-64，依赖 libc 对该符号的支持。
-- `b"..."` 为独立 `u8[]`，支持 no_std。数组载荷包含长度与连续元素，尺寸/对齐由 LLVM TargetData 计算，索引越界 trap；裸指针索引仍遵循 unsafe 契约。
+- `b"..."` 为独立 `u8[]`，支持 no_std；普通字符串字面量在 no_std 下是只读 UTF-16 静态指针，不分配、不触发 ARC。数组载荷包含长度与连续元素，尺寸/对齐由 LLVM TargetData 计算，索引越界 trap；裸指针索引仍遵循 unsafe 契约。
 - class new 展开字段默认初值及构造默认实参，求值使用定义模块环境。
 
 ## 实现入口
@@ -63,7 +63,7 @@ weak 字段不可取裸地址，避免把控制块 handle 当成载荷指针。�
 | array-arc | 0 | ABCEDGFJHI |
 | runtime-weak | 42 | APCZ |
 
-CLI 集成测试还验证 no_std 不提供 String、用户同名 String 不误匹配、标量 no_std ELF 不抽取 runtime 符号。
+CLI 集成测试还验证 no_std 普通字符串字面量使用静态数据、不抽取 runtime 符号；用户同名 String 不误匹配、标量 no_std ELF 不抽取 runtime 符号。
 
 runtime C ABI 集成测试覆盖 null、对齐、weak copy、归零后不能升级、析构中释放自身 weak，以及四线程 upgrade/最后 release 竞争。已运行 ASan/UBSan/TSan；ARC 覆盖、返回、循环、聚合、数组与继承析构的额外原生程序通过 ASan/泄漏检查。继承验证包含子类无用户析构的情况，父析构仅执行一次。
 

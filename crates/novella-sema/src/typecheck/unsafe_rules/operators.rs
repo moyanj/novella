@@ -195,9 +195,9 @@ pub(super) fn check_binary_operands(
             check_arithmetic(sema, ctx, op, &lhs, &rhs, span)
         }
         BinaryOp::Modulus => match unify_numeric(&lhs, &rhs) {
-            Some(ty) if ty.is_integer() => ty,
+            Some(ty) if ty.is_numeric() => ty,
             Some(_) => {
-                sema.type_error(ctx.module, span, "`%` 只能用于整数类型");
+                sema.type_error(ctx.module, span, "`%` 只能用于整数或浮点类型");
                 Ty::Unknown
             }
             None => {
