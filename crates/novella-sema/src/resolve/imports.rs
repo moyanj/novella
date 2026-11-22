@@ -81,8 +81,10 @@ pub(crate) fn bind_imports(sema: &mut Sema, module: ModuleId) {
                     {
                         sema.exception_imports.insert((module, local.clone()));
                     }
-                    // 具名导入的存在性 / 可见性检查（std 外部符号不查）
-                    if let NsTarget::Module(target_module) = target {
+                    // 文件读取失败时仍绑定本地名字，供使用点以 Ty::Error 恢复。
+                    if let NsTarget::Module(target_module) = target
+                        && !sema.modules[target_module].load_failed
+                    {
                         match sema.modules[target_module]
                             .global_scope_symbol(&sema.scopes, &specifier.imported)
                         {

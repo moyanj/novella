@@ -128,7 +128,7 @@ pub(crate) fn check_lambda(
             }
             annotated_ret
                 .clone()
-                .unwrap_or_else(|| infer_block_return(sema, &lambda_ctx, block))
+                .unwrap_or_else(|| infer_block_return(sema, &lambda_ctx, block, "lambda"))
         }
     };
     Ty::Function(Rc::new(FunctionSig {
@@ -147,29 +147,47 @@ pub(crate) fn check_lambda(
 }
 
 /// 只合并自身的可达返回；落尾等价于 void，不从调用点反向猜测。
-fn infer_block_return(sema: &mut Sema, ctx: &BodyCtx, block: &Block) -> Ty {
+pub(super) fn infer_block_return(sema: &mut Sema, ctx: &BodyCtx, block: &Block, kind: &str) -> Ty {
     let mut returns = ctx
         .inferred_returns
         .as_ref()
-        .expect("lambda 返回收集器")
+        .expect("返回类型收集器")
         .borrow()
         .clone();
     if super::flow::block_falls_through(sema, ctx.module, block) {
         returns.push((block.span, Ty::Void));
     }
+    for (span, actual) in &returns {
+        if !crate::check::returns::validate_type(sema, ctx.module, *span, actual) {
+            return Ty::Error;
+        }
+    }
     let Some((_, first)) = returns.first() else {
         return Ty::Void;
     };
-    let mut result = concrete(first);
+    // 先合并未定型字面量，再选择默认数值类型；否则 i64 与裸整数会过早变成 i64/i32 冲突。
+    let mut result = first.clone();
     for (span, actual) in &returns {
-        let actual = concrete(actual);
-        if let Some(joined) = super::unsafe_rules::unify_types(&result, &actual) {
+        if let Some(joined) = super::unsafe_rules::unify_types(&result, actual) {
             result = joined;
         } else {
             sema.type_error(
                 ctx.module,
                 *span,
-                format!("lambda 返回类型不一致：{result} 与 {actual}，请统一返回值或显式标注"),
+                format!("{kind} 返回类型不一致：{result} 与 {actual}，请统一返回值或显式标注"),
+            );
+            return Ty::Error;
+        }
+    }
+    let result = concrete(&result);
+    for (span, actual) in &returns {
+        if !sema.is_assignable(&result, actual) {
+            sema.type_error(
+                ctx.module,
+                *span,
+                format!(
+                    "{kind} 返回值 `{actual}` 超出推导类型 `{result}` 的范围，请显式标注返回类型"
+                ),
             );
             return Ty::Error;
         }

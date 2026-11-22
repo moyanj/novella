@@ -794,7 +794,7 @@ class Name: Base { member* }       // 冒号 heritage
 
 - `async` 前缀：若当前是 `Async`，消费并置 `is_async = true`，然后期待 `Func`。
 - 名称、类型参数（`parse_type_parameters`）、参数列表（`parse_typed_params`，来自 `types.rs`）。
-- 返回类型：`parse_return_type`（接受 `->` 或 `:`，来自 `types.rs`）。
+- 返回类型：`parse_return_type`（接受 `->` 或 `:`，来自 `types.rs`）；显式注解保存为 `Some`，缺省为 `None`，不在 parser 中合成 `void`。普通有体函数由 sema 推导返回类型；AST JSON 中缺省注解为 `null`。
 - 函数体：必须是 `{ ... }` 块（通过 `parse_block`）。`extern` 函数没有体（见 8.9）。
 - 失败路径：调用 `skip_to_function_end`（见 8.11）跳过到函数结尾，避免在错误处卡住。
 
@@ -811,7 +811,7 @@ extern func Name(params) [-> ReturnType];
 
 - `is_extern = true`
 - `block = None`（无函数体）
-- 默认返回类型为 `Void`（若未显式标注）
+- 缺省返回注解保留为 `None`，由 sema 将无体的外部函数返回类型定为 `Void`
 
 外部函数用于声明 FFI 边界，由 sema/codegen 进一步处理。
 

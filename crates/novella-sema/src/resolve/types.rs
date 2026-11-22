@@ -178,6 +178,9 @@ impl Sema {
                 }
             }
             NsTarget::Module(target_module) => {
+                if self.modules[target_module].load_failed {
+                    return Ty::Error;
+                }
                 let Some(target_symbol) = self.modules[target_module]
                     .global_scope_symbol(&self.scopes, name)
                     .cloned()
@@ -211,6 +214,9 @@ impl Sema {
             imported,
         } = &symbol.kind
         {
+            if self.modules[*target_module].load_failed {
+                return Ty::Error;
+            }
             let key = (*target_module, imported.clone());
             let Some(def) = self.type_defs.get(&key).cloned() else {
                 self.error(use_module, span, format!("`{imported}` 不是类型"));
@@ -350,7 +356,11 @@ impl Sema {
                 has_default: p.default.is_some(),
             })
             .collect();
-        let ret = self.resolve_type(module, scope, &function_type.return_type, &env);
+        let ret = function_type
+            .return_type
+            .as_ref()
+            .map(|ty| self.resolve_type(module, scope, ty, &env))
+            .unwrap_or(Ty::Void);
         FunctionSig {
             module,
             name: None,

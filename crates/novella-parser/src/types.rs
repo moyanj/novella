@@ -75,7 +75,7 @@ impl Parser {
             return Some(TypeExpr::Function(FunctionType {
                 type_parameters,
                 params,
-                return_type: Box::new(return_type),
+                return_type: Some(Box::new(return_type)),
                 span: Span { start, end },
             }));
         }
@@ -154,7 +154,7 @@ impl Parser {
         Some(TypeExpr::Function(FunctionType {
             type_parameters: vec![],
             params,
-            return_type: Box::new(return_type),
+            return_type: Some(Box::new(return_type)),
             span: Span {
                 start: paren_span.start,
                 end,
@@ -187,7 +187,7 @@ impl Parser {
         Some(TypeExpr::Function(FunctionType {
             type_parameters,
             params,
-            return_type: Box::new(return_type),
+            return_type: Some(Box::new(return_type)),
             span: Span { start, end },
         }))
     }

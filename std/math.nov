@@ -1,0 +1,3 @@
+func abs(a: int) {
+    return a < 0 ? -a : a;
+}

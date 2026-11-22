@@ -373,7 +373,7 @@ load_modules(
    - `by_path` 已含 `key` → continue。**循环导入安全**：路径→id 在入队时（处理该模块前）就登记，第二次遇到同 key 直接复用 id，不会无限入队；
    - `id = modules.len()` 后立即 `by_path.insert(key, id)`，故入口恒 id 0。
 
-3. **读文件**（:44-69）：`read_to_string` 失败 → 一条 global 诊断"无法读取模块文件 '{}': {e}" + 占位模块（`syntax_failed=true, load_failed=true`，空 program）保证 `modules` 下标与其他表一致。
+3. **读文件**（:44-69）：`read_to_string` 失败 → 一条 global 诊断"无法读取模块文件 '{}': {e}" + 占位模块（`syntax_failed=true, load_failed=true`，空 program）保证 `modules` 下标与其他表一致。具名导入仍保留目标模块身份；后续具名/命名空间的类型、值及构造访问传播 `Error`，抑制读取失败引起的符号不存在与可见性级联诊断。可读模块中的真实缺失符号与其他独立错误仍正常报告。
 
 4. **词法/语法**（:74-100）：
    - 先查 `loader.parsed_source(&path).filter(|s| s.source == source)`，命中则复用快照（LSP 场景，源码未变时不再 lex/parse）；
@@ -1170,7 +1170,7 @@ pub(crate) struct BodyCtx {
   - subject = check_expr；
   - 逐 case：
     - Expr 模式 → check_expr + comparable 校验（失败"case 值 X 与 match 目标 Y 不可比较"），常量 key（i/f/s/b/null）判重复 → "重复的 case 常量"；类型模式被先前 `is_assignable` 覆盖 → "case 已被先前类型模式覆盖"；
-    - Type 模式 → `resolve_type` + 覆盖检查 + possible 判定（Union 成员双向 `is_assignable`）失败 → "类型模式不可能匹配目标类型"；
+    - Type 模式 → `resolve_type` + 覆盖检查 + possible 判定（Union 成员双向 `is_assignable`）失败 → 警告 `NVL3009` "类型模式不可能匹配目标类型"；其他覆盖、重复与穷尽性错误仍按原规则报告；
   - `exhaustive` = 有 default || Boolean 且 true/false 都出现 || Union 各成员被某类型模式 assignable || 非 Union 时 `ty_eq`；exhaustive 时 `sema.exhaustive_matches.insert((module, node.span))`；
   - 逐分支：Expr body 用 `check_expr(_with_hint)`，Block body 用 `check_block` 且类型 Void；`has_value` / `has_block` 标志；`reaches_join`（Expr 恒真，Block 用 `block_falls_through`）时合并 uninitialized；
   - 结果分支用 `unify_types` 合一，失败时若 hint 同时 assignable 两边则取 hint，否则"match 分支类型不一致"→ Error；
@@ -1186,7 +1186,15 @@ pub(crate) struct BodyCtx {
   - Expr body → `check_expr(_with_hint)`，标注时校验兼容取标注，否则 `concrete(body_ty)`；
   - Block body → `expected_return = annotated 或 Some(Unknown)`，无标注时 `inferred_returns = Some(default)`，`check_block`，有标注时 `flow::check_block`，返回 annotated 或 `infer_block_return`；
   - 产出 `Ty::Function(Rc<FunctionSig { module, name: None, params, ret, type_param_count: 0, type_params: vec![], is_async, is_extern: false, is_method: false }>)`。
-- `infer_block_return`（:149-177）：收集 `inferred_returns`，落尾追加 `(block.span, Void)`，空则 Void；首项 `concrete`，逐项 `unify_types` 合一，失败 → "lambda 返回类型不一致：X 与 Y，请统一返回值或显式标注" → Error；**不从调用点反向猜测**。
+- `infer_block_return`：普通函数、方法与块体 lambda 共用。收集自身可达的 `inferred_returns`，可达落尾追加 `(block.span, Void)`，空则 `Void`；先检查组合类型中是否残留 `Unknown` / `Error`，再对原始返回类型逐项 `unify_types`，最后 `concrete` 并逐项校验字面量范围。不兼容返回报错；**不从调用点反向猜测**。
+
+普通函数与方法的推导任务在 `check/returns.rs` 中管理：
+
+- 声明注册时，无返回注解的普通有体函数和方法先以 `Unknown` 登记；`extern`、无体声明与特殊方法保留既定规则。
+- 在字段与顶层变量检查前收集任务，以 `(ModuleId, 函数名或类型::方法名)` 为键；函数名称解析与实际方法/协议查询按需触发推导，支持前向及跨模块依赖。
+- 任务状态为 `Pending → Resolving → Done`；遇到 `Resolving` 回边报返回推导循环并固定为 `Error`，要求显式注解打断循环；已经完成的函数体不重复检查。
+- 推导结果回填全局函数或类型方法签名及 `declaration_types`，供 `main` 校验、调用点与 HIR 使用；全部任务定型后再校验继承覆写和 trait 实现签名。
+- 推导模式的 `return` 直接检查表达式，显式返回注解才向表达式下推期望类型；嵌套 lambda 重置返回收集器，保持独立。
 
 ### 9.8 成员访问、可见性与继承链（member.rs，419 行）
 

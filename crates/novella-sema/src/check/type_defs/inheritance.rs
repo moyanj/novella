@@ -1,7 +1,7 @@
 //! 继承关系、trait 实现、覆写与抽象成员。
 use super::*;
 
-/// 解析全部 class 的父类引用并检测继承环。
+/// 注册全部 class 的父类和 trait 关系，并检测继承环。
 pub(crate) fn resolve_class_parents(sema: &mut Sema) {
     let class_keys: Vec<(ModuleId, String)> = sema
         .type_defs
@@ -76,18 +76,22 @@ pub(crate) fn resolve_class_parents(sema: &mut Sema) {
             }
         }
     }
-    check_overrides(sema);
-    resolve_trait_impls(sema);
 }
 
-/// D04：解析并校验 class 声明的 trait 实现。
+/// 方法返回类型定型后，校验覆写和 trait 实现的签名兼容性。
+pub(crate) fn check_inherited_signatures(sema: &mut Sema) {
+    check_overrides(sema);
+    check_trait_impls(sema);
+}
+
+/// D04：校验 class 声明的 trait 实现。
 ///
 /// 语法复用 `classHeritage`：`class C (Parent, Trait1, Trait2)` 中首项是父类，
 /// 其余是 trait。要求：
 /// - 列表里除首项外必须是 trait 类型（写成别的类型报错）；
 /// - trait 的每个方法都必须在类（含继承链）中有**兼容实现**：形参类型完全一致、
 ///   返回类型可赋给 trait 的返回类型（协变）、且不是抽象方法。
-fn resolve_trait_impls(sema: &mut Sema) {
+fn check_trait_impls(sema: &mut Sema) {
     let mut tasks = Vec::new();
     for (key, def) in &sema.type_defs {
         if let TypeDef::Class(def) = def {

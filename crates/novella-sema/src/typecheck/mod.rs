@@ -118,7 +118,7 @@ pub(crate) fn check_function_body(
     module: ModuleId,
     function: &FunctionItem,
     block: &Statement,
-) {
+) -> Ty {
     let global = sema.modules[module].global_scope;
     // 取 Phase 2b 回填的签名（重定义冲突导致缺失时跳过体检查）
     let sig = match sema.scopes.lookup_local(global, &function.name) {
@@ -126,10 +126,15 @@ pub(crate) fn check_function_body(
             kind: SymbolKind::Function { sig },
             ..
         }) => sig.clone(),
-        _ => return,
+        _ => return Ty::Error,
     };
+    let infer_return = function
+        .r#type
+        .as_ref()
+        .is_some_and(|ty| ty.return_type.is_none());
     let fn_scope = sema.scopes.new_scope(Some(global), ScopeKind::Function);
     let mut ctx = BodyCtx::base(module, fn_scope);
+    ctx.inferred_returns = infer_return.then(Default::default);
     ctx.in_async = sig.is_async;
     ctx.expected_return = Some(sig.ret.clone());
     if let Some(function_type) = &function.r#type {
@@ -156,7 +161,11 @@ pub(crate) fn check_function_body(
         }
     }
     check_stmt(sema, &mut ctx, block);
+    if infer_return && let Statement::Block(block) = block {
+        return lambda::infer_block_return(sema, &ctx, block, "函数");
+    }
     flow::check_statement(sema, module, &sig.ret, block);
+    sig.ret
 }
 /// 检查方法体（`this` 绑定为属主类型）。
 pub(crate) fn check_method_body(
@@ -165,10 +174,14 @@ pub(crate) fn check_method_body(
     this_ty: &Ty,
     method: &MethodMember,
     block: &Block,
-) {
+) -> Ty {
+    let infer_return = method.return_type.is_none()
+        && !crate::check::CLASS_SPECIAL_METHODS
+            .contains(&crate::check::canonical_method_name(&method.name));
     let global = sema.modules[module].global_scope;
     let fn_scope = sema.scopes.new_scope(Some(global), ScopeKind::Function);
     let mut ctx = BodyCtx::base(module, fn_scope);
+    ctx.inferred_returns = infer_return.then(Default::default);
     ctx.this_ty = (!method.modifiers.is_static).then(|| this_ty.clone());
     if method.name == "__destroy" && matches!(this_ty, Ty::Class(..)) {
         ctx.destructor_self = method.params.first().map(|param| param.span);
@@ -208,9 +221,13 @@ pub(crate) fn check_method_body(
     }
 
     check_block(sema, &mut ctx, block);
+    if infer_return {
+        return lambda::infer_block_return(sema, &ctx, block, "函数");
+    }
     if let Some(sig) = &method_sig {
         flow::check_block(sema, module, &sig.ret, block);
     }
+    method_sig.map(|sig| sig.ret).unwrap_or(Ty::Error)
 }
 pub(crate) fn this_ty_key(ty: &Ty) -> (ModuleId, String) {
     match ty {

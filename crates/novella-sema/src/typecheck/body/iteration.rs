@@ -4,7 +4,7 @@ use novella_core::Span;
 
 use crate::Sema;
 use crate::ty::{Ty, member_substitution, substitute_type_params};
-use crate::typecheck::member::{MemberInfo, lookup_member_chain, type_key_of};
+use crate::typecheck::member::{MemberInfo, lookup_typed_member_chain, type_key_of};
 
 use super::BodyCtx;
 
@@ -47,19 +47,23 @@ fn protocol_method_return(
     span: Span,
 ) -> Ty {
     let lookup_ty = match receiver {
-        Ty::TypeParam(param) => sema.type_param_bounds.get(param).unwrap_or(receiver),
-        _ => receiver,
+        Ty::TypeParam(param) => sema
+            .type_param_bounds
+            .get(param)
+            .unwrap_or(receiver)
+            .clone(),
+        _ => receiver.clone(),
     };
     if lookup_ty.is_opaque() {
-        return lookup_ty.clone();
+        return lookup_ty;
     }
-    let base = match lookup_ty {
+    let base = match &lookup_ty {
         Ty::Applied(base, _) => &**base,
         other => other,
     };
     let hit = match base {
         Ty::Struct(..) | Ty::Class(..) | Ty::Trait(..) => {
-            lookup_member_chain(sema, &type_key_of(lookup_ty), name, false)
+            lookup_typed_member_chain(sema, &type_key_of(&lookup_ty), name, false)
         }
         _ => None,
     };
@@ -93,7 +97,7 @@ fn protocol_method_return(
         );
         return Ty::Error;
     }
-    let subst = member_substitution(sema, lookup_ty, &hit.owner);
+    let subst = member_substitution(sema, &lookup_ty, &hit.owner);
     let result = substitute_type_params(&method.sig.ret, &subst);
     hit.check_visible(sema, ctx, name, span);
     ctx.record_possible_exception();

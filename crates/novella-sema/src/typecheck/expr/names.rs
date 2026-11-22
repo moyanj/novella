@@ -40,7 +40,16 @@ pub(crate) fn value_type_of_symbol(
             ty.unwrap_or(Ty::Error)
         }
         SymbolKind::Param { ty } => ty,
-        SymbolKind::Function { sig } => {
+        SymbolKind::Function { mut sig } => {
+            if let Some(name) = &sig.name
+                && crate::check::returns::resolve(sema, sig.module, name)
+                && let Some(Symbol {
+                    kind: SymbolKind::Function { sig: resolved },
+                    ..
+                }) = sema.global_scope_symbol(sig.module, name)
+            {
+                sig = resolved;
+            }
             if ctx.destructor_self.is_some() && sig.is_method {
                 sema.type_error(
                     ctx.module,
@@ -57,7 +66,7 @@ pub(crate) fn value_type_of_symbol(
                     Some(target_symbol) => {
                         value_type_of_symbol(sema, ctx, target_symbol, name, span)
                     }
-                    None => Ty::Error, // 绑定阶段已报过诊断
+                    None => Ty::Error, // 加载失败已在读取阶段诊断
                 }
             }
             None => {

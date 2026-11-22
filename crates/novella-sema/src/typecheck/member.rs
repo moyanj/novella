@@ -42,6 +42,9 @@ pub(crate) fn check_member_access(
                 return Ty::Error;
             }
             Some(IdentTarget::Namespace(NsTarget::Module(target_module))) => {
+                if sema.modules[target_module].load_failed {
+                    return Ty::Error;
+                }
                 return match sema.global_scope_symbol(target_module, name) {
                     None => {
                         sema.type_error(
@@ -156,7 +159,7 @@ pub(crate) fn check_static_member(
         return Ty::Error;
     }
     let type_key = type_key_of(&receiver);
-    match lookup_member_chain(sema, &type_key, name, true) {
+    match lookup_typed_member_chain(sema, &type_key, name, true) {
         Some(hit) => {
             let subst = crate::ty::member_substitution(sema, &receiver, &hit.owner);
             hit.record(sema, ctx, name, span);
@@ -226,7 +229,7 @@ pub(crate) fn member_type_of(
         }),
         Ty::Applied(..) | Ty::Trait(..) | Ty::Struct(..) | Ty::Class(..) => {
             let key = type_key_of(target_ty);
-            match lookup_member_chain(sema, &key, name, false) {
+            match lookup_typed_member_chain(sema, &key, name, false) {
                 Some(hit) => {
                     hit.record(sema, ctx, name, span);
                     hit.check_visible(sema, ctx, name, span);
@@ -340,6 +343,23 @@ impl MemberHit {
         );
     }
 }
+/// 读取可调用成员前完成返回类型推导，保留纯查询入口供继承校验和左值提示使用。
+pub(crate) fn lookup_typed_member_chain(
+    sema: &mut Sema,
+    key: &(ModuleId, String),
+    name: &str,
+    static_only: bool,
+) -> Option<MemberHit> {
+    let hit = lookup_member_chain(sema, key, name, static_only)?;
+    if let MemberInfo::Method(method) = &hit.info
+        && let Some(signature_name) = &method.sig.name
+        && crate::check::returns::resolve(sema, method.sig.module, signature_name)
+    {
+        return lookup_member_chain(sema, key, name, static_only);
+    }
+    Some(hit)
+}
+
 /// 沿 class 继承链查找成员（struct 只看自身；static_only 时只看静态方法）。
 pub(crate) fn lookup_member_chain(
     sema: &Sema,

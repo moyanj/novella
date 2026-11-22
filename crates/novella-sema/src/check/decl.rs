@@ -1,8 +1,6 @@
 //! Phase 2d 声明级检查：main 入口、struct / class 命名规则、extern 规则 E2–E5，
 //! 并驱动函数体 / 顶层语句的类型检查。
 
-use std::collections::HashMap;
-
 use novella_ast::program::{ClassMember, Item};
 use novella_core::Span;
 
@@ -37,7 +35,9 @@ pub(crate) fn check_module(sema: &mut Sema, module: ModuleId) {
         match item {
             Item::Function(function) => {
                 typecheck::check_function_defaults(sema, module, function);
-                if let Some(block) = &function.block {
+                if !super::returns::resolve(sema, module, &function.name)
+                    && let Some(block) = &function.block
+                {
                     typecheck::check_function_body(sema, module, function, block);
                 }
             }
@@ -94,7 +94,10 @@ fn check_member_body(sema: &mut Sema, module: ModuleId, member: &ClassMember, th
         ClassMember::Field(_) => {} // 已在字段定型阶段检查，不能再次登记初值。
         ClassMember::Method(method) => {
             typecheck::check_method_defaults(sema, module, this_ty, method);
-            if let Some(block) = &method.block {
+            let (_, owner) = typecheck::this_ty_key(this_ty);
+            if !super::returns::resolve(sema, module, &format!("{owner}::{}", method.name))
+                && let Some(block) = &method.block
+            {
                 typecheck::check_method_body(sema, module, this_ty, method, block);
             }
         }
@@ -125,8 +128,14 @@ fn check_main_entry(sema: &mut Sema, items: &[Item]) {
         if !function_type.type_parameters.is_empty() {
             sema.decl_error(0, main.span, "`main` 不能带泛型参数");
         }
-        let global_scope = sema.modules[0].global_scope;
-        let ret = sema.resolve_type(0, global_scope, &function_type.return_type, &HashMap::new());
+        super::returns::resolve(sema, 0, &main.name);
+        let ret = sema
+            .global_scope_symbol(0, &main.name)
+            .and_then(|symbol| match symbol.kind {
+                crate::symbol::SymbolKind::Function { sig } => Some(sig.ret),
+                _ => None,
+            })
+            .unwrap_or(Ty::Error);
         // design.md §4.8.1：退出码语义只定义在 `void` / `int` 上；`int` 已归一化为 i32，
         // 别名（`type Code = int;`）经 expand_alias 展开后同样命中，其余整数宽度一律拒绝。
         if !is_main_return_type(&ret) {
@@ -150,7 +159,7 @@ fn is_main_return_type(ty: &Ty) -> bool {
     match ty {
         Ty::Void => true,
         Ty::Int(kind) => *kind == crate::ty::IntKind::I32,
-        Ty::Unknown => true,
+        Ty::Unknown | Ty::Error => true,
         _ => false,
     }
 }

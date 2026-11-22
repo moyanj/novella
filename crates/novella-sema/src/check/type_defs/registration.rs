@@ -322,6 +322,12 @@ fn build_method_sig(
         .collect();
     let ret = match &method.return_type {
         Some(ty) => sema.resolve_type(module, scope, ty, &env),
+        None if method.block.is_some()
+            && !crate::check::CLASS_SPECIAL_METHODS
+                .contains(&crate::check::canonical_method_name(&method.name)) =>
+        {
+            Ty::Unknown
+        }
         None => Ty::Void,
     };
     sema.register_bounds(module, scope, &method.type_parameters, &env);
@@ -441,6 +447,14 @@ fn build_function_sig(
         },
     };
     sig.is_async = function.is_async;
+    if !function.is_extern
+        && function
+            .r#type
+            .as_ref()
+            .is_some_and(|ty| ty.return_type.is_none())
+    {
+        sig.ret = Ty::Unknown;
+    }
     sig.is_extern = function.is_extern;
     // 回填名义键（`resolve_function_type` 不知道函数名，此处补上）
     sig.module = module;
@@ -452,8 +466,7 @@ fn build_function_sig(
 
     if function.is_extern {
         // E2：extern 参数必须显式标注类型（FFI 边界无法推导）。
-        // 注：返回类型在 AST 层无法区分「显式 void」与「缺省补 void」（parser
-        // 统一回填），故返回标注检查暂不落地（设计依据见 design.md §4.8.1）
+        // extern 没有可推导的函数体；省略返回注解仍按 void（design.md §4.8.1）。
         if let Some(function_type) = &function.r#type {
             for param in &function_type.params {
                 if param.ty.is_none() {

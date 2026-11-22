@@ -5,7 +5,7 @@ use novella_ast::{
         Item, MemberModifiers, MethodMember, Program, Scope, StructItem, TraitItem, TypeAliasItem,
     },
     stmt::Statement,
-    types::{FunctionType, PredefinedType, TypeExpr},
+    types::{FunctionType, TypeExpr},
 };
 use novella_core::{
     Span,
@@ -616,7 +616,7 @@ impl Parser {
         self.expect(TokenKind::Func)?;
         let name = self.expect(TokenKind::Identifier)?;
         let type_parameters = self.parse_type_parameters();
-        let (params, params_span) = self.parse_typed_params()?;
+        let (params, _) = self.parse_typed_params()?;
         let (_, return_type) = self.parse_return_type();
         let end = self.last_end();
         if self.eat(TokenKind::SemiColon).is_none() {
@@ -625,10 +625,7 @@ impl Parser {
         let function_type = FunctionType {
             type_parameters,
             params,
-            return_type: Box::new(return_type.unwrap_or(TypeExpr::Predefined {
-                ty: PredefinedType::Void,
-                span: params_span,
-            })),
+            return_type: return_type.map(Box::new),
             span: Span {
                 start: name.span.start,
                 end,
@@ -965,10 +962,7 @@ impl Parser {
         let function_type = FunctionType {
             type_parameters,
             params,
-            return_type: Box::new(return_type.unwrap_or(TypeExpr::Predefined {
-                ty: PredefinedType::Void,
-                span: Span { start, end },
-            })),
+            return_type: return_type.map(Box::new),
             span: Span { start, end },
         };
         Some(Item::Function(FunctionItem {

@@ -168,9 +168,7 @@ pub struct FieldMember {
 
 /// 类方法成员（对应文法 `methodDeclaration`：`directive* accessModifier? Static? Func identifier typeParameters? '(' parameterList? ')' typeAnnotation? ReturnArrow? typeExpression? (block | SemiColon)`）
 ///
-/// 不复用 [`FunctionItem`]：其 `r#type: FunctionType` 要求必填返回类型，
-/// 无法表达 `func foo() {}` 这类缺省返回注解的形态；且方法独有的
-/// `accessModifier?` / `Static?` 与顶层 `is_extern` 语义并不互通。
+/// 独立于 [`FunctionItem`]，以表达方法专有的访问修饰符与静态标记。
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Spanned)]
 pub struct MethodMember {
     /// 方法标识符位置（不覆盖参数列表与函数体）。

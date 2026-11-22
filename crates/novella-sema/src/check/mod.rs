@@ -9,13 +9,17 @@
 mod decl;
 pub(crate) mod fields;
 pub(crate) mod globals;
+pub(crate) mod returns;
 mod type_defs;
 
 pub(crate) use decl::check_module;
-pub(crate) use type_defs::{build_type_defs, is_abstract_class, resolve_class_parents};
+pub(crate) use type_defs::{
+    build_type_defs, check_inherited_signatures, is_abstract_class, resolve_class_parents,
+};
 
 /// class 特殊方法清单（design.md §4.6.1：以 `__` 开头的特殊方法由 sema 登记）。
-const CLASS_SPECIAL_METHODS: &[&str] = &["__init", "__destroy", "__str", "__enter", "__exit"];
+pub(crate) const CLASS_SPECIAL_METHODS: &[&str] =
+    &["__init", "__destroy", "__str", "__enter", "__exit"];
 
 /// 特殊方法允许可选结尾 `__`，注册与协议查询共用同一语义名字。
 pub(crate) fn canonical_method_name(name: &str) -> &str {

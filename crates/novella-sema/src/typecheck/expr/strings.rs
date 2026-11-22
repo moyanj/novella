@@ -219,7 +219,7 @@ pub(crate) fn check_fstring_interpolation(
     {
         let method = match &ty {
             Ty::Class(module, name) | Ty::Struct(module, name) => {
-                crate::typecheck::member::lookup_member_chain(
+                crate::typecheck::member::lookup_typed_member_chain(
                     sema,
                     &(*module, name.clone()),
                     "__str",

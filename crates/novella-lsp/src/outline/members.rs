@@ -98,9 +98,9 @@ impl Walker<'_> {
             for parameter in &function_type.params {
                 self.param(parameter, parent);
             }
-        }
-        if let Some(parent) = parent {
-            self.type_expr(&function_type.return_type, parent);
+            if let Some(return_type) = &function_type.return_type {
+                self.type_expr(return_type, parent);
+            }
         }
     }
     // ---------- 类型表达式 ----------

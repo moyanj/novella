@@ -388,7 +388,9 @@ fn take_function_children(f: &mut FunctionType, out: &mut Vec<TypeExpr>) {
             out.push(ty);
         }
     }
-    out.push(take_boxed(&mut f.return_type, no_type()));
+    if let Some(return_type) = f.return_type.take() {
+        out.push(*return_type);
+    }
 }
 
 /// 在分段栈中释放一个默认值表达式。

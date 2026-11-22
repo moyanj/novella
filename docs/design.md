@@ -373,7 +373,12 @@ parameter: identifier typeAnnotation? (Assign expression)?;    // 形参默认�
 AST：`FunctionItem { directives, name, r#type, block, scope, is_extern, is_async }`；
 `FunctionType { type_parameters, params, return_type }`；`Param { name, ty, default }`。
 
-- 返回类型注解 `: T` 与 `-> T` 两种写法等价；缺省返回类型按 `void` 处理；
+- 返回类型注解 `: T` 与 `-> T` 两种写法等价；普通有体函数和方法省略注解时，根据自身可达的 `return` 推导返回类型，嵌套 lambda 的返回独立处理；
+  - 无值 `return` 与可达落尾按 `void` 参与合一；没有返回值时推导为 `void`；
+  - 返回类型必须能合一，未定型整数与浮点最终落到 `i32` / `f32`，并检查字面量范围；不兼容分支或无法确定的类型要求补充注解；
+  - 支持前向引用、跨模块及方法依赖；递归推导形成循环时，必须通过显式返回注解打断依赖；不从调用点推导参数或返回类型；
+  - `extern` 和无函数体声明省略返回注解时仍为 `void`；特殊方法遵循各自协议的既定签名规则；
+  - AST 的 `FunctionType.return_type` 只保存显式注解：省略时为 `None`（JSON 为 `null`），显式注解为 `Some`；推导结果由 sema 的类型表提供；
 - 形参类型标注**可选**（`parameter: identifier typeAnnotation? ...`）：本期
   未标注的形参类型按「未知」处理——函数体与调用点均跳过该参的检查，
   参数类型推导属后续期；

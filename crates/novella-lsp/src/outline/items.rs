@@ -123,7 +123,10 @@ impl Walker<'_> {
     pub(crate) fn function(&mut self, function: &FunctionItem, parent: Option<usize>) {
         let detail = signature_text(
             function.r#type.as_ref().map(|ty| ty.params.as_slice()),
-            function.r#type.as_ref().map(|ty| ty.return_type.as_ref()),
+            function
+                .r#type
+                .as_ref()
+                .and_then(|ty| ty.return_type.as_deref()),
         );
         let index = self.push(
             &function.name,

@@ -48,6 +48,10 @@ pub(crate) fn check_struct_init(
         },
         &ctx.type_env,
     );
+    // 导入目标读取失败的主诊断已发出，无法再检查其字段定义。
+    if sema.modules[struct_key.0].load_failed {
+        return Ty::Error;
+    }
     let base = match &resolved {
         Ty::Applied(base, _) => &**base,
         ty => ty,

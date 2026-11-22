@@ -101,7 +101,7 @@ pub(crate) fn check_match(
                     other => sema.is_assignable(&ty, other) || sema.is_assignable(other, &ty),
                 };
                 if !possible {
-                    sema.type_error(ctx.module, span, "类型模式不可能匹配目标类型");
+                    sema.warning(ctx.module, span, "类型模式不可能匹配目标类型");
                 }
                 types.push(ty);
             }

@@ -120,15 +120,17 @@ pub fn analyze_with_options(
         if loader.is_cancelled() {
             return false;
         }
-        // Phase 2c：解析 class 继承链
+        // Phase 2c：注册继承关系，再按依赖定型字段、全局变量和函数返回类型。
         check::resolve_class_parents(&mut sema);
-        // 字段先按依赖定型，随后函数体读取完整字段类型。
+        check::returns::collect(&mut sema);
         check::globals::collect(&mut sema);
         check::fields::check_fields(&mut sema);
         check::globals::check_all(&mut sema);
+        check::returns::check_all(&mut sema);
         if loader.is_cancelled() {
             return false;
         }
+        check::check_inherited_signatures(&mut sema);
         // Phase 2d：声明级检查 + 函数体 / 顶层语句类型检查
         for id in 0..sema.modules.len() {
             if loader.is_cancelled() {

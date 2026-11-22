@@ -141,8 +141,8 @@ pub struct FunctionType {
     pub type_parameters: Vec<TypeParameter>,
     /// 参数列表
     pub params: Vec<Param>,
-    /// 返回类型
-    pub return_type: Box<TypeExpr>,
+    /// 显式返回类型。函数声明省略返回注解时为 `None`，函数类型表达式始终为 `Some`。
+    pub return_type: Option<Box<TypeExpr>>,
     /// 函数类型覆盖的源码区间
     pub span: Span,
 }

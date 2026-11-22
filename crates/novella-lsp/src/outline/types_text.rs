@@ -62,10 +62,10 @@ pub(crate) fn function_type_text(function_type: &FunctionType) -> String {
         })
         .collect::<Vec<_>>()
         .join(", ");
-    format!(
-        "func({params}) -> {}",
-        type_expr_text(&function_type.return_type)
-    )
+    match &function_type.return_type {
+        Some(return_type) => format!("func({params}) -> {}", type_expr_text(return_type)),
+        None => format!("func({params})"),
+    }
 }
 
 pub(crate) fn predefined_text(ty: PredefinedType) -> &'static str {

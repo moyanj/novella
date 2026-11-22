@@ -48,7 +48,7 @@ pub(crate) fn load_modules(
                     "无法读取模块文件 '{}'：{e}",
                     path.display()
                 )));
-                // 占位模块：保证 by_path 与 modules 下标一致，导入方在绑定阶段报「未找到」
+                // 占位模块：保留导入目标身份，供导入方抑制读取失败导致的级联诊断
                 modules.push(Module {
                     key: key.clone(),
                     path,

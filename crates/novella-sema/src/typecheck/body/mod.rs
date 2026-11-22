@@ -26,7 +26,7 @@ pub(crate) struct LoopAssignments {
 }
 
 pub(crate) struct BodyCtx {
-    /// 仅无返回注解的块体 lambda 收集自身可达 return 的类型。
+    /// 无返回注解的函数、方法或块体 lambda 收集自身可达 return 的类型。
     pub inferred_returns: Option<InferredReturns>,
     pub return_states: Option<std::rc::Rc<std::cell::RefCell<Vec<HashSet<Span>>>>>,
     pub exception_states: Option<std::rc::Rc<std::cell::RefCell<Vec<HashSet<Span>>>>>,
@@ -134,8 +134,12 @@ fn check_stmt_inner(sema: &mut Sema, ctx: &mut BodyCtx, stmt: &Statement) {
                         }
                     }
                     Some(value) => {
-                        // 期望类型下推：`return [];` 在 `-> i32[]` 里合法
-                        let value_ty = check_expr_with_hint(sema, ctx, value, &expected);
+                        // 推导模式独立检查返回值，避免 Unknown 提示掩盖分支类型冲突。
+                        let value_ty = if ctx.inferred_returns.is_some() {
+                            check_expr(sema, ctx, value)
+                        } else {
+                            check_expr_with_hint(sema, ctx, value, &expected)
+                        };
                         if ctx.reachable
                             && let Some(returns) = &ctx.inferred_returns
                         {
@@ -344,7 +348,7 @@ fn check_stmt_inner(sema: &mut Sema, ctx: &mut BodyCtx, stmt: &Statement) {
                 let key = crate::typecheck::this_ty_key(base);
                 for name in ["__enter", "__exit"] {
                     if let Some(hit) =
-                        crate::typecheck::member::lookup_member_chain(sema, &key, name, false)
+                        crate::typecheck::member::lookup_typed_member_chain(sema, &key, name, false)
                     {
                         hit.check_visible(sema, ctx, name, with_stmt.expr.span());
                     }

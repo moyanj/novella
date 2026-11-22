@@ -48,6 +48,7 @@
 | M07 | 命名空间导入 `ns.T` 类型解析 | design §4.3/§5.1 | `resolve.rs`（qualifier） | 已实现 | 反：多级限定 `a.b.T` 报错（本期不支持） | S07 |
 | M08 | 导入不自动重导出 | design §4.3 | `resolve/imports.rs` / `Symbol::is_importable` | 已实现 | 具名导入不成为 pub 导出；当前文法无 pub import，非公开导入继续拒绝 | S07 |
 | M09 | `std:` 必须加载真实声明并强制检查 | 用户后续纠偏 TD01 | `module/resolve_path.rs` / `resolve/imports.rs` | 已实现，原 External 策略废止 | 缺模块/符号/错误签名均拒绝，Exception 根除外 | 设计纠偏 |
+| M10 | 模块读取失败后保留导入身份，抑制依赖该模块的符号与可见性级联错误 | ROADMAP M-1 | `module/loader.rs` / `resolve/imports.rs` / `resolve/types.rs` / `typecheck/member.rs` / `typecheck/unsafe_rules/aggregate.rs` | 已实现 | 具名、命名空间及类型访问只保留读取根因；可读模块的缺失符号和独立未定义名称仍报错 | M-1 |
 
 ### 1.2 类型表达式与类型系统
 
@@ -92,7 +93,7 @@
 | D01R | 必须有顶层 `main`；仅入口模块要求 | design §4.8.1 | `check/decl.rs::check_main_entry` | 已实现 | 反：无 main 报错 | — |
 | D02R | `main` 无参、无泛型、非 extern、非 async | design §4.8.1 | `check_main_entry` + `build_function_sig` | 已实现 | 反：`func main(x: int)` 报错 | — |
 | D03R | `main` 返回类型仅 `void` / `int`（≡`i32`，别名归一化可接受） | design §4.8.1；plan E09 | `check_main_entry` + `is_main_return_type` | **已实现** | 反：`-> i64` / `-> u8` 报错；正：`void` / `int` / `i32` / `type Code = int` 通过，`type Wide = i64` 报错 | **S01 完成** |
-| D04R | 返回类型注解缺省 `void`（不推导） | design §4.8 | `build_function_sig` / `build_method_sig` | 已实现 | 正：`func f() {}` 后 `return 1;` 报错 | — |
+| D04R | 普通有体函数与方法省略返回注解时推导可达返回；无体声明缺省 `void`，特殊方法按协议检查 | design §4.8；ROADMAP M-1 | `check/returns.rs` + `typecheck/lambda.rs::infer_block_return` | 已实现 | 正：前向/跨模块/方法/泛型依赖；反：不兼容返回、非 void 落尾、字面量越界、未确定类型与无注解推导环 | M-1 |
 | D05R | 形参无注解 → 未知，跳过检查（本期容错） | design §4.8 | `ty::ParamSig.ty = Unknown` | 已实现（按 D03 保留） | 正：未注解形参见检查跳过 | D03 |
 | D06R | extern 参数必须显式标注类型 | design §4.8 | `build_function_sig` E2 | 已实现 | 反：`extern func f(x);` 报错 | — |
 | D07R | extern 不得有函数体 / 泛型 / 命名 main | design §4.8 | `build_function_sig` E3–E5 | 已实现 | 反：三条各自有诊断 | — |
@@ -138,7 +139,7 @@
 | E22R | 索引：数组 / 指针（unsafe）/ 元组字面量下标 / String 只读 UTF-16 码元 | design §4.10、§6.5 | `call.rs::check_index_access` | 已实现 | 正：`pair[(+0x1)] = []` 按对应槽位定型；反：负数、动态下标和越界下标报错 | — |
 | E23R | 成员访问：字段 / 方法 / 自动解引用 / struct `this` 免 unsafe | design §6.5 S6；§8.4 | `member.rs::check_member_access` + `MemberHit::check_visible` | **已实现** | 反：跨模块访问非 `pub` 字段报错；正：同模块 / 类型内部 / `pub` 可访问 | **S04a 完成（D02）** |
 | E24R | 静态成员 `Type.member` | design §4.6 | `member.rs::check_static_access` | **已实现** | 反：`a.make()` 报「静态成员…请改用类型名」；`A.f()` 正常 | **S04a 完成（D02）** |
-| E25R | match 类型合一、重复/覆盖模式与穷尽性 | 已确认 D06 | `typecheck/matching.rs` / `flow.rs` | 已实现 | 布尔穷尽无 default 通过；缺分支与重复负常量拒绝；void 分支不强制穷尽 | S12a |
+| E25R | match 类型合一、重复/覆盖模式与穷尽性；不可能匹配的类型模式为警告 | 已确认 D06；ROADMAP M-1 | `typecheck/matching.rs` / `flow.rs` | 已实现 | 布尔穷尽无 default 通过；缺分支与重复负常量拒绝；void 分支不强制穷尽；不可能的类型模式发出 NVL3009 警告 | S12a / M-1 |
 | E26R | lambda 返回推导、默认值与独立执行上下文 | D03/D08 / TD03/TD05 | `typecheck/lambda.rs` | 已实现 | 块体合并可达返回和落尾；继承词法 this，重置 loop/catch/unsafe/异常状态；self 不能冒充接收者 | 设计纠偏 |
 | E28R | f-string 插值类型检查与坐标 | design §4.12 | `expr.rs::check_fstring*` + `novella_lexer::lexer_at` | **已实现** | 正：`{a + 2}` 的类型键落在真实坐标；反：未定义名诊断 span 精确命中该标识符（含前导空白、多字节前缀） | **S02 完成** |
 | E29R | 期望类型检查递归传递（括号/元组/数组/三元/`??`/`&&`/`\|\|`） | plan S03 | `expr.rs::check_expr_with_hint_inner` + `unsafe_rules::check_binary_with_hint` | **已实现** | 结构下推表见 S03 执行记录 | **S03 完成** |
