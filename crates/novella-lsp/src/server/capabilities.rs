@@ -45,14 +45,12 @@ impl Server {
                 .get("stdRoot")
                 .and_then(Value::as_str)
                 .map(Into::into);
-            for (key, value) in [
-                ("targetOs", &mut self.options.cfg.target_os),
-                ("targetArch", &mut self.options.cfg.target_arch),
-                ("targetFamily", &mut self.options.cfg.target_family),
-            ] {
-                if let Some(text) = config.get(key).and_then(Value::as_str) {
-                    *value = text.to_owned();
-                }
+            for (index, key) in ["targetOs", "targetArch", "targetFamily"]
+                .iter()
+                .enumerate()
+            {
+                self.cfg_overrides[index] =
+                    config.get(key).and_then(Value::as_str).map(str::to_owned);
             }
             if let Some(features) = config.get("features").and_then(Value::as_array) {
                 self.options.cfg.features = features

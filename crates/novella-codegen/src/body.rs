@@ -15,6 +15,7 @@ use novella_hir::{
 use crate::{CodegenError, Result, Types, value_type};
 
 mod arrays;
+mod calls;
 mod control;
 mod instructions;
 mod ownership;
@@ -152,6 +153,16 @@ impl<'ctx> Body<'ctx, '_> {
                     *pointer,
                     "load",
                 )?)
+            }
+            (HirOperand::GlobalAddress { .. } | HirOperand::AggregateConst(_), _) => {
+                crate::globals::constant(
+                    self.context,
+                    self.module,
+                    self.types,
+                    self.functions,
+                    operand,
+                    ty,
+                )
             }
             (HirOperand::IntConst(value), HirType::Int(_)) => {
                 Ok(value_type(self.context, self.types, ty)?

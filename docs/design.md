@@ -187,6 +187,14 @@ func main() -> int {
 字节字面量 `b"..."` 仍按 `u8[]` 做语义检查。`@no_std` 仅禁用 Novella 标准库，
 不改变目标平台的启动代码、C 链接驱动或显式用户 `extern` 声明。
 
+#### 裸机入口与导出
+
+`@no_main;` 是入口模块一次性的独立无参指令，禁止自动生成 C `main` 包装。
+`@export("symbol")` 修饰有体顶层函数并采用 C ABI；只允许标量、裸指针、函数指针与
+void 边界，拒绝泛型、async、extern、聚合和托管值。链接名字必须合法且唯一。
+裸机目标 `x86_64-unknown-none-elf` 必须配合 `@no_std; @no_main;`；运行时 `none` 与
+`managed` 独立选择。完整契约、限制与启动验证见 [裸机支持](freestanding.md)。
+
 ### 4.3 导入
 
 ```

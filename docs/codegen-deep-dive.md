@@ -1,5 +1,10 @@
 # novella-codegen 深度技术文档
 
+> 历史快照说明（2026-11-22）：本文的逐行分析保留编写时状态。后端现已支持静态全局、
+> x86-64 裸机 small/kernel 目标、显式 C ABI 导出和无 libc runtime；本轮现状以
+> [裸机支持](freestanding.md) 与 [编译器设计](compiler-design.md) 为准。下文关于仅 Linux、
+> 不支持全局及固定入口的旧描述不适用于新目标。
+
 > 文档版本：2026-11-21
 > 适用代码：novella 编译器 workspace（`crates/novella-codegen`，edition 2024）
 > 工具链实测：inkwell 0.11.0 / LLVM 23.1.4 / clang 23.1.4（`llvm-config --version` = 23.1.4）

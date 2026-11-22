@@ -24,8 +24,11 @@ function readServerOptions() {
   };
 }
 
-/** 构造客户端实例（含语言选择器与语义高亮开关）。 */
-function createClient() {
+/**
+ * 构造客户端实例；清单文件变动经标准通知刷新目标相关诊断。
+ * @param {import('vscode').FileSystemWatcher} manifestWatcher
+ */
+function createClient(manifestWatcher) {
   return new LanguageClient(
     'novella-lsp',
     'Novella Language Server',
@@ -35,14 +38,18 @@ function createClient() {
         { scheme: 'file', language: 'novella' },
         { scheme: 'untitled', language: 'novella' },
       ],
+      synchronize: { fileEvents: manifestWatcher },
       // 语义高亮由服务器 capabilities 声明的 legend 驱动，客户端无需额外注册
     },
   );
 }
 
-/** 启动服务器；失败时给出可操作的提示，而不是静默无声。 */
-async function startClient() {
-  client = createClient();
+/**
+ * 启动服务器；失败时给出可操作的提示，而不是静默无声。
+ * @param {import('vscode').FileSystemWatcher} manifestWatcher
+ */
+async function startClient(manifestWatcher) {
+  client = createClient(manifestWatcher);
   try {
     await client.start();
   } catch (error) {
@@ -63,7 +70,9 @@ async function stopClient() {
 }
 
 async function activate(context) {
-  await startClient();
+  const manifestWatcher = vscode.workspace.createFileSystemWatcher('**/nov.toml');
+  context.subscriptions.push(manifestWatcher);
+  await startClient(manifestWatcher);
 
   // 配置变更后重启服务器，让 novella.lsp.path / args 立即生效
   context.subscriptions.push(
@@ -72,7 +81,7 @@ async function activate(context) {
         return;
       }
       await stopClient();
-      await startClient();
+      await startClient(manifestWatcher);
     }),
     new vscode.Disposable(() => {
       void stopClient();

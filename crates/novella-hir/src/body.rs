@@ -31,6 +31,10 @@ pub struct LocalId(pub u32);
 pub enum HirOperand {
     /// 读局部变量
     Local(LocalId),
+    /// 全局存储地址；模块身份保证同名全局不会碰撞。
+    GlobalAddress { module: usize, name: String },
+    /// 按字段布局顺序保存的静态聚合常量。
+    AggregateConst(Vec<HirOperand>),
     /// 整数常量（字面量已在构造期定型并求值，含进制前缀与下划线剥离）
     IntConst(i128),
     /// 未定型整数常量：值实施上下文定型（如 `let x: i64 = 1;` 的 `1`）。

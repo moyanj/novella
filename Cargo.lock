@@ -73,7 +73,7 @@ version = "0.5.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "523e5e187fff36fcb8d1d19ccf0ca4ca43ec3d158316057f66dc6f72716bc5ec"
 dependencies = [
- "object",
+ "object 0.39.1",
 ]
 
 [[package]]
@@ -407,6 +407,7 @@ dependencies = [
  "novella-hir",
  "novella-runtime",
  "novella-sema",
+ "object 0.41.0",
  "serde",
  "serde_json",
  "tempfile",
@@ -429,6 +430,7 @@ version = "0.1.0"
 dependencies = [
  "inkwell",
  "libc",
+ "novella-core",
  "novella-hir",
  "windows-sys",
 ]
@@ -438,6 +440,7 @@ name = "novella-core"
 version = "0.1.0"
 dependencies = [
  "serde",
+ "toml",
 ]
 
 [[package]]
@@ -457,7 +460,6 @@ dependencies = [
  "novella-core",
  "novella-sema",
  "serde",
- "serde_json",
 ]
 
 [[package]]
@@ -520,6 +522,15 @@ name = "object"
 version = "0.39.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "2e5a6c098c7a3b6547378093f5cc30bc54fd361ce711e05293a5cc589562739b"
+dependencies = [
+ "memchr",
+]
+
+[[package]]
+name = "object"
+version = "0.41.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "11dbdb66876026054e4ffc8d757d862bdf5df5aebd5c0b95a41f17832a94f7d2"
 dependencies = [
  "memchr",
 ]

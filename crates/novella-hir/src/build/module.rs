@@ -10,6 +10,21 @@ pub fn build_hir(sema: &SemaResult) -> Result<HirProgram, BuildError> {
     if sema.diagnostics.has_errors() {
         return Err(BuildError::at(BuildErrorKind::InvalidInput));
     }
+    // 旧分析 API 可独立检查 32 位源码，但不能把其 usize/isize 解释交给 64 位后端。
+    let analysis_bits = match sema.analysis_target.pointer_width {
+        novella_sema::PointerWidth::Bits32 => 32,
+        novella_sema::PointerWidth::Bits64 => 64,
+    };
+    let target_bits = match sema.build_target.platform {
+        novella_core::target::TargetPlatform::LinuxX86_64
+        | novella_core::target::TargetPlatform::BareMetalX86_64 => 64,
+    };
+    if analysis_bits != target_bits {
+        return Err(BuildError::at(BuildErrorKind::TargetWidthMismatch {
+            analysis_bits,
+            target_bits,
+        }));
+    }
     let mut modules = Vec::with_capacity(sema.modules.modules.len());
     for module in &sema.modules.modules {
         if module.syntax_failed || module.load_failed {
@@ -50,7 +65,13 @@ pub fn build_hir(sema: &SemaResult) -> Result<HirProgram, BuildError> {
             .expect("lambda 的定义模块来自已加载的语义模块");
         owner.items.push(item);
     }
-    Ok(HirProgram { modules })
+    let requirements = super::requirements::validate(sema, &modules)?;
+    Ok(HirProgram {
+        target: sema.build_target,
+        no_main: sema.no_main,
+        requirements,
+        modules,
+    })
 }
 
 /// 单个模块的降级。
@@ -88,6 +109,8 @@ pub(super) fn build_module(
             // 具名类型：字段布局走 `finish_types`
             Item::Struct(_) | Item::Class(_) | Item::Trait(_) => {}
             // 指令语句 / 指令块：作用关系已在 sema 侧处理
+            Item::Directive(directive)
+                if matches!(directive.name.as_str(), "no_main" | "no_std") => {}
             Item::Directive(directive) => {
                 return Err(BuildError::at(BuildErrorKind::Unimplemented {
                     node: "compiler directive",
@@ -99,6 +122,16 @@ pub(super) fn build_module(
                     node: "directive block",
                 })
                 .with_site(module_id, *span));
+            }
+            Item::Statement(statement) if matches!(statement.as_ref(), Statement::Variable(_)) => {
+                let Statement::Variable(declaration) = statement.as_ref() else {
+                    unreachable!()
+                };
+                items.push(HirItem::Global(super::globals::build_global(
+                    sema,
+                    module_id,
+                    declaration,
+                )?));
             }
             Item::Statement(statement) => {
                 return Err(BuildError::at(BuildErrorKind::Unimplemented {
@@ -149,7 +182,7 @@ impl<'a> ModuleBuilder<'a> {
             validate_declaration(item, self.module)?;
             match item {
                 Item::Function(function) => {
-                    if !function.directives.is_empty() {
+                    if function.directives.iter().any(|d| d.name != "export") {
                         return Err(BuildError::at(BuildErrorKind::Unimplemented {
                             node: "function directive",
                         })
@@ -255,6 +288,11 @@ impl<'a> ModuleBuilder<'a> {
             is_lambda: false,
             id,
             link_name: function.is_extern.then(|| function.name.clone()),
+            export_name: self
+                .sema
+                .exports
+                .get(&(self.module, function.span))
+                .cloned(),
             signature,
             params: body_builder.parameter_slots(),
             body,

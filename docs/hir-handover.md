@@ -79,9 +79,9 @@ class 运行时已接通；trait 派发与无实体方法仍明确拒绝。Strin
 ## 5. P2 验证
 
 ```bash
-cargo run -q -p novella-hir --example hir_smoke -- --json
-# 也可对磁盘文件运行；失败以非零状态退出，不输出部分 HIR
-cargo run -q -p novella-hir --example hir_smoke -- path/to/main.nov --json
+cargo run -q -p novella -- compile examples/native-main.nov --emit hir -o target/native-main.hir.json
+# 对任意磁盘文件导出 HIR；失败以非零状态退出，不输出部分 HIR
+cargo run -q -p novella -- compile path/to/main.nov --emit hir -o target/main.hir.json
 cargo fmt --all -- --check
 cargo clippy --workspace --all-targets -- -D warnings
 cargo test --workspace
@@ -89,7 +89,7 @@ cargo check --workspace --all-targets
 git diff --check
 ```
 
-- 扩展既有 hir_smoke，覆盖标量、条件、while/C-for/数组 for-in、嵌套解构、方法、默认实参、match、lambda、带副作用索引和空合并；未新增测试 suite。
+- 当时扩展 hir_smoke 验证了标量、条件、while/C-for/数组 for-in、嵌套解构、方法、默认实参、match、lambda、带副作用索引和空合并，未新增测试 suite。该重复调试入口现已移除，当前统一通过 CLI 的 `--emit hir` 导出。
 - 临时 HIR 解释器执行验证：sum(10)=45，coverage()=26，shortcircuit()=24（非空不执行备用表达式、空时执行一次），matching()=110（后续模式无副作用）；同形 lambda 的实体键唯一。额外验证数组内元组的 for-in 解构。
 - 临时跨模块 fixture：导入别名、默认参数、字段简写/默认值、可变 struct 接收者，cross()=23；父子布局为 x、y；extern 项存在，指针算术类型与 PtrDiff 结构正确。重复展开同一跨模块默认 lambda 的实体归属与唯一性另外核对。
 - 11 项拒绝路径：语法/词法错误、错误备用类型、闭包捕获、编译器指令、格式化串、throw、对象字面量、trait 成员、静态字段、无 default 值 match 均非零退出且无部分 JSON。

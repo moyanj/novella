@@ -51,6 +51,11 @@ impl std::error::Error for BuildError {}
 pub enum BuildErrorKind {
     /// 输入分析存在错误，不能跳过坏模块生成部分程序。
     InvalidInput,
+    /// 纯分析 API 的平台整数位宽与实际发射目标不一致。
+    TargetWidthMismatch {
+        analysis_bits: u32,
+        target_bits: u32,
+    },
     /// 类型被投影为 `Unknown` / `External` / `Error`
     OpaqueType,
     /// 未定型字面量 / `null` 漏到需要具体类型的位置
@@ -78,6 +83,13 @@ impl std::fmt::Display for BuildErrorKind {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             BuildErrorKind::InvalidInput => f.write_str("语义 / 语法 / 加载错误尚未解决"),
+            BuildErrorKind::TargetWidthMismatch {
+                analysis_bits,
+                target_bits,
+            } => write!(
+                f,
+                "静态分析指针位宽为 {analysis_bits} 位，与发射目标的 {target_bits} 位不一致；请使用匹配目标位宽的分析结果"
+            ),
             BuildErrorKind::OpaqueType => f.write_str("类型未知（Unknown / External / Error）"),
             BuildErrorKind::UntypedLiteral { what } => {
                 write!(f, "未定型字面量 `{what}` 需要具体目标类型")

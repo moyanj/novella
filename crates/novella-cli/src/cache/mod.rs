@@ -8,13 +8,15 @@ use std::fs::{self, File};
 use std::io::{self, Read, Write};
 use std::path::{Path, PathBuf};
 
+use novella_codegen::ObjectArtifact;
+use novella_core::target::BuildTarget;
 use novella_sema::{AnalysisOptions, PointerWidth, SemaResult};
 use record::{CachedDiagnostic, Envelope, Record};
 use serde::Serialize;
 
 pub(crate) use inputs::TrackingLoader;
 
-const VERSION: u32 = 1;
+const VERSION: u32 = 2;
 
 #[derive(Serialize)]
 struct Request<'a> {
@@ -24,7 +26,7 @@ struct Request<'a> {
     host: [&'a str; 3],
     cwd: PathBuf,
     entry: &'a Path,
-    target: &'a str,
+    target: BuildTarget,
     pointer_width: u8,
     cfg: (&'a str, &'a str, &'a str, &'a BTreeSet<String>),
     std_root: Option<&'a Path>,
@@ -37,7 +39,7 @@ pub(crate) struct Cache {
 }
 
 pub(crate) struct Hit {
-    pub object: Vec<u8>,
+    pub artifact: ObjectArtifact,
     diagnostics: Vec<CachedDiagnostic>,
 }
 
@@ -75,7 +77,7 @@ impl Cache {
             ],
             cwd: std::env::current_dir()?,
             entry,
-            target: novella_codegen::TARGET_TRIPLE,
+            target: options.build_target,
             pointer_width: match options.target.pointer_width {
                 PointerWidth::Bits32 => 32,
                 PointerWidth::Bits64 => 64,
@@ -90,7 +92,7 @@ impl Cache {
             module_only: options.module_only,
         };
         Ok(Self {
-            root: root.join("target/.novella-cache/v1"),
+            root: root.join("target/.novella-cache/v2"),
             request: hash_bytes(&serde_json::to_vec(&identity)?),
         })
     }
@@ -141,7 +143,10 @@ impl Cache {
             return Err("缓存目标文件校验失败".into());
         }
         Ok(Lookup::Hit(Hit {
-            object,
+            artifact: ObjectArtifact {
+                bytes: object,
+                requirements: record.requirements,
+            },
             diagnostics: record.diagnostics,
         }))
     }
@@ -150,7 +155,7 @@ impl Cache {
         &self,
         loader: TrackingLoader,
         result: &SemaResult,
-        object: &[u8],
+        artifact: &ObjectArtifact,
     ) -> Result<(), Box<dyn std::error::Error>> {
         // 编译期间输入发生变化时不发布混合快照；不以重新读取的内容替换实际编译输入。
         for input in &loader.inputs {
@@ -162,7 +167,8 @@ impl Cache {
             request: self.request.clone(),
             compilation,
             inputs: loader.inputs,
-            object: hash_bytes(object),
+            object: hash_bytes(&artifact.bytes),
+            requirements: artifact.requirements,
             diagnostics: CachedDiagnostic::collect(result),
         };
         let envelope = Envelope {
@@ -171,7 +177,7 @@ impl Cache {
         };
         atomic_write(
             &self.root.join("objects").join(&envelope.record.object),
-            object,
+            &artifact.bytes,
         )?;
         // 目标文件先发布，构建记录最后发布；并发构建允许重复计算，不暴露半成品。
         atomic_write(&self.record_path(), &serde_json::to_vec(&envelope)?)?;

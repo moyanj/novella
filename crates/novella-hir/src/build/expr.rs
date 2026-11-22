@@ -49,6 +49,10 @@ impl<'a> BodyBuilder<'a> {
                     block.push(HirStmt::Instr(HirInstr::Load { dst, src: id }));
                     return Ok(HirOperand::Local(dst));
                 }
+                if let Some(address) = super::globals::address(self.sema, self.module, *span) {
+                    let ty = self.expr_type(*span)?;
+                    return Ok(self.read_address(address, &ty, block));
+                }
                 if self.capture_names.contains(name) {
                     return Err(BuildError::at(BuildErrorKind::Unimplemented {
                         node: "lambda capture",
@@ -158,6 +162,10 @@ impl<'a> BodyBuilder<'a> {
             }
             Expression::Match(node) => self.build_match(node, preferred, block),
             Expression::MemberAccess { target, name, span } => {
+                if let Some(address) = super::globals::address(self.sema, self.module, *span) {
+                    let ty = self.expr_type(*span)?;
+                    return Ok(self.read_address(address, &ty, block));
+                }
                 // 方法当作值：`obj.m` / `Type.static` 取函数指针
                 if let Ok(HirType::Function(signature)) = self.expr_type_pref(*span, None) {
                     if signature.receiver {

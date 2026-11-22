@@ -16,7 +16,9 @@ pub(crate) fn run(
     verbose: bool,
 ) -> Result<bool, Box<dyn std::error::Error>> {
     let start = Instant::now();
-    let options = crate::analysis_options(&args, false, true)?;
+    let config = crate::config::resolve(&args)?;
+    crate::link::validate_config(&config)?;
+    let options = crate::analysis_options(&args, false, &config)?;
     let mut cache = if no_cache {
         if verbose {
             eprintln!("缓存已禁用（--no-cache）");
@@ -39,7 +41,7 @@ pub(crate) fn run(
                 }
                 hit.render_diagnostics();
                 let link_start = Instant::now();
-                crate::write_output(&output, &hit.object, true)?;
+                crate::link::write_executable(&output, &hit.artifact, &config)?;
                 if verbose {
                     eprintln!(
                         "链接 {:?}；构建完成 {:?}",
@@ -74,20 +76,20 @@ pub(crate) fn run(
     let Some(hir) = crate::lower(&result) else {
         return Ok(false);
     };
-    let object = novella_codegen::emit_object(&hir)?;
+    let artifact = novella_codegen::emit_artifact(&hir)?;
     if verbose {
         eprintln!("分析、HIR 与 LLVM 发射 {:?}", compile_start.elapsed());
     }
     if let Some(cache) = cache {
         let store_start = Instant::now();
-        match cache.store(loader, &result, &object) {
+        match cache.store(loader, &result, &artifact) {
             Ok(()) if verbose => eprintln!("缓存已写入（{:?}）", store_start.elapsed()),
             Ok(()) => {}
             Err(error) => eprintln!("无法写入编译缓存，继续生成输出：{error}"),
         }
     }
     let link_start = Instant::now();
-    crate::write_output(&output, &object, true)?;
+    crate::link::write_executable(&output, &artifact, &config)?;
     if verbose {
         eprintln!(
             "链接 {:?}；构建完成 {:?}",

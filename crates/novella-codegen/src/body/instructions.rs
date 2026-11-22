@@ -173,53 +173,7 @@ impl<'ctx> Body<'ctx, '_> {
                 dst,
                 dst_ty,
             } => {
-                let (HirOperand::Function(id) | HirOperand::FunctionPtr(id)) = callee else {
-                    return Err(CodegenError("暂不支持间接调用".into()));
-                };
-                let &(callee, signature) = self
-                    .functions
-                    .get(id)
-                    .ok_or_else(|| CodegenError(format!("未定义 HIR 函数 `{id}`")))?;
-                let receiver_count = usize::from(signature.receiver);
-                if args.len() != signature.params.len() + receiver_count {
-                    return Err(CodegenError(format!("`{id}` 实参个数与签名不一致")));
-                }
-                let mut values: Vec<BasicMetadataValueEnum<'ctx>> = Vec::with_capacity(args.len());
-                if signature.receiver {
-                    let receiver_ty = match args.first() {
-                        Some(HirOperand::Local(id)) => self.slot(*id)?.1.clone(),
-                        _ => return Err(CodegenError(format!("`{id}` 接收者不是已定型局部值"))),
-                    };
-                    if !matches!(receiver_ty, HirType::Class(..) | HirType::Pointer(_)) {
-                        return Err(CodegenError(format!(
-                            "`{id}` 接收者类型不合法：{receiver_ty:?}"
-                        )));
-                    }
-                    values.push(self.operand(&args[0], &receiver_ty)?.into());
-                }
-                values.extend(
-                    args[receiver_count..]
-                        .iter()
-                        .zip(&signature.params)
-                        .map(|(operand, ty)| {
-                            self.operand(operand, ty).map(BasicMetadataValueEnum::from)
-                        })
-                        .collect::<Result<Vec<_>>>()?,
-                );
-                let call = self.builder.build_call(callee, &values, "call")?;
-                for (location, attribute) in crate::abi::extensions(self.context, signature) {
-                    call.add_attribute(location, attribute);
-                }
-                if let Some(dst) = dst {
-                    let value = call
-                        .try_as_basic_value()
-                        .basic()
-                        .filter(|_| dst_ty.as_ref() == Some(&signature.ret))
-                        .ok_or_else(|| {
-                            CodegenError(format!("`{id}` 调用的返回类型与 HIR 不一致"))
-                        })?;
-                    self.save(*dst, &signature.ret, value)?;
-                }
+                self.call(callee, args, *dst, dst_ty.as_ref())?;
             }
             HirInstr::Return(value) => {
                 let keep = value.as_ref().and_then(|operand| match operand {

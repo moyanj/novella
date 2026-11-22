@@ -1,7 +1,7 @@
 // UTF-16 字符串。系统边界为分配、释放、终止与 C11 固定 ABI 浮点格式化。
 extern func strfromd(buffer: u8*, size: usize, format: u8*, value: f64) -> i32;
-extern func malloc(size: usize) -> void*;
-extern func free(data: void*);
+extern func novella_rt_malloc(size: usize) -> void*;
+extern func novella_rt_free(data: void*);
 extern func abort();
 
 pub class String {
@@ -15,7 +15,7 @@ pub class String {
 
     pub func __destroy(self) {
         unsafe {
-            free(this.data);
+            novella_rt_free(this.data);
         }
     }
 
@@ -30,7 +30,7 @@ pub class String {
         let result = new String();
         result.len = digits;
         unsafe {
-            result.data = malloc(digits * 2) as u16*;
+            result.data = novella_rt_malloc(digits * 2) as u16*;
             if (result.data == null) { abort(); return null; }
             remaining = value;
             let index = digits;
@@ -66,11 +66,11 @@ pub class String {
 
     pri static func formatFloat(value: f64, single: boolean) -> String {
         unsafe {
-            let format = malloc(6) as u8*;
-            let buffer = malloc(64) as u8*;
+            let format = novella_rt_malloc(6) as u8*;
+            let buffer = novella_rt_malloc(64) as u8*;
             if (format == null or buffer == null) {
-                free(format);
-                free(buffer);
+                novella_rt_free(format);
+                novella_rt_free(buffer);
                 abort();
                 return null;
             }
@@ -87,17 +87,17 @@ pub class String {
                 format[5] = 0;
             }
             let count = strfromd(buffer, 64, format, value);
-            free(format);
+            novella_rt_free(format);
             if (count < 0 or count >= 64) {
-                free(buffer);
+                novella_rt_free(buffer);
                 abort();
                 return null;
             }
             let result = new String();
             result.len = count as usize;
-            result.data = malloc(result.len * 2) as u16*;
+            result.data = novella_rt_malloc(result.len * 2) as u16*;
             if (result.data == null) {
-                free(buffer);
+                novella_rt_free(buffer);
                 abort();
                 return null;
             }
@@ -106,7 +106,7 @@ pub class String {
                 result.data[index] = buffer[index] as u16;
                 index += 1;
             }
-            free(buffer);
+            novella_rt_free(buffer);
             return result;
         }
     }
@@ -186,7 +186,7 @@ pub class String {
         result.len = this.len + other.len;
         if (result.len == 0) { return result; }
         unsafe {
-            result.data = malloc(result.len * 2) as u16*;
+            result.data = novella_rt_malloc(result.len * 2) as u16*;
             if (result.data == null) {
                 abort();
                 return null;
@@ -214,7 +214,7 @@ pub class String {
         result.len = length;
         if (length == 0) { return result; }
         unsafe {
-            result.data = malloc(length * 2) as u16*;
+            result.data = novella_rt_malloc(length * 2) as u16*;
             if (result.data == null) {
                 abort();
                 return null;

@@ -1,13 +1,14 @@
 #include "novella_rt.h"
 
+#include <stdbool.h>
 #include <stdatomic.h>
 #include <stdint.h>
-#include <stdio.h>
-#include <stdlib.h>
-#include <string.h>
 
-void* (*global_malloc)(size_t size) = malloc;
-void (*global_free)(void* ptr) = free;
+/* 配置字段只在锁内访问；固定后不再写入，回调在锁外执行以允许重入。 */
+static atomic_flag allocator_lock = ATOMIC_FLAG_INIT;
+static bool allocator_fixed;
+static void* (*configured_alloc)(size_t);
+static void (*configured_free)(void*);
 
 /* weak 持有独立控制块；最后强引用释放载荷后，控制块仍允许安全判活。 */
 struct novella_rt_weak {
@@ -25,20 +26,32 @@ typedef union {
     max_align_t alignment;
 } ObjectHeader;
 
-static _Noreturn void fail(const char* message) {
-    fprintf(stderr, "novella runtime: %s\n", message);
-    abort();
+static _Noreturn void fail(unsigned code) {
+    /* 经 volatile 指针调用，避免 noreturn 声明让优化器删除返回后的 trap。 */
+    void (*volatile panic_hook)(unsigned) = novella_platform_panic;
+    panic_hook(code);
+    __builtin_trap();
+}
+
+static void lock_allocator(void) {
+    while (atomic_flag_test_and_set_explicit(&allocator_lock, memory_order_acquire)) {
+        /* 仅保护短暂配置，不在持锁期间调用平台或用户代码。 */
+    }
+}
+
+static void unlock_allocator(void) {
+    atomic_flag_clear_explicit(&allocator_lock, memory_order_release);
 }
 
 static ObjectHeader* header_of(void* object) {
     return (ObjectHeader*)((unsigned char*)object - sizeof(ObjectHeader));
 }
 
-static void increment(_Atomic size_t* count, const char* message) {
+static void increment(_Atomic size_t* count, unsigned code) {
     size_t previous = atomic_load_explicit(count, memory_order_relaxed);
     do {
         if (previous == 0 || previous == SIZE_MAX) {
-            fail(message);
+            fail(code);
         }
     } while (!atomic_compare_exchange_weak_explicit(
         count, &previous, previous + 1, memory_order_relaxed,
@@ -49,7 +62,7 @@ void* novella_rt_alloc(size_t size,
                        size_t alignment,
                        novella_rt_destructor destroy) {
     if (alignment == 0 || (alignment & (alignment - 1)) != 0) {
-        fail("对象对齐必须是非零的 2 的幂");
+        fail(NOVELLA_RT_INVALID_ALIGNMENT);
     }
     if (alignment < _Alignof(ObjectHeader)) {
         alignment = _Alignof(ObjectHeader);
@@ -59,17 +72,17 @@ void* novella_rt_alloc(size_t size,
     size_t padding = alignment - 1;
     if (padding > SIZE_MAX - sizeof(ObjectHeader) ||
         payload_size > SIZE_MAX - sizeof(ObjectHeader) - padding) {
-        fail("对象布局超出地址空间");
+        fail(NOVELLA_RT_LAYOUT_OVERFLOW);
     }
     novella_rt_weak* control = novella_rt_malloc(sizeof(*control));
     if (control == NULL) {
-        fail("对象控制块分配失败");
+        fail(NOVELLA_RT_CONTROL_ALLOCATION_FAILED);
     }
     void* allocation =
         novella_rt_malloc(sizeof(ObjectHeader) + padding + payload_size);
     if (allocation == NULL) {
         novella_rt_free(control);
-        fail("对象内存分配失败");
+        fail(NOVELLA_RT_OBJECT_ALLOCATION_FAILED);
     }
     uintptr_t start = (uintptr_t)allocation + sizeof(ObjectHeader);
     void* object = (void*)((start + padding) & ~(uintptr_t)padding);
@@ -79,20 +92,24 @@ void* novella_rt_alloc(size_t size,
     control->destroy = destroy;
     atomic_init(&control->strong, 1);
     atomic_init(&control->weak, 1);
-    memset(object, 0, payload_size);
+    /* volatile 字节写禁止循环被识别成 libc memset。 */
+    volatile unsigned char* bytes = object;
+    for (size_t index = 0; index < payload_size; ++index) {
+        bytes[index] = 0;
+    }
     return object;
 }
 
 void novella_rt_retain(void* object) {
     if (object != NULL) {
         increment(&header_of(object)->control->strong,
-                  "对象引用计数无效或溢出");
+                  NOVELLA_RT_INVALID_STRONG_COUNT);
     }
 }
 
 void novella_rt_weak_retain(novella_rt_weak* weak) {
     if (weak != NULL) {
-        increment(&weak->weak, "弱引用计数无效或溢出");
+        increment(&weak->weak, NOVELLA_RT_INVALID_WEAK_COUNT);
     }
 }
 
@@ -103,7 +120,7 @@ void novella_rt_weak_release(novella_rt_weak* weak) {
     size_t previous =
         atomic_fetch_sub_explicit(&weak->weak, 1, memory_order_release);
     if (previous == 0) {
-        fail("不能重复释放弱引用");
+        fail(NOVELLA_RT_DOUBLE_WEAK_RELEASE);
     }
     if (previous == 1) {
         atomic_thread_fence(memory_order_acquire);
@@ -131,7 +148,7 @@ void* novella_rt_weak_upgrade(novella_rt_weak* weak) {
             return NULL;
         }
         if (strong == SIZE_MAX) {
-            fail("对象引用计数溢出");
+            fail(NOVELLA_RT_INVALID_STRONG_COUNT);
         }
         /* 与最后一次强 release 在同一原子计数上竞争，零不可逆。 */
     } while (!atomic_compare_exchange_weak_explicit(
@@ -148,7 +165,7 @@ void novella_rt_release(void* object) {
     size_t previous =
         atomic_fetch_sub_explicit(&control->strong, 1, memory_order_release);
     if (previous == 0) {
-        fail("不能释放正在析构的对象");
+        fail(NOVELLA_RT_DOUBLE_STRONG_RELEASE);
     }
     if (previous != 1) {
         return;
@@ -164,25 +181,39 @@ void novella_rt_release(void* object) {
 }
 
 void* novella_rt_malloc(size_t size) {
-    if (global_malloc == NULL) {
-        fail("内存分配器未设置");
-    }
-    return global_malloc(size);
+    lock_allocator();
+    allocator_fixed = true;
+    void* (*allocate)(size_t) = configured_alloc;
+    unlock_allocator();
+    return allocate != NULL ? allocate(size) : novella_platform_alloc(size);
 }
 
 void novella_rt_free(void* ptr) {
     if (ptr == NULL) {
         return;
     }
-    if (global_free == NULL) {
-        fail("内存释放器未设置");
+    lock_allocator();
+    allocator_fixed = true;
+    void (*deallocate)(void*) = configured_free;
+    unlock_allocator();
+    if (deallocate != NULL) {
+        deallocate(ptr);
+    } else {
+        novella_platform_free(ptr);
     }
-    global_free(ptr);
 }
 
-// 设置全局内存分配器
-void novella_rt_set_allocator(void* (*malloc)(size_t size),
-                              void (*free)(void* ptr)) {
-    global_malloc = malloc;
-    global_free = free;
+void novella_rt_set_allocator(void* (*allocate)(size_t size),
+                              void (*deallocate)(void* ptr)) {
+    if (allocate == NULL || deallocate == NULL) {
+        fail(NOVELLA_RT_INVALID_ALLOCATOR);
+    }
+    lock_allocator();
+    if (allocator_fixed) {
+        unlock_allocator();
+        fail(NOVELLA_RT_ALLOCATOR_FIXED);
+    }
+    configured_alloc = allocate;
+    configured_free = deallocate;
+    unlock_allocator();
 }

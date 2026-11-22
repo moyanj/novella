@@ -5,7 +5,9 @@ pub mod diagnostic;
 pub mod keywords;
 pub mod line_index;
 pub mod path;
+pub mod project_config;
 pub mod string;
+pub mod target;
 pub mod token;
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Hash)]

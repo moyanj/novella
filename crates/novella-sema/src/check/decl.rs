@@ -19,7 +19,7 @@ pub(crate) fn check_module(sema: &mut Sema, module: ModuleId) {
     let items = sema.modules[module].program.items.clone();
 
     // main 入口检查（仅入口模块，design.md §4.8.1）
-    if module == 0 && !sema.module_only {
+    if module == 0 && !sema.module_only && !sema.no_main {
         check_main_entry(sema, &items);
     }
 
@@ -32,7 +32,9 @@ pub(crate) fn check_module(sema: &mut Sema, module: ModuleId) {
             _ => &[],
         };
         for directive in directives {
-            sema.type_error(module, directive.span, "不合理的编译器指令位置");
+            if !matches!(item, Item::Function(_)) || directive.name != "export" {
+                sema.type_error(module, directive.span, "不合理的编译器指令位置");
+            }
         }
         match item {
             Item::Function(function) => {
@@ -73,6 +75,8 @@ pub(crate) fn check_module(sema: &mut Sema, module: ModuleId) {
                 };
                 sema.type_error(module, *span, message);
             }
+            Item::Directive(directive)
+                if matches!(directive.name.as_str(), "no_main" | "no_std") => {}
             Item::Directive(directive) => {
                 sema.type_error(module, directive.span, "该编译器指令尚未实现")
             }
