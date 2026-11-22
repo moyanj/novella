@@ -1,9 +1,29 @@
-# 字符串标准库
+# 标准库
 
-当前标准库含 `string.nov` 与默认环境 `site.nov`。`String` 是 UTF-16 class；
+当前标准库含 `string.nov`、`io.nov`、`math.nov` 与默认环境 `site.nov`。`String` 是 UTF-16 class；
 `site` 提供 `String` 名字及普通类型别名 `string`，用户本地声明优先于默认环境。
 标准库身份由配置的 std 根目录及类型声明确定；同名用户 class 不触发字符串特殊降级。
 `docs/stdlib-design.md` 中其他模块和 runtime 静态库仍是早期设计草案。
+
+## `std:io`
+
+```novella
+from "std:io" import print, println;
+
+func main() -> int {
+    println("hello, 世界 🎉");
+    return 0;
+}
+```
+
+- `print(message)` 写出全部字节；`println(message)` 再追加一个 LF，空串只输出换行。
+  两者都不显式 flush，行为与 glibc 的 stdout 缓冲一致。
+- 编码走 `String.writeUtf8`：逐个 UTF-16 码元编码为 UTF-8，代理对合成为一个
+  四字节序列，**孤立代理码元替换为 U+FFFD**，因此中文与 emoji 都按 UTF-8 原样输出。
+- `null` 实参不写任何字节（`String` 是可空值，成员调用前有显式判空）。
+- 缓冲区用 runtime 分配器，上界为 `length() * 3 + 4` 字节；分配失败调用 `abort`。
+- 系统边界是 libc 的 `write(2)` / `abort`，因此 io 依赖宿主 libc：
+  裸机目标不提供本模块。
 
 - `length()` 返回 UTF-16 码元数，`byteLength()` 返回缓冲区字节数。
 - `codeUnitAt(index)` 与只读下标 `value[index]` 返回 `u16`；越界终止。
@@ -19,6 +39,9 @@
 - `fromFloat32` / `fromFloat64` 调用 C11 固定 ABI `strfromd`，分别使用 `%.9g` / `%.17g`
   有效数字格式，覆盖负零、无穷大和 NaN；格式受进程当前 C 数值 locale 影响。
   Linux glibc 目标需要 glibc 2.25 及以上提供该符号。
+- `unitAt(index)` 按 `u16` 读码元，不做越界校验（调用方保证 `index < length()`）。
+- `writeUtf8(out)` 把全部码元按 UTF-8 写入 `out`，返回字节数，语义与 `std:io` 的
+  编码一致；调用方须提供 `length() * 3 + 4` 字节空间。私有 `encodeUtf8` 承担实体。
 
 普通/raw 字面量在 HIR 中显式降级为 String 构造指令；LLVM 发射通过 runtime 对象分配器
 创建带析构回调的 String，并通过系统 `malloc` 分配 UTF-16 缓冲区。

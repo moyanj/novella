@@ -29,7 +29,7 @@ pub(crate) fn load_modules(
     // 相对、后以绝对路径出现，两次的键相同，但只有首次出现决定 `path` 回显值。
     let mut worklist = vec![(entry.to_path_buf(), loader.module_key(entry))];
     // 独立检查裸机依赖模块时继承工程环境，不能因文件未写入口指令而装载宿主标准库。
-    let mut no_std = options.module_only && options.build_target.is_bare_metal();
+    let mut no_std = options.module_only && options.build_spec.requires_no_std;
 
     while let Some((path, key)) = worklist.pop() {
         if loader.is_cancelled() {
@@ -113,7 +113,7 @@ pub(crate) fn load_modules(
         let syntax_diagnostic_count = diagnostics.len();
 
         // cfg 在声明收集和导入扫描之前生效，关闭的声明不参与名称解析。
-        let cfg_errors = crate::cfg::configure(&mut program, &options.cfg, options.build_target);
+        let cfg_errors = crate::cfg::configure(&mut program, &options.cfg);
         // 在入口第一次解析后决定默认环境，避免 @no_std 仍读取标准库文件。
         let mut directive_errors = Vec::new();
         let mut seen_no_std = false;

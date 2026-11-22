@@ -17,6 +17,7 @@ mod cli;
 mod config;
 mod error;
 mod link;
+mod print;
 mod project;
 
 fn main() -> ExitCode {
@@ -52,7 +53,7 @@ fn run(command: cli::Command) -> Result<bool, Box<dyn std::error::Error>> {
             };
             return build::run(
                 AnalysisArgs {
-                    file: project.entry(),
+                    file: Some(project.entry()),
                     options,
                 },
                 output,
@@ -74,18 +75,27 @@ fn run(command: cli::Command) -> Result<bool, Box<dyn std::error::Error>> {
             )),
         ),
     };
-    let config = config::resolve(&args)?;
+    if let Some(print) = args.options.print {
+        // `--print` 是纯查询：不编译，也不要求传入文件。
+        return print::run(print, &args);
+    }
+    let file = args
+        .file
+        .clone()
+        .ok_or("缺少入口文件（`--print` 查询除外）")?;
+    let resolved = config::resolve(&args)?;
+    let config = &resolved.config;
     if output
         .as_ref()
         .is_some_and(|(emit, _)| matches!(emit, Emit::Exe))
     {
-        link::validate_config(&config)?;
+        link::validate_config(config, &resolved.spec)?;
     }
     let module_only = output
         .as_ref()
         .is_none_or(|(emit, _)| matches!(emit, Emit::Ast));
-    let options = analysis_options(&args, module_only, &config)?;
-    let result = analyze_with_options(&mut FsLoader, &args.file, options);
+    let options = analysis_options(&args, module_only, &resolved)?;
+    let result = analyze_with_options(&mut FsLoader, &file, options);
     render_diagnostics(&result);
     if result.diagnostics.has_errors() {
         return Ok(false);
@@ -94,7 +104,7 @@ fn run(command: cli::Command) -> Result<bool, Box<dyn std::error::Error>> {
         return Ok(true);
     };
     if matches!(emit, Emit::Ast) {
-        write_output(&output, &ast_json(&result, &args.file)?)?;
+        write_output(&output, &ast_json(&result, &file)?)?;
         return Ok(true);
     }
     let Some(hir) = lower(&result) else {
@@ -107,7 +117,7 @@ fn run(command: cli::Command) -> Result<bool, Box<dyn std::error::Error>> {
         Emit::Obj | Emit::Exe => {
             let artifact = novella_codegen::emit_artifact(&hir)?;
             if matches!(emit, Emit::Exe) {
-                link::write_executable(&output, &artifact, &config)?;
+                link::write_executable(&output, &artifact, config, &resolved.spec)?;
             } else {
                 write_output(&output, &artifact.bytes)?;
             }
@@ -132,9 +142,11 @@ fn render_diagnostics(result: &SemaResult) {
 fn analysis_options(
     args: &AnalysisArgs,
     module_only: bool,
-    config: &novella_core::project_config::ResolvedBuildConfig,
+    resolved: &crate::config::Resolved,
 ) -> Result<AnalysisOptions, Box<dyn std::error::Error>> {
     let flags = &args.options;
+    let config = &resolved.config;
+    let spec = &resolved.spec;
     let mut options = AnalysisOptions {
         std_root: flags
             .std_root
@@ -142,13 +154,29 @@ fn analysis_options(
             .or_else(|| AnalysisOptions::default().std_root),
         module_only,
         build_target: config.target,
+        build_spec: spec.clone(),
         ..Default::default()
     };
-    options.target.pointer_width = novella_sema::PointerWidth::Bits64;
-    options.cfg.features.extend(flags.features.iter().cloned());
-    options.cfg.target_os = config.target.os().into();
-    options.cfg.target_arch = config.target.arch().into();
-    options.cfg.target_family = config.target.family().into();
+    options.target.pointer_width = match spec.pointer_width {
+        32 => novella_sema::PointerWidth::Bits32,
+        _ => novella_sema::PointerWidth::Bits64,
+    };
+    // 谓词全部由目标描述派生，再叠加 feature 展开与显式 --cfg 注入。
+    let mut cfg = novella_target::CfgOptions::from_spec(spec);
+    cfg.set_features(novella_target::FeatureSet::default().resolve(&flags.features)?);
+    for value in &flags.cfg {
+        cfg.extend_from_cfg_spec(value)?;
+    }
+    if !flags.check_cfg.is_empty() {
+        let mut check = novella_target::CheckCfg::default();
+        for value in &flags.check_cfg {
+            check.extend_from_spec(value)?;
+        }
+        if !check.is_empty() {
+            cfg.check = Some(check);
+        }
+    }
+    options.cfg = cfg;
     Ok(options)
 }
 

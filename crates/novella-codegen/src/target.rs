@@ -27,10 +27,9 @@ pub(crate) fn validate_type(ty: &HirType) -> Result<()> {
 
 use crate::{CodegenError, Result};
 
-/// 禁用所有向量寄存器，避免整数聚合复制被选择为 SIMD 指令。
-pub(crate) const FEATURES: &str = "-mmx,-sse,-sse2,-sse3,-ssse3,-sse4.1,-sse4.2,-avx,-avx2,-avx512f,-avx512vl,-avx512bw,-avx512dq,-fma,-fma4,-xop,+soft-float";
-
-pub(crate) fn attributes(context: &Context, module: &Module<'_>) {
+/// 裸机目标的函数属性；`features` 取自目标描述（禁用向量寄存器，避免整数聚合
+/// 复制被选择为 SIMD 指令），与目标机器创建时传入的特性串保持一致。
+pub(crate) fn attributes(context: &Context, module: &Module<'_>, features: &str) {
     // 统一在全部辅助函数生成后应用，避免自动析构和数组包装遗漏约束。
     for function in module.get_functions() {
         for name in ["noredzone", "noimplicitfloat", "nounwind"] {
@@ -41,7 +40,7 @@ pub(crate) fn attributes(context: &Context, module: &Module<'_>) {
         }
         function.add_attribute(
             AttributeLoc::Function,
-            context.create_string_attribute("target-features", FEATURES),
+            context.create_string_attribute("target-features", features),
         );
         function.add_attribute(
             AttributeLoc::Function,
@@ -112,7 +111,7 @@ pub(crate) fn audit(
                     "裸机目标不支持编译器引入的外部 helper `{name}`"
                 )));
             }
-            if program.target.is_bare_metal()
+            if program.spec.is_like_bare
                 && (name.starts_with("_Unwind_")
                     || name.starts_with("__cxa_")
                     || matches!(

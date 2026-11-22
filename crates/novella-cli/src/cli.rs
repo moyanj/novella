@@ -41,7 +41,8 @@ pub enum Command {
 
 #[derive(Args)]
 pub struct AnalysisArgs {
-    pub file: PathBuf,
+    /// 入口文件；`--print` 查询可省略。
+    pub file: Option<PathBuf>,
     #[command(flatten)]
     pub options: AnalysisOptionsArgs,
 }
@@ -60,9 +61,21 @@ pub struct AnalysisOptionsArgs {
     pub target_arch: Option<String>,
     #[arg(long)]
     pub target_family: Option<String>,
-    /// 生成目标平台。
+    /// 生成目标：内置 triple 名或目标描述 JSON 路径。
     #[arg(long)]
-    pub target: Option<novella_core::target::TargetPlatform>,
+    pub target: Option<novella_core::project_config::TargetSelector>,
+    /// 显式注入条件编译条件（`key` 或 `key="value"`），可重复指定。
+    #[arg(long = "cfg")]
+    pub cfg: Vec<String>,
+    /// 声明允许出现的 cfg 键与值：`cfg(键,...)` 或 `values(键,"值",...)`，可重复指定。
+    #[arg(long = "check-cfg")]
+    pub check_cfg: Vec<String>,
+    /// 查询编译器信息后退出（如 target-list）。
+    #[arg(long = "print")]
+    pub print: Option<novella_target::PrintKind>,
+    /// 不稳定开关，目前支持 custom-targets。
+    #[arg(short = 'Z', long = "unstable")]
+    pub unstable: Vec<String>,
     /// 运行时模式。
     #[arg(long)]
     pub runtime: Option<novella_core::target::RuntimeMode>,

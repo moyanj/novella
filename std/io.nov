@@ -1,0 +1,52 @@
+// 标准输出。`String` 是 UTF-16 class（见 `string.nov`），系统边界只接受 UTF-8 字节；
+// 编码由 `String.writeUtf8` 完成（`data` 是 `pri` 字段，只有定义模块能直接读），
+// 本模块只负责缓冲区与 `write` 系统调用。
+//
+// io 属于系统层模块，依赖宿主 libc 的 `write` / `abort` 与 runtime 分配器，
+// 裸机目标不提供本模块（见 docs/stdlib-design.md §2.9）。
+from "string" import String;
+from "ffi" import novella_rt_malloc,novella_rt_free;
+
+extern func write(fd: i32, bytes: u8*, len: usize) -> isize;
+extern func abort();
+
+// 1 号文件描述符是 POSIX 约定的标准输出。
+const STDOUT_FD: i32 = 1;
+// LF 换行字节。
+const NEWLINE: u8 = 10;
+
+// 写出全部字节；不追加换行，也不显式 flush（与 glibc 的 stdout 缓冲行为一致）。
+pub func print(message: String) {
+    writeText(message, false);
+}
+
+// 写出全部字节后追加一个 LF。空串只输出换行。
+pub func println(message: String) {
+    writeText(message, true);
+}
+
+pri func writeText(message: String, newline: boolean) {
+    // `null` 是合法的可空值（`Ty::is_nullable` 含 Class），此处没有码元可写；
+    // 缺少这层守卫会在成员调用处解引用空指针。
+    if (message == null) {
+        return;
+    }
+    // 上界见 `String.writeUtf8`：每码元至多 3 字节，代理对两码元合成 4 字节，
+    // 再加换行仍有 4 字节余量。
+    let capacity = message.length() * 3 + 4;
+    let buffer: u8* = null;
+    unsafe { buffer = novella_rt_malloc(capacity) as u8*; }
+    if (buffer == null) {
+        unsafe { abort(); }
+        return;
+    }
+    let used = message.writeUtf8(buffer);
+    if (newline) {
+        unsafe { buffer[used] = NEWLINE; }
+        used += 1;
+    }
+    unsafe {
+        write(STDOUT_FD, buffer, used);
+        novella_rt_free(buffer);
+    }
+}

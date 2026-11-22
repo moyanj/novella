@@ -106,11 +106,17 @@ pub(crate) fn check_body_signature(
 }
 
 pub(crate) fn validate(sema: &mut Sema) {
+    if let Err(message) = sema.build_spec.validate() {
+        sema.global_diagnostics
+            .push(novella_core::diagnostic::Diagnostic::error(message));
+    }
     if let Err(message) = sema.build_target.validate() {
         sema.global_diagnostics
             .push(novella_core::diagnostic::Diagnostic::error(message));
     }
-    let bare = sema.build_target.is_bare_metal();
+    // 裸机约束优先读目标描述：requires-no-std / is-like-bare 是描述的一部分，
+    // 内置目标两者与旧枚举一致，自定义目标也能表达同样的约束。
+    let bare = sema.build_spec.is_like_bare;
     if bare && !sema.module_only && (!sema.no_std || !sema.no_main) && !sema.modules.is_empty() {
         sema.type_error(
             0,
@@ -219,7 +225,7 @@ pub(crate) fn validate(sema: &mut Sema) {
         &sema.declaration_types,
     ] {
         for ((module, span), ty) in table {
-            if !sema.build_target.has_float() && floating(sema, ty, &mut HashSet::new()) {
+            if !sema.build_spec.has_float && floating(sema, ty, &mut HashSet::new()) {
                 violations.insert((
                     *module,
                     *span,

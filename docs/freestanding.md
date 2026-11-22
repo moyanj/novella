@@ -82,7 +82,12 @@ link-object = ["boot.o", "platform.o"]
 CLI 优先于清单；合并后再应用最终目标的默认值。清单文件路径相对项目根，CLI 路径
 相对当前目录。清单中的链接器裸命令名仍通过 PATH 查找，带目录的链接器路径相对项目根。
 CLI 的非空 `--link-object` 列表整体覆盖清单列表。CLI 和 LSP 使用同一份目标配置解析，
-条件编译的 OS、架构和 family 必须与实际目标一致；裸机为 `none`、`x86_64`、`none`。
+`--target-os` / `--target-arch` / `--target-family` 必须与实际目标一致；裸机为
+`none`、`x86_64`、`none`。目标描述的字段、自定义目标与条件编译谓词的完整清单见
+[target.md](target.md)：裸机行为（`runtime`、`code-model`、禁用浮点、禁止 SIMD 寄存器、
+默认链接器与固定链接参数、`requires-no-std`）都由
+`crates/novella-target/src/builtin/x86_64-unknown-none-elf.json` 表达，自定义裸机目标
+写法相同，因此不会出现"内置裸机"与"自定义裸机"两套规则。
 旧 `analyze_with_target` 仍可独立进行 32 位静态分析，但 HIR 入口会拒绝它与当前两个
 64 位发射目标的位宽冲突，避免 `usize` 按不同位宽分析和生成。
 LSP 每次分析重新读取磁盘清单，配置错误直接产生诊断；VS Code 客户端监听 `nov.toml`

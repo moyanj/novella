@@ -9,7 +9,7 @@ use std::{
 use novella_codegen::ObjectArtifact;
 use novella_core::{
     project_config::ResolvedBuildConfig,
-    target::{CodeModel, RuntimeMode},
+    target::{CodeModel, LinkerFlavor, RuntimeMode},
 };
 use object::read::elf::ProgramHeader;
 use object::{Object, ObjectSection, ObjectSymbol};
@@ -20,7 +20,21 @@ pub(crate) fn output_parent(path: &Path) -> &Path {
         .unwrap_or(Path::new("."))
 }
 
-pub(crate) fn validate_config(config: &ResolvedBuildConfig) -> Result<(), Box<dyn Error>> {
+pub(crate) fn validate_config(
+    config: &ResolvedBuildConfig,
+    spec: &novella_target::TargetSpec,
+) -> Result<(), Box<dyn Error>> {
+    // 未声明发射后端的目标只有描述价值，不能生成可执行文件。
+    spec.emit
+        .ok_or_else(|| format!("目标 {} 不可发射原生代码", spec.triple))?;
+    spec.validate()?;
+    if !spec.is_like_linux && !spec.is_like_bare {
+        return Err(format!(
+            "目标 {} 未声明链接环境（is-like-linux / is-like-bare 均为 false）",
+            spec.triple
+        )
+        .into());
+    }
     if config.target.is_bare_metal() {
         if config.entry.is_none() || config.linker_script.is_none() {
             return Err(
@@ -46,8 +60,9 @@ pub(crate) fn write_executable(
     path: &Path,
     artifact: &ObjectArtifact,
     config: &ResolvedBuildConfig,
+    spec: &novella_target::TargetSpec,
 ) -> Result<(), Box<dyn Error>> {
-    validate_config(config)?;
+    validate_config(config, spec)?;
     if artifact.requirements.managed && config.target.runtime == RuntimeMode::None {
         return Err("目标文件需要 managed runtime，但当前配置为 runtime=none".into());
     }
@@ -79,19 +94,14 @@ pub(crate) fn write_executable(
     let linker = config
         .linker
         .clone()
+        .or_else(|| Some(PathBuf::from(spec.default_linker())))
         .unwrap_or_else(|| PathBuf::from(if bare { "ld.lld" } else { "clang" }));
     let mut command = Command::new(&linker);
-    if bare {
-        command.args([
-            "-m",
-            "elf_x86_64",
-            "--static",
-            "--no-undefined",
-            "--fatal-warnings",
-            "--build-id=none",
-        ]);
+    // 目标描述是链接参数的唯一来源：内置裸机目标与历史命令完全一致。
+    if spec.linker_flavor == LinkerFlavor::Clang {
+        command.arg(format!("--target={}", spec.triple));
     } else {
-        command.arg(format!("--target={}", config.target.triple()));
+        command.args(&spec.linker_args);
     }
     command.arg(&object).args(&extra_objects);
     if artifact.requirements.managed {
@@ -122,11 +132,6 @@ pub(crate) fn write_executable(
                 .arg("-Xlinker")
                 .arg(script);
         }
-    }
-    if !bare {
-        // LLVM 的浮点余数指令由 clang 降为 libm 的 fmod；即使当前模块未使用 `%`，
-        // -lm 也无副作用，且保持普通 Linux 目标的链接行为一致。
-        command.arg("-lm");
     }
     command.arg("-o").arg(&output);
     let result = command

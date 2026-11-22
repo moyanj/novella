@@ -106,21 +106,36 @@ fn configure_project(
     options: &mut AnalysisOptions,
     cfg: &[Option<String>; 3],
 ) -> Result<(), String> {
-    use novella_core::project_config::{BuildConfig, load_project_config};
-    let target = if let Some(project) = load_project_config(root)? {
-        project
-            .build
-            .resolve(&BuildConfig::default(), &project.root)?
-            .target
-    } else {
-        Default::default()
+    use novella_core::project_config::{BuildConfig, TargetSelector, load_project_config};
+    let project = load_project_config(root)?;
+    let (manifest, manifest_root) = match &project {
+        Some(project) => (project.build.clone(), project.root.clone()),
+        None => (BuildConfig::default(), root.to_path_buf()),
     };
+    // 编辑器内不便输入 `-Z custom-targets`：自定义目标一律在 LSP 中放行，
+    // 与 `novella build` 的差异由文件自身是否可读决定。
+    let selector = manifest.target.clone().unwrap_or(TargetSelector::Builtin(
+        novella_core::target::TargetPlatform::default(),
+    ));
+    let spec = novella_target::resolve_selector(&selector, &manifest_root, true)
+        .map_err(|error| error.to_string())?;
+    let config = novella_target::resolve_build_config(
+        &manifest,
+        &BuildConfig::default(),
+        &manifest_root,
+        &spec,
+    )
+    .map_err(|error| error.to_string())?;
+    let target = config.target;
     target.validate_cfg(cfg[0].as_deref(), cfg[1].as_deref(), cfg[2].as_deref())?;
     options.build_target = target;
-    options.target.pointer_width = novella_sema::PointerWidth::Bits64;
-    options.cfg.target_os = target.os().into();
-    options.cfg.target_arch = target.arch().into();
-    options.cfg.target_family = target.family().into();
+    options.build_spec = spec.clone();
+    options.target.pointer_width = match spec.pointer_width {
+        32 => novella_sema::PointerWidth::Bits32,
+        _ => novella_sema::PointerWidth::Bits64,
+    };
+    // 谓词与 CLI 同源：全部由目标描述派生，避免编辑器与命令行看到不同的 @cfg 结果。
+    options.cfg = novella_target::CfgOptions::from_spec(&spec);
     Ok(())
 }
 

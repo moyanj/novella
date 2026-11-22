@@ -45,14 +45,16 @@ pub(super) fn validate(
     sema: &SemaResult,
     modules: &[HirModule],
 ) -> Result<RuntimeRequirements, BuildError> {
-    if sema.build_target.validate().is_err()
-        || sema.build_target.is_bare_metal() && (!sema.no_main || !sema.no_std)
+    // 约束以目标描述为准：自定义目标同样声明 requires-no-std / is-like-bare。
+    if sema.build_spec.validate().is_err()
+        || sema.build_target.validate().is_err()
+        || sema.build_spec.requires_no_std && (!sema.no_main || !sema.no_std)
     {
         return Err(BuildError::at(BuildErrorKind::InvalidInput));
     }
     let mut required = false;
     for module in modules {
-        if !sema.build_target.has_float() {
+        if !sema.build_spec.has_float {
             // 浮点在所有声明中都禁用，但纯类型中的托管字段仍不构成实际运行时依赖。
             for definition in &module.types {
                 let (fields, methods) = match definition {

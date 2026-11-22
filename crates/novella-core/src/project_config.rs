@@ -1,19 +1,80 @@
 //! CLI 与 LSP 共用的项目构建配置；这里只解析数据，不执行工具链。
+//!
+//! 目标选择可以是内置 triple 名，也可以是目标描述 JSON 的路径；两者在
+//! `novella-target` 中统一解析为 `TargetSpec`，本文档只负责清单读取与原始选项。
 
 use std::{
-    fs, io,
+    fmt, fs, io,
     path::{Path, PathBuf},
+    str::FromStr,
 };
 
 use serde::{Deserialize, Serialize};
 
 use crate::target::{BuildTarget, CodeModel, RuntimeMode, TargetPlatform};
 
+/// 目标选择：内置 triple 名或自定义目标描述的路径。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum TargetSelector {
+    Builtin(TargetPlatform),
+    /// 相对路径由解析方按项目根目录补全。
+    Custom(PathBuf),
+}
+
+impl TargetSelector {
+    /// 路径形态：含 `/`（含 Windows 分隔符）、以 `.json` 结尾或存在同名文件。
+    pub fn is_path(value: &str) -> bool {
+        value.ends_with(".json")
+            || value.contains('/')
+            || value.contains(std::path::MAIN_SEPARATOR)
+            || value.contains('\\')
+    }
+}
+
+impl FromStr for TargetSelector {
+    type Err = String;
+
+    fn from_str(value: &str) -> Result<Self, Self::Err> {
+        if let Ok(platform) = TargetPlatform::from_str(value) {
+            return Ok(Self::Builtin(platform));
+        }
+        // 非内置名一律视为目标描述路径；由加载器报告文件是否存在。
+        if Self::is_path(value) {
+            return Ok(Self::Custom(PathBuf::from(value)));
+        }
+        Err(format!(
+            "不支持目标 `{value}`；可选 x86_64-unknown-linux-gnu、x86_64-unknown-none-elf 或目标描述 JSON 路径"
+        ))
+    }
+}
+
+impl fmt::Display for TargetSelector {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Builtin(platform) => f.write_str(platform.triple()),
+            Self::Custom(path) => write!(f, "{}", path.display()),
+        }
+    }
+}
+
+impl Serialize for TargetSelector {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        serializer.serialize_str(&self.to_string())
+    }
+}
+
+impl<'de> Deserialize<'de> for TargetSelector {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        let value = String::deserialize(deserializer)?;
+        Self::from_str(&value).map_err(serde::de::Error::custom)
+    }
+}
+
 /// 未覆盖默认值的原始选项；保留 Option，确保目标默认值在合并之后才应用。
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 #[serde(default, rename_all = "kebab-case", deny_unknown_fields)]
 pub struct BuildConfig {
-    pub target: Option<TargetPlatform>,
+    pub target: Option<TargetSelector>,
     pub runtime: Option<RuntimeMode>,
     pub code_model: Option<CodeModel>,
     pub linker: Option<PathBuf>,
@@ -28,6 +89,7 @@ pub struct ProjectBuildConfig {
     pub build: BuildConfig,
 }
 
+/// 已合并的目标与链接选项；由 `novella-target` 构造，CLI 与 LSP 共同消费。
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct ResolvedBuildConfig {
     pub target: BuildTarget,
@@ -39,18 +101,14 @@ pub struct ResolvedBuildConfig {
 
 impl BuildConfig {
     /// CLI 选项优先；清单文件路径相对项目根，CLI 路径保持调用方 cwd 语义。
+    ///
+    /// `target` 由调用方先经 `novella-target` 解析为具体 `BuildTarget` 传入。
     pub fn resolve(
         &self,
         overrides: &Self,
         manifest_root: &Path,
+        target: BuildTarget,
     ) -> Result<ResolvedBuildConfig, String> {
-        let platform = overrides.target.or(self.target).unwrap_or_default();
-        let mut target = platform.build_target();
-        target.runtime = overrides.runtime.or(self.runtime).unwrap_or(target.runtime);
-        target.code_model = overrides
-            .code_model
-            .or(self.code_model)
-            .unwrap_or(target.code_model);
         target.validate()?;
         let linker = overrides.linker.clone().or_else(|| {
             self.linker.as_ref().map(|path| {

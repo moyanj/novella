@@ -28,6 +28,8 @@ pub(crate) struct Sema {
     pub type_param_bounds: HashMap<String, ty::Ty>,
     pub target: AnalysisTarget,
     pub build_target: novella_core::target::BuildTarget,
+    /// 目标描述；语义阶段按指针宽度、浮点能力与 @no_std 约束读取。
+    pub build_spec: novella_target::TargetSpec,
     pub no_main: bool,
     pub no_std: bool,
     pub exports: HashMap<(ModuleId, Span), String>,
@@ -124,6 +126,10 @@ impl Sema {
             type_param_bounds: HashMap::new(),
             target: AnalysisTarget::default(),
             build_target: Default::default(),
+            build_spec: novella_target::resolve_builtin(
+                novella_core::target::TargetPlatform::default(),
+            )
+            .expect("内置目标描述必须有效"),
             no_main: false,
             no_std: false,
             exports: HashMap::new(),

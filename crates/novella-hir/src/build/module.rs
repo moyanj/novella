@@ -11,14 +11,12 @@ pub fn build_hir(sema: &SemaResult) -> Result<HirProgram, BuildError> {
         return Err(BuildError::at(BuildErrorKind::InvalidInput));
     }
     // 旧分析 API 可独立检查 32 位源码，但不能把其 usize/isize 解释交给 64 位后端。
-    let analysis_bits = match sema.analysis_target.pointer_width {
+    let analysis_bits: u32 = match sema.analysis_target.pointer_width {
         novella_sema::PointerWidth::Bits32 => 32,
         novella_sema::PointerWidth::Bits64 => 64,
     };
-    let target_bits = match sema.build_target.platform {
-        novella_core::target::TargetPlatform::LinuxX86_64
-        | novella_core::target::TargetPlatform::BareMetalX86_64 => 64,
-    };
+    // 目标位宽取自目标描述；描述已排除 32 位可发射目标，但分析侧仍可能被显式要求 32 位。
+    let target_bits = u32::from(sema.build_spec.pointer_width);
     if analysis_bits != target_bits {
         return Err(BuildError::at(BuildErrorKind::TargetWidthMismatch {
             analysis_bits,
@@ -67,6 +65,7 @@ pub fn build_hir(sema: &SemaResult) -> Result<HirProgram, BuildError> {
     }
     let requirements = super::requirements::validate(sema, &modules)?;
     Ok(HirProgram {
+        spec: sema.build_spec.clone(),
         target: sema.build_target,
         no_main: sema.no_main,
         requirements,

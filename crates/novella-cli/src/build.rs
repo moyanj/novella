@@ -16,16 +16,18 @@ pub(crate) fn run(
     verbose: bool,
 ) -> Result<bool, Box<dyn std::error::Error>> {
     let start = Instant::now();
-    let config = crate::config::resolve(&args)?;
-    crate::link::validate_config(&config)?;
-    let options = crate::analysis_options(&args, false, &config)?;
+    let resolved = crate::config::resolve(&args)?;
+    let config = &resolved.config;
+    crate::link::validate_config(config, &resolved.spec)?;
+    let options = crate::analysis_options(&args, false, &resolved)?;
+    let entry = args.file.clone().ok_or("缺少入口文件")?;
     let mut cache = if no_cache {
         if verbose {
             eprintln!("缓存已禁用（--no-cache）");
         }
         None
     } else {
-        match Cache::open(root, &args.file, &options) {
+        match Cache::open(root, &entry, &options) {
             Ok(cache) => Some(cache),
             Err(error) => {
                 eprintln!("缓存不可用，继续正常编译：{error}");
@@ -41,7 +43,7 @@ pub(crate) fn run(
                 }
                 hit.render_diagnostics();
                 let link_start = Instant::now();
-                crate::link::write_executable(&output, &hit.artifact, &config)?;
+                crate::link::write_executable(&output, &hit.artifact, config, &resolved.spec)?;
                 if verbose {
                     eprintln!(
                         "链接 {:?}；构建完成 {:?}",
@@ -68,7 +70,7 @@ pub(crate) fn run(
         }
     }
     let compile_start = Instant::now();
-    let result = analyze_with_options(&mut loader, &args.file, options);
+    let result = analyze_with_options(&mut loader, &entry, options);
     crate::render_diagnostics(&result);
     if result.diagnostics.has_errors() {
         return Ok(false);
@@ -89,7 +91,7 @@ pub(crate) fn run(
         }
     }
     let link_start = Instant::now();
-    crate::link::write_executable(&output, &artifact, &config)?;
+    crate::link::write_executable(&output, &artifact, config, &resolved.spec)?;
     if verbose {
         eprintln!(
             "链接 {:?}；构建完成 {:?}",

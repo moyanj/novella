@@ -1,0 +1,2 @@
+pub extern func novella_rt_malloc(size: usize) -> void*;
+pub extern func novella_rt_free(data: void*);

@@ -160,13 +160,20 @@ AST 根：`Program { items: Vec<Item>, span }`。
 多个 cfg 按 and 合并；false 的节点在导入扫描、声明收集前剔除，不参与名称和类型检查，
 但词法/语法错误仍报告。已处理的 cfg 不继续交给 HIR。独立 `@cfg(...);` 无修饰目标，报错。
 
-predicate 支持 `true` / `false` / `unix` / `windows` / `target_has_float`，
-`target_os = "linux"`、`target_arch = "x86_64"`、`target_family = "unix"`、
-`feature = "name"`，以及递归 `all(...)` / `any(...)` / `not(...)`。
+predicate 支持 `true` / `false` / `unix` / `windows` / `target_has_float` /
+`debug_assertions` / `test`，键值谓词 `target_os` / `target_arch` / `target_family` /
+`target_vendor` / `target_env` / `target_abi` / `target_endian` / `target_pointer_width` /
+`target_feature` / `feature`，以及递归 `all(...)` / `any(...)` / `not(...)`。
 not 恰有一个参数；all/any 可为空（分别为 true/false）。所有参数都解析，
 未知键、未知组合及多余 token 均报错，不因其他条件 false 而掩盖错误。
-目标和 feature 由 AnalysisOptions 提供，默认宿主平台且 feature 集合为空；`target_has_float`
-由实际 BuildTarget 决定，Linux x86-64 为 true，裸机 x86-64 为 false。
+
+谓词全部由目标描述 `novella_target::TargetSpec` 派生（见 [target.md](target.md)），
+`CfgOptions::from_spec` 是 CLI 与 LSP 的唯一来源：`unix` / `windows` 由 `target-family`
+派生，`target_has_float` 取自 `has-float`，`target_env` 缺省为空串。`--cfg` 注入值
+（`k` 或 `k="v"`）与目标派生值取并集，因此自定义键需要由命令行显式注入；`--check-cfg`
+默认关闭，开启后按白名单校验键与值。feature 由 `--feature` 经 `FeatureSet` 的 `implies`
+传递展开，负 feature 与含 `/`、`:` 的名字在解析期拒绝。
+
 `@packed` / `@align` / `@extern` / `@deprecated` 等示例不构成已实现指令。
 
 #### 禁用标准库指令（2026-11-21）

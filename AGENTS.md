@@ -17,6 +17,7 @@ novella/
 │   ├── novella-ast/     # AST 节点定义（expr/ 目录 / stmt / types / program）
 │   ├── novella-lexer/   # 词法器（logos），RawToken → TokenKind 转换
 │   ├── novella-parser/  # 手写递归下降解析器（含 token 预处理与上下文消歧）
+│   ├── novella-target/  # 目标描述 TargetSpec（builtin/*.json）+ 条件编译求值 + feature 展开
 │   ├── novella-sema/    # 语义分析：module/ + resolve + symbol + ty + check/ + typecheck/
 │   ├── novella-hir/     # 高层中间表示：sema 结果 → 定型指令流（ty/body/item/build）
 │   ├── novella-codegen/ # LLVM 目标文件发射，仅消费 HIR
@@ -33,6 +34,7 @@ novella/
 
 ```
 core ← ast ← parser ← sema ← hir ← codegen ← cli
+core ← ast ← novella-target ← sema
 core ← lexer ← parser
 core ← lexer ← novella-lsp（独立二进制，不经 cli）
 ast ──(构建期)── novella-derive（proc-macro，展开引用 ::novella_core::Span）
@@ -47,12 +49,14 @@ ast ──(构建期)── novella-derive（proc-macro，展开引用 ::novella
 | 加 AST 节点 | `crates/novella-ast/src/` | 按 `expr/`（mod/literal/ops/lambda/match_node）、`stmt`/`types`/`program` 分类，参考文法产生式对照；新节点须携带 `span` 字段并 `#[derive(Spanned)]`（见 CONVENTIONS） |
 | 诊断/错误显示 | `crates/novella-cli/src/error.rs` + `crates/novella-core/src/diagnostic.rs` | 通用诊断结构（各阶段产出）→ `render_diagnostic` rustc 风格渲染 |
 | CLI 子命令 | `crates/novella-cli/src/cli.rs` | clap derive |
-46	| 文法（ANTLR4） | `grammar/NovellaLexer.g4` + `grammar/NovellaParser.g4` | 以代码为基准对齐：词法↔`TokenKind`，语法↔AST 节点；改动代码后须同步（见 `grammar/README.md`） |
+| 文法（ANTLR4） | `grammar/NovellaLexer.g4` + `grammar/NovellaParser.g4` | 以代码为基准对齐：词法↔`TokenKind`，语法↔AST 节点；改动代码后须同步（见 `grammar/README.md`） |
 | 编辑器语法高亮 | `crates/novella-lsp/src/` + `editors/vscode/` | 公开面仅 `server::run`；`semantic.rs` 类别映射与 UTF-16 编码，`protocol.rs` 报文帧，`server/dispatch.rs` 分发 |
 | 加一项 LSP 能力 | `crates/novella-lsp/src/features/`（转换层）+ `server/syntax.rs` 或 `server/lexical.rs`（挂到分发） | `features/` 按能力一文件；`server/` 只做参数解码与 JSON 包装 |
 | 调整高亮类别 | `crates/novella-lsp/src/semantic.rs` | `token_type_index` 为穷尽 match；改动映射须同步 `TOKEN_TYPES`（数组顺序即 legend 下标） |
 | 打包 VS Code 扩展 | `editors/vscode/` | `just lsp-pack`；源码 `src/extension.js` 经 esbuild 打入 `dist/`，vsix 自包含无需 node_modules |
-| 原生后端 | `crates/novella-codegen/src/` | `emit_object` 只消费 HIR；目标为 Linux x86-64 |
+| 原生后端 | `crates/novella-codegen/src/` | `emit_object` 只消费 HIR；后端由 `TargetSpec.emit` 决定（`x86_64-linux` / `x86_64-bare`） |
+| 目标描述 / 自定义目标 | `crates/novella-target/src/spec.rs` + `builtin/*.json` | 新增目标只改 JSON；`validate()` 是唯一不变量入口 |
+| 条件编译谓词 | `crates/novella-target/src/cfg.rs` | 求值器与 `--cfg`/`--check-cfg` 同源；sema 的 `crates/novella-sema/src/cfg.rs` 只做 AST 裁剪 |
 | HIR 降级入口 | `crates/novella-hir/src/build.rs`（`build_hir`） | AST → `HirProgram`；类型取自 `sema.expression_types` / `annotation_types` / `declaration_types`，无法定型即 `BuildError` |
 | 语义分析入口 | `crates/novella-sema/src/lib.rs`（`analyze` / `analyze_with`） | 五阶段管线：模块加载→声明收集→导入绑定→类型注册→逐模块检查；实现在 `module/`（mod/loader/resolve_path）、`resolve.rs`、`symbol.rs`、`ty.rs`、`check/`（mod/type_defs/decl）、`typecheck/`（mod/body/expr/member/call/unsafe_rules）。**词法/语法只在 loader 内各跑一次**，产物经 `SemaResult.modules`（`ModuleOutput`）交还下游 |
 | sema 规则覆盖状态 | `docs/sema-coverage.md` | 唯一权威矩阵：每条 design 规则 / 每个 AST 变体一行，标注 已实现/部分/缺失/待决策；当前状态以该矩阵为准 |

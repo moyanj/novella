@@ -1,8 +1,15 @@
 //! 编译各阶段共享的原生目标与运行时契约；不混用宿主条件与目标条件。
+//!
+//! 本模块只放**值类型**与旧的目标枚举；完整的目标描述（`TargetSpec`）、
+//! 内置目标集合与描述加载在 `novella-target`，避免 core 反向依赖。
 
 use std::{fmt, str::FromStr};
 
 use serde::{Deserialize, Serialize};
+
+mod types;
+
+pub use types::{EmitBackend, Endian, LinkerFlavor, RelocMode, TargetTriple};
 
 /// 已验证的原生发射平台；未实现的 triple 必须显式拒绝。
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -15,6 +22,9 @@ pub enum TargetPlatform {
 }
 
 impl TargetPlatform {
+    /// 全部内置目标，顺序即 `--print target-list` 的输出顺序。
+    pub const ALL: [Self; 2] = [Self::LinuxX86_64, Self::BareMetalX86_64];
+
     pub const fn triple(self) -> &'static str {
         match self {
             Self::LinuxX86_64 => "x86_64-unknown-linux-gnu",

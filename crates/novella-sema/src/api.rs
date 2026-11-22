@@ -255,6 +255,8 @@ pub struct SemaResult {
     pub analysis_target: crate::AnalysisTarget,
     /// 入口与链接策略由语义阶段传递，后续阶段不得重新猜测。
     pub build_target: novella_core::target::BuildTarget,
+    /// 目标描述；HIR 与后端据此决定指针宽度、目标特性与发射后端。
+    pub build_spec: novella_target::TargetSpec,
     /// 入口模块显式关闭语言 main 入口检查与包装。
     pub no_main: bool,
     /// 入口模块显式关闭默认标准库环境。

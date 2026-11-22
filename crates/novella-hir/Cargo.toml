@@ -8,4 +8,5 @@ license.workspace = true
 novella-core.workspace = true
 novella-ast.workspace = true
 novella-sema.workspace = true
+novella-target.workspace = true
 serde.workspace = true

@@ -1,0 +1,15 @@
+{
+  "triple": "x86_64-unknown-linux-gnu",
+  "os": "linux",
+  "env": "gnu",
+  "llvm-target": "x86_64-unknown-linux-gnu",
+  "reloc-mode": "pic",
+  "runtime": "managed",
+  "default-code-model": "small",
+  "has-float": true,
+  "requires-no-std": false,
+  "emit": "x86_64-linux",
+  "linker-flavor": "clang",
+  "linker-args": ["-lm"],
+  "is-like-linux": true
+}

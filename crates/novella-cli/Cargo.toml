@@ -12,6 +12,7 @@ novella-codegen.workspace = true
 novella-core.workspace = true
 novella-sema = { version = "0.1.0", path = "../novella-sema" }
 novella-hir = { version = "0.1.0", path = "../novella-hir" }
+novella-target = { version = "0.1.0", path = "../novella-target" }
 tempfile = "3.27.0"
 toml = "1.1.8"
 blake3 = "1.8.6"

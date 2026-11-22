@@ -9,4 +9,5 @@ novella-core.workspace = true
 novella-ast.workspace = true
 novella-lexer.workspace = true
 novella-parser.workspace = true
+novella-target.workspace = true
 stacker.workspace = true

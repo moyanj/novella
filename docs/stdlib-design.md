@@ -216,13 +216,26 @@ pub func fabs(x: f64) -> f64;
 
 ### 5.3 `std:io`
 
+**已实现部分**（`std/io.nov`，2026-11-22）：只做 stdout，系统边界直接用 libc
+`write(2)` / `abort`，编码由 `String.writeUtf8` 承担（`data` 留在定义模块内，
+不走 `pkg` 字段也不需要 `asBytes` 拷贝）：
+
+```novella
+pub func print(message: String);     // 全部字节，不追加换行
+pub func println(message: String);   // 追加一个 LF；空串只输出换行
+```
+
+- 逐 UTF-16 码元编码为 UTF-8：代理对合成 4 字节，**孤立代理码元写 U+FFFD**。
+- `null` 实参不写任何字节；缓冲区上界 `length() * 3 + 4`，分配失败调用 `abort`。
+- 不显式 flush；裸机目标不提供本模块（§2.9）。
+
+**其余仍是设计草案**：
+
 ```novella
 extern func novella_rt_io_write_stdout(bytes: u8*, len: usize) -> i32;
 extern func novella_rt_io_write_stderr(bytes: u8*, len: usize) -> i32;
 extern func novella_rt_io_read_line(buf: u8*, cap: usize) -> isize;
 
-pub func print(text: String) -> i32;      // 0 成功
-pub func println(text: String) -> i32;
 pub func eprint(text: String) -> i32;
 pub func eprintln(text: String) -> i32;
 pub func readLine() -> String;            // EOF 返回空串（Q3）
@@ -231,12 +244,11 @@ pub func readFile(path: String) -> String;               // 失败返回 ""（Q3
 pub func exists(path: String) -> boolean;
 ```
 
-- "按字节把 `String` 写出去"这一层必须在 `std:io` 自己用 `unsafe` 完成：
-  `String.data` 是 `pri`，`std:io` 不是它的定义模块……**这正是 §9 S0-2 要解决的问题**：
-  要么 `data` / `len` 提升为 `pkg`（同 crate 可读，`Scope::Package` 已存在），要么给
-  `std:string` 加 `pub func asBytes(s: String) -> u8[]`。本稿取后者（`pkg` 字段需要
-  crate 根语义，而标准库的 crate 根 = `std/`，可以用；两条路都可，实现时择一并在
-  §5.0 写明）。
+- 草案曾要求 `print` / `println` 返回 `i32`；已实现版本返回 `void`，因为
+  `write(2)` 的部分写入与 EINTR 重试尚未定义重试策略，先不暴露不可靠的返回值。
+- 草案里 "`std:io` 自己用 unsafe 按字节写出去" 的结论已被修正：`String.data` 是
+  `pri` 且没有 `impl` 块语法，唯一的合法位置是 `string.nov` 内的成员方法，
+  故编码落在 `String.writeUtf8`（§9 S0-2 的 `pkg` 字段与 `asBytes` 两条路都未采用）。
 - 阻塞语义、文件路径规范化属于系统层契约，Q5 定案前只实现 stdout / stderr。
 
 ### 5.4 `std:convert`

@@ -6,8 +6,11 @@ use std::path::{Path, PathBuf};
 #[derive(Debug, Clone)]
 pub struct AnalysisOptions {
     pub target: AnalysisTarget,
-    /// 代码生成目标与运行时策略。
+    /// 代码生成目标与运行时策略；由目标描述派生，下游不得重新猜测。
     pub build_target: novella_core::target::BuildTarget,
+    /// 目标描述；HIR 与后端从这里读取指针宽度、特性与发射后端。
+    pub build_spec: novella_target::TargetSpec,
+    /// 条件编译配置（含 feature 展开、`--cfg` 注入与 `--check-cfg` 白名单）。
     pub cfg: crate::cfg::CfgOptions,
     /// std 模块目录；std:io 对应此目录下的 io.nov。
     pub std_root: Option<PathBuf>,
@@ -22,6 +25,10 @@ impl Default for AnalysisOptions {
         Self {
             target: AnalysisTarget::default(),
             build_target: Default::default(),
+            build_spec: novella_target::resolve_builtin(
+                novella_core::target::TargetPlatform::default(),
+            )
+            .expect("内置目标描述必须有效"),
             cfg: crate::cfg::CfgOptions::default(),
             std_root: environment_root.or_else(|| bundled_root.is_dir().then_some(bundled_root)),
             module_only: false,
@@ -75,6 +82,10 @@ pub fn analyze_with_target(
         entry,
         AnalysisOptions {
             target,
+            build_spec: novella_target::resolve_builtin(
+                novella_core::target::TargetPlatform::default(),
+            )
+            .expect("内置目标描述必须有效"),
             ..Default::default()
         },
     )
@@ -90,9 +101,7 @@ pub fn analyze_with_options(
     sema.module_only = options.module_only;
     sema.target = options.target;
     sema.build_target = options.build_target;
-    options.cfg.target_os = options.build_target.os().to_owned();
-    options.cfg.target_arch = options.build_target.arch().to_owned();
-    options.cfg.target_family = options.build_target.family().to_owned();
+    sema.build_spec = options.build_spec.clone();
     // Phase 0：模块加载（含词法 / 语法分析）
     let (modules, global_diagnostics, module_by_path) =
         module::load_modules(loader, entry, &mut sema.scopes, &mut options);
@@ -209,6 +218,7 @@ pub fn analyze_with_options(
     let mut result = SemaResult {
         analysis_target: sema.target,
         build_target: sema.build_target,
+        build_spec: sema.build_spec,
         no_main: sema.no_main,
         no_std: sema.no_std,
         exports: sema.exports,

@@ -407,6 +407,7 @@ dependencies = [
  "novella-hir",
  "novella-runtime",
  "novella-sema",
+ "novella-target",
  "object 0.41.0",
  "serde",
  "serde_json",
@@ -459,6 +460,7 @@ dependencies = [
  "novella-ast",
  "novella-core",
  "novella-sema",
+ "novella-target",
  "serde",
 ]
 
@@ -480,6 +482,7 @@ dependencies = [
  "novella-lexer",
  "novella-parser",
  "novella-sema",
+ "novella-target",
  "serde",
  "serde_json",
 ]
@@ -506,6 +509,7 @@ dependencies = [
  "novella-core",
  "novella-lexer",
  "novella-parser",
+ "novella-target",
  "stacker",
 ]
 
@@ -515,6 +519,17 @@ version = "0.1.0"
 dependencies = [
  "novella-core",
  "serde_json",
+]
+
+[[package]]
+name = "novella-target"
+version = "0.1.0"
+dependencies = [
+ "novella-ast",
+ "novella-core",
+ "serde",
+ "serde_json",
+ "stacker",
 ]
 
 [[package]]

@@ -15,7 +15,9 @@ use crate::ty::{HirFunctionId, HirType};
 /// 整个程序（仅保留需要发射的模块；模块 id 沿用 sema，可能不连续）。
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct HirProgram {
-    /// 经过语义校验的目标配置，发射与链接必须沿用。
+    /// 经过语义校验的目标描述，发射与链接必须沿用。
+    pub spec: novella_target::TargetSpec,
+    /// 与目标描述一致的运行时目标（runtime / code-model 已合并）。
     pub target: novella_core::target::BuildTarget,
     /// 关闭语言入口包装，允许仅包含导出函数的目标文件。
     pub no_main: bool,

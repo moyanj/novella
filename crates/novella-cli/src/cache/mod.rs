@@ -3,7 +3,7 @@
 mod inputs;
 mod record;
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 use std::fs::{self, File};
 use std::io::{self, Read, Write};
 use std::path::{Path, PathBuf};
@@ -18,6 +18,16 @@ pub(crate) use inputs::TrackingLoader;
 
 const VERSION: u32 = 2;
 
+/// 条件编译摘要：目标派生值、flag、feature、`--cfg` 注入值与 `--check-cfg` 白名单。
+type CfgFingerprint<'a> = (
+    &'a BTreeMap<String, BTreeSet<String>>,
+    &'a BTreeSet<String>,
+    &'a BTreeSet<String>,
+    &'a BTreeMap<String, BTreeSet<String>>,
+    &'a BTreeSet<String>,
+    Option<(&'a BTreeSet<String>, &'a BTreeMap<String, BTreeSet<String>>)>,
+);
+
 #[derive(Serialize)]
 struct Request<'a> {
     version: u32,
@@ -27,8 +37,10 @@ struct Request<'a> {
     cwd: PathBuf,
     entry: &'a Path,
     target: BuildTarget,
+    /// 目标描述的规范化 JSON：自定义目标的任何字段变化都必须使缓存失效。
+    target_spec: String,
     pointer_width: u8,
-    cfg: (&'a str, &'a str, &'a str, &'a BTreeSet<String>),
+    cfg: CfgFingerprint<'a>,
     std_root: Option<&'a Path>,
     module_only: bool,
 }
@@ -78,15 +90,23 @@ impl Cache {
             cwd: std::env::current_dir()?,
             entry,
             target: options.build_target,
+            target_spec: serde_json::to_string(&options.build_spec)?,
             pointer_width: match options.target.pointer_width {
                 PointerWidth::Bits32 => 32,
                 PointerWidth::Bits64 => 64,
             },
+            // 目标派生值与 --cfg 注入值都要参与摘要，否则改动 --cfg 会错误复用缓存。
             cfg: (
-                &options.cfg.target_os,
-                &options.cfg.target_arch,
-                &options.cfg.target_family,
+                &options.cfg.values,
+                &options.cfg.flags,
                 &options.cfg.features,
+                &options.cfg.extra.values,
+                &options.cfg.extra.flags,
+                options
+                    .cfg
+                    .check
+                    .as_ref()
+                    .map(|check| (&check.keys, &check.values)),
             ),
             std_root: options.std_root.as_deref(),
             module_only: options.module_only,

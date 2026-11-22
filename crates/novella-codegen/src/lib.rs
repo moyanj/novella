@@ -105,7 +105,7 @@ impl<'ctx> Types<'ctx> {
             }
         }
         let types = Self {
-            bare_metal: program.target.is_bare_metal(),
+            bare_metal: program.spec.is_like_bare,
             aggregates,
             fields: HashMap::new(),
             destructors: HashMap::new(),
@@ -277,6 +277,19 @@ pub fn emit_object(program: &HirProgram) -> Result<Vec<u8>> {
 /// 验证 LLVM 模块并发射带依赖契约的 ELF 目标文件。
 pub fn emit_artifact(program: &HirProgram) -> Result<ObjectArtifact> {
     program.target.validate().map_err(CodegenError)?;
+    program.spec.validate().map_err(CodegenError)?;
+    let emit = program
+        .spec
+        .emit
+        .ok_or_else(|| CodegenError(format!("目标 {} 不可发射原生代码", program.spec.triple)))?;
+    let bare = emit == novella_core::target::EmitBackend::X86_64Bare;
+    // 目标描述与实际 `BuildTarget` 必须属于同一平台，否则发射出的对象与链接脚本不匹配。
+    if program.spec.platform().map_err(CodegenError)? != program.target.platform {
+        return Err(CodegenError(format!(
+            "目标描述 {} 与目标平台 {} 不一致",
+            program.spec.triple, program.target.platform
+        )));
+    }
     let entry = if program.no_main {
         None
     } else {
@@ -285,20 +298,17 @@ pub fn emit_artifact(program: &HirProgram) -> Result<ObjectArtifact> {
     Target::initialize_x86(&InitializationConfig::default());
     let triple = TargetTriple::create(program.target.triple());
     let target = Target::from_triple(&triple).map_err(|error| CodegenError(error.to_string()))?;
+    // 目标描述自带的 LLVM 特性串；裸机描述里已包含禁用向量寄存器的全部项。
+    let features = program.spec.llvm_features().unwrap_or_default();
     let machine = target
         .create_target_machine(
             &triple,
-            "generic",
-            if program.target.is_bare_metal() {
-                target::FEATURES
-            } else {
-                ""
-            },
+            &program.spec.cpu,
+            &features,
             OptimizationLevel::None,
-            if program.target.is_bare_metal() {
-                RelocMode::Static
-            } else {
-                RelocMode::PIC
+            match program.spec.reloc_mode {
+                novella_core::target::RelocMode::Pic => RelocMode::PIC,
+                novella_core::target::RelocMode::Static => RelocMode::Static,
             },
             match program.target.code_model {
                 TargetCodeModel::Small => CodeModel::Small,
@@ -434,8 +444,8 @@ pub fn emit_artifact(program: &HirProgram) -> Result<ObjectArtifact> {
             .unwrap_or_else(|| context.i32_type().const_zero());
         builder.build_return(Some(&result))?;
     }
-    if program.target.is_bare_metal() {
-        target::attributes(&context, &module);
+    if bare {
+        target::attributes(&context, &module, &features);
     }
     module
         .verify()

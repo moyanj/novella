@@ -227,4 +227,71 @@ pub class String {
         }
         return result;
     }
+
+    // ---- 码元读写（供 `std:io` 等定义环境外的模块使用）----
+    // 字段是 `pri`，只有定义环境（本文件）能直接读写，因此与编码相关的字节访问
+    // 以成员方法形式提供，外部模块只看到安全签名。
+
+    // 以 `u16` 读出第 `index` 个码元（不越界校验，调用方须保证 `index < length()`）。
+    pub func unitAt(self, index: usize) -> u16 {
+        let unit: u16 = 0;
+        unsafe { unit = this.data[index]; }
+        return unit;
+    }
+
+    // 把全部码元按 UTF-8 写入 `out`，返回写入的字节数；孤立代理码元写 U+FFFD。
+    // `out` 至少需要 `length() * 3 + 4` 字节。
+    pri func encodeUtf8(self, out: u8*) -> usize {
+        let used: usize = 0;
+        let index: usize = 0;
+        while (index < this.len) {
+            let unit = this.unitAt(index);
+            index += 1;
+            let code: u32 = unit as u32;
+            if (unit >= 0xD800 and unit <= 0xDBFF) {
+                let lone: boolean = true;
+                if (index < this.len) {
+                    let next = this.unitAt(index);
+                    if (next >= 0xDC00 and next <= 0xDFFF) {
+                        lone = false;
+                        index += 1;
+                        code = 0x10000 + ((code - 0xD800) << 10) + ((next as u32) - 0xDC00);
+                    }
+                }
+                if (lone) {
+                    code = 0xFFFD;
+                }
+            } else if (unit >= 0xDC00 and unit <= 0xDFFF) {
+                code = 0xFFFD;
+            }
+            let at = used;
+            unsafe {
+                if (code < 0x80) {
+                    out[at] = code as u8;
+                    used += 1;
+                } else if (code < 0x800) {
+                    out[at] = (0xC0 + (code >> 6)) as u8;
+                    out[at + 1] = (0x80 + (code & 0x3F)) as u8;
+                    used += 2;
+                } else if (code < 0x10000) {
+                    out[at] = (0xE0 + (code >> 12)) as u8;
+                    out[at + 1] = (0x80 + ((code >> 6) & 0x3F)) as u8;
+                    out[at + 2] = (0x80 + (code & 0x3F)) as u8;
+                    used += 3;
+                } else {
+                    out[at] = (0xF0 + (code >> 18)) as u8;
+                    out[at + 1] = (0x80 + ((code >> 12) & 0x3F)) as u8;
+                    out[at + 2] = (0x80 + ((code >> 6) & 0x3F)) as u8;
+                    out[at + 3] = (0x80 + (code & 0x3F)) as u8;
+                    used += 4;
+                }
+            }
+        }
+        return used;
+    }
+
+    // 以 UTF-8 字节写出自身，返回字节数；需要调用方提供 `length() * 3 + 4` 字节的缓冲区。
+    pub func writeUtf8(self, out: u8*) -> usize {
+        return this.encodeUtf8(out);
+    }
 }

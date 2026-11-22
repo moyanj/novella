@@ -318,7 +318,7 @@ Novella 仍处于**开发预览之前**的阶段。`check` 通过、能降级到
 - ✅ 标量与指针、struct 值语义、class 自动 ARC 与弱引用、字符串的标准库实现、外部 FFI 与 C 回调；
 - ✅ 裸机 x86-64 目标与 `@export` 入口；
 - 🚧 浮点的完整代码生成，元组、泛型单态化、容器、闭包、异常展开（unwind）、async 状态机；
-- 🚧 标准库仍在建设中，目前提供 `std:string`、`std:math` 与默认环境 `std:site`。
+- 🚧 标准库仍在建设中，目前提供 `std:string`、`std:math`、`std:io`（`print` / `println`）与默认环境 `std:site`。
 
 请不要把本文的语言设计草案当作已实现能力的承诺——两者以代码为唯一事实源。
 
