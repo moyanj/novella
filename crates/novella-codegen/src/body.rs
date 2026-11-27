@@ -17,6 +17,7 @@ use crate::{CodegenError, Result, Types, value_type};
 mod arrays;
 mod calls;
 mod control;
+mod dynamic;
 mod instructions;
 mod ownership;
 
@@ -101,8 +102,17 @@ impl<'ctx> Body<'ctx, '_> {
     }
 
     fn allocate(&mut self, id: LocalId, ty: &HirType) -> Result<PointerValue<'ctx>> {
-        if self.slots.contains_key(&id) {
-            return Err(CodegenError(format!("重复定义 HIR 槽位 {}", id.0)));
+        // HIR 槽位由单一指令定义；调用点可能用**等价但不同名**的函数值类型
+        // （如具名函数赋给 lambda 形参）来写同一槽位，因此已分配时按值语义比对。
+        if let Some((_, existing)) = self.slots.get(&id) {
+            return if existing.same_value_type(ty) {
+                Ok(self.slots[&id].0)
+            } else {
+                Err(CodegenError(format!(
+                    "重复定义 HIR 槽位 {}：{:?} / {ty:?}",
+                    id.0, existing
+                )))
+            };
         }
         // 槽位只在入口分配；循环里的初始化仍留在原指令位置。
         let allocator = self.context.create_builder();
@@ -142,7 +152,9 @@ impl<'ctx> Body<'ctx, '_> {
         match (operand, ty) {
             (HirOperand::Local(id), _) => {
                 let (pointer, actual) = self.slot(*id)?;
-                if actual != ty {
+                // 函数值比较忽略函数实体名（lambda 与具名函数可以互相赋值），
+                // 与 HIR 的 same_value_type 语义保持一致。
+                if !actual.same_value_type(ty) {
                     return Err(CodegenError(format!(
                         "HIR 槽位 {} 类型不匹配：{actual:?} / {ty:?}",
                         id.0

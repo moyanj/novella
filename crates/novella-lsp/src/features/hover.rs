@@ -100,6 +100,7 @@ pub(crate) fn describe_kind(kind: OutlineKind) -> &'static str {
         OutlineKind::Struct => "结构体",
         OutlineKind::Trait => "trait",
         OutlineKind::TypeAlias => "类型别名",
+        OutlineKind::AssociatedType => "关联类型",
         OutlineKind::TypeParameter => "类型参数",
         OutlineKind::Parameter => "参数",
         OutlineKind::Field => "字段",

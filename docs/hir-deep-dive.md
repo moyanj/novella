@@ -1,5 +1,7 @@
 # novella-hir 深度技术文档
 
+> 泛型单态化、trait 见证与拥有型 `dyn` 已在此快照之后实现，当前契约见 [HIR 交接文档](hir-handover.md#3-泛型与-trait-的原生契约)。
+
 > 历史快照说明（2026-11-22）：HIR 已新增共享 BuildTarget、no_main、运行时需求和
 > export_name，并支持 GlobalAddress/AggregateConst 及静态全局降级。本文逐行分析保留
 > 编写时状态，关于全局不支持及仅 Linux 后端的旧描述以 [裸机支持](freestanding.md)

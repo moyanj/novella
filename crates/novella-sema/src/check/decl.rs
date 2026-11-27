@@ -55,6 +55,12 @@ pub(crate) fn check_module(sema: &mut Sema, module: ModuleId) {
                     check_member_body(sema, module, member, &this_ty);
                 }
             }
+            Item::Trait(item) => {
+                let owner = Ty::Trait(module, item.name.clone());
+                for member in &item.members {
+                    check_member_body(sema, module, member, &owner);
+                }
+            }
             Item::Statement(stmt) => {
                 if !matches!(
                     &**stmt,
@@ -90,12 +96,13 @@ fn check_member_body(sema: &mut Sema, module: ModuleId, member: &ClassMember, th
     let directives = match member {
         ClassMember::Field(f) => &f.directives,
         ClassMember::Method(m) => &m.directives,
+        ClassMember::AssociatedType(_) => return,
     };
     for directive in directives {
         sema.type_error(module, directive.span, "成员上的编译器指令尚未实现");
     }
     match member {
-        ClassMember::Field(_) => {} // 已在字段定型阶段检查，不能再次登记初值。
+        ClassMember::Field(_) | ClassMember::AssociatedType(_) => {} // 已在字段定型阶段检查，不能再次登记初值。
         ClassMember::Method(method) => {
             typecheck::check_method_defaults(sema, module, this_ty, method);
             let (_, owner) = typecheck::this_ty_key(this_ty);

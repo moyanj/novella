@@ -176,6 +176,7 @@ impl FunctionSig {
             params,
             ret: Box::new(self.ret.view()),
             type_param_count: self.type_param_count,
+            type_parameters: self.type_params.clone(),
             is_async: self.is_async,
             is_extern: self.is_extern,
             receiver,
@@ -224,6 +225,15 @@ pub(crate) enum Ty {
     /// 具名泛型实例保留实参；不与未实例化的类型定义混同。
     Applied(Box<Ty>, Vec<Ty>),
     Future(Box<Ty>),
+    Dynamic {
+        trait_ref: Box<Ty>,
+        bindings: Vec<(String, Ty)>,
+    },
+    Associated {
+        receiver: Box<Ty>,
+        trait_ref: Box<Ty>,
+        name: String,
+    },
     Object(std::collections::BTreeMap<String, Ty>),
     /// struct 类型（按模块 + 名名义判等）
     Struct(ModuleId, String),
@@ -262,6 +272,25 @@ impl Ty {
                 TypeView::Applied(Box::new(base.view()), args.iter().map(Ty::view).collect())
             }
             Ty::Future(inner) => TypeView::Future(Box::new(inner.view())),
+            Ty::Dynamic {
+                trait_ref,
+                bindings,
+            } => TypeView::Dynamic {
+                trait_ref: Box::new(trait_ref.view()),
+                bindings: bindings
+                    .iter()
+                    .map(|(name, ty)| (name.clone(), ty.view()))
+                    .collect(),
+            },
+            Ty::Associated {
+                receiver,
+                trait_ref,
+                name,
+            } => TypeView::Associated {
+                receiver: Box::new(receiver.view()),
+                trait_ref: Box::new(trait_ref.view()),
+                name: name.clone(),
+            },
             Ty::Object(fields) => {
                 TypeView::Object(fields.iter().map(|(n, t)| (n.clone(), t.view())).collect())
             }
@@ -338,6 +367,10 @@ pub(crate) struct MethodSig {
 /// struct 定义。
 #[derive(Debug, Clone)]
 pub(crate) struct StructDef {
+    pub trait_types: Vec<Ty>,
+    pub heritage: Vec<TypeExpr>,
+    pub span: Span,
+    pub associated: Vec<(Ty, String, Ty)>,
     pub type_params: Vec<String>,
     pub fields: Vec<FieldDef>,
     pub methods: HashMap<String, MethodSig>,
@@ -347,6 +380,7 @@ pub(crate) struct StructDef {
 /// class 定义。
 #[derive(Debug, Clone)]
 pub(crate) struct ClassDef {
+    pub associated: Vec<(Ty, String, Ty)>,
     pub parent_type: Option<Ty>,
     pub trait_types: Vec<Ty>,
     pub type_params: Vec<String>,
@@ -369,6 +403,7 @@ pub(crate) struct ClassDef {
 /// trait 定义（D04：登记成员签名，供 class 实现一致性检查）。
 #[derive(Debug, Clone)]
 pub(crate) struct TraitDef {
+    pub associated: HashMap<String, Span>,
     pub type_params: Vec<String>,
     pub type_param_count: usize,
     /// 要求实现的方法（按名索引；抽象 trait 方法的签名）
@@ -440,6 +475,25 @@ impl fmt::Display for Ty {
             }
             Ty::Function(_) => write!(f, "<函数>"),
             Ty::Future(inner) => write!(f, "Future<{inner}>"),
+            Ty::Associated { receiver, name, .. } => write!(f, "{receiver}.{name}"),
+            Ty::Dynamic {
+                trait_ref,
+                bindings,
+            } => {
+                write!(f, "dyn {trait_ref}")?;
+                if !bindings.is_empty() {
+                    write!(
+                        f,
+                        "<{}>",
+                        bindings
+                            .iter()
+                            .map(|(name, ty)| format!("{name} = {ty}"))
+                            .collect::<Vec<_>>()
+                            .join(", ")
+                    )?;
+                }
+                Ok(())
+            }
             Ty::Object(fields) => write!(
                 f,
                 "{{{}}}",

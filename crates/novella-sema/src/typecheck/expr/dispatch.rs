@@ -59,7 +59,12 @@ pub(super) fn check_expr_inner(sema: &mut Sema, ctx: &mut BodyCtx, expr: &Expres
         }
         Expression::ObjectLiteral { properties, .. } => check_object_literal(sema, ctx, properties),
         Expression::This { span } => match &ctx.this_ty {
-            Some(ty) => ty.clone(),
+            Some(ty) => ctx
+                .type_env
+                .get("Self")
+                .filter(|_| matches!(crate::traits::nominal_base(ty), Ty::Trait(..)))
+                .unwrap_or(ty)
+                .clone(),
             None => {
                 sema.type_error(ctx.module, *span, "`this` 只能在方法内使用");
                 Ty::Error

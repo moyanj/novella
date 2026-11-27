@@ -46,7 +46,9 @@ antlr4 -lib target/antlr-align/gen/grammar -o target/antlr-align/gen grammar/Nov
 
 - 标识符是**硬保留字**：`novella-parser` 只接受 `TokenKind::Identifier`
   （`except_identifier` 及各处校验），因此 `func new()`、`obj.type` 这类写法当前不可解析。
-  若需要软关键字，应先放宽 parser 侧校验，再放宽文法的 `identifier` 规则。
+  上下文关键字 `dyn` 仍是普通标识符，仅在类型位且后接 trait 名时触发动态类型语法。
+- ANTLR 直接使用词法器 token 时，嵌套泛型结束的 `>>` 仍是右移 token；手写 parser 会在
+  类型上下文拆成两个 `>`。用 ANTLR 校验此类输入时，须把两个 `>` 用空格分开。
 - for-init 段不带 `let` / `const`（AST 规定统一按 `let` 语义承载）；`for (i = 0; ...)` 既可读作
   声明也可读作赋值，文法按备选顺序取「声明」，与 `ForInit` 的注释一致。
 - 返回类型注解沿用 AST 文档所记片段 `typeAnnotation? ReturnArrow? typeExpression?`，

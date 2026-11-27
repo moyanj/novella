@@ -2,32 +2,32 @@
 use super::*;
 use novella_core::target::{RuntimeMode, RuntimeRequirements};
 
-pub(super) fn managed(sema: &SemaResult, ty: &HirType) -> bool {
-    fn visit(sema: &SemaResult, ty: &HirType, seen: &mut HashSet<(ModuleId, String)>) -> bool {
+pub(super) fn managed(sema: &SemaResult, instances: &Instances, ty: &HirType) -> bool {
+    fn visit(
+        sema: &SemaResult,
+        instances: &Instances,
+        ty: &HirType,
+        seen: &mut HashSet<(ModuleId, String)>,
+    ) -> bool {
         match ty {
-            HirType::Class(..) | HirType::Trait(..) => true,
-            HirType::Array(element, length) => *length != 0 && visit(sema, element, seen),
-            HirType::Tuple(items) => items.iter().any(|ty| visit(sema, ty, seen)),
+            HirType::Dynamic(_) | HirType::Class(..) | HirType::Trait(..) => true,
+            HirType::Array(element, length) => {
+                *length != 0 && visit(sema, instances, element, seen)
+            }
+            HirType::Tuple(items) => items.iter().any(|ty| visit(sema, instances, ty, seen)),
             HirType::Struct(module, name) => {
-                if !seen.insert((*module, name.clone())) {
-                    return false;
-                }
-                sema.types
-                    .summaries
-                    .iter()
-                    .find(|summary| summary.module == *module && summary.name == *name)
-                    .is_some_and(|summary| {
-                        summary.fields.iter().filter(|f| !f.is_static).any(|field| {
-                            field.is_weak
-                                || HirType::from_view(&field.ty, &mut function_id_of)
-                                    .is_ok_and(|ty| visit(sema, &ty, seen))
+                seen.insert((*module, name.clone()))
+                    && instance_fields(sema, instances, *module, name, Span { start: 0, end: 0 })
+                        .is_ok_and(|fields| {
+                            fields.iter().any(|field| {
+                                field.is_weak || visit(sema, instances, &field.ty, seen)
+                            })
                         })
-                    })
             }
             _ => false,
         }
     }
-    visit(sema, ty, &mut HashSet::new())
+    visit(sema, instances, ty, &mut HashSet::new())
 }
 
 fn floating(ty: &HirType) -> bool {
@@ -44,6 +44,7 @@ fn floating(ty: &HirType) -> bool {
 
 pub(super) fn validate(
     sema: &SemaResult,
+    instances: &Instances,
     modules: &[HirModule],
 ) -> Result<RuntimeRequirements, BuildError> {
     // 约束以目标描述为准：自定义目标同样声明 requires-no-std / is-like-bare。
@@ -89,9 +90,9 @@ pub(super) fn validate(
                         .iter()
                         .chain(std::iter::once(&function.signature.ret))
                     {
-                        check_type(sema, ty, module.id, &mut required)?;
+                        check_type(sema, instances, ty, module.id, &mut required)?;
                     }
-                    block(sema, &function.body, module.id, &mut required)?;
+                    block(sema, instances, &function.body, module.id, &mut required)?;
                 }
                 HirItem::ExternFunction(function) => {
                     if !sema.build_target.has_float()
@@ -104,7 +105,9 @@ pub(super) fn validate(
                         .with_site(module.id, Span { start: 0, end: 0 }));
                     }
                 }
-                HirItem::Global(global) => check_type(sema, &global.ty, module.id, &mut required)?,
+                HirItem::Global(global) => {
+                    check_type(sema, instances, &global.ty, module.id, &mut required)?
+                }
             }
         }
     }
@@ -113,6 +116,7 @@ pub(super) fn validate(
 
 fn check_type(
     sema: &SemaResult,
+    instances: &Instances,
     ty: &HirType,
     module: ModuleId,
     required: &mut bool,
@@ -123,7 +127,7 @@ fn check_type(
         })
         .with_site(module, Span { start: 0, end: 0 }));
     }
-    if managed(sema, ty) {
+    if managed(sema, instances, ty) {
         require(sema, module, required)?;
     }
     Ok(())
@@ -142,30 +146,31 @@ fn require(sema: &SemaResult, module: ModuleId, required: &mut bool) -> Result<(
 
 fn block(
     sema: &SemaResult,
+    instances: &Instances,
     body: &HirBlock,
     module: ModuleId,
     required: &mut bool,
 ) -> Result<(), BuildError> {
     for statement in &body.stmts {
         match statement {
-            HirStmt::Block(body) => block(sema, body, module, required)?,
+            HirStmt::Block(body) => block(sema, instances, body, module, required)?,
             HirStmt::If {
                 cond,
                 then_block,
                 else_block,
             } => {
-                block(sema, &cond.prelude, module, required)?;
-                block(sema, then_block, module, required)?;
+                block(sema, instances, &cond.prelude, module, required)?;
+                block(sema, instances, then_block, module, required)?;
                 if let Some(body) = else_block {
-                    block(sema, body, module, required)?;
+                    block(sema, instances, body, module, required)?;
                 }
             }
             HirStmt::Loop { cond, body, step } => {
                 if let Some(cond) = cond {
-                    block(sema, &cond.prelude, module, required)?;
+                    block(sema, instances, &cond.prelude, module, required)?;
                 }
-                block(sema, body, module, required)?;
-                block(sema, step, module, required)?;
+                block(sema, instances, body, module, required)?;
+                block(sema, instances, step, module, required)?;
             }
             HirStmt::Instr(instruction) => {
                 let types: Vec<&HirType> = match instruction {
@@ -185,6 +190,15 @@ fn block(
                     | HirInstr::Alloc { ty, .. }
                     | HirInstr::Adopt { ty, .. } => vec![ty],
                     HirInstr::Call { dst_ty, .. } => dst_ty.iter().collect(),
+                    HirInstr::DynPack { source, ty, .. } => vec![source, ty],
+                    HirInstr::DynCall {
+                        receiver_ty,
+                        signature,
+                        ..
+                    } => std::iter::once(receiver_ty)
+                        .chain(&signature.params)
+                        .chain(std::iter::once(&signature.ret))
+                        .collect(),
                     HirInstr::Unary { dst_ty, .. } => vec![dst_ty],
                     HirInstr::Binary {
                         lhs_ty,
@@ -210,7 +224,7 @@ fn block(
                     }
                 };
                 for ty in types {
-                    check_type(sema, ty, module, required)?;
+                    check_type(sema, instances, ty, module, required)?;
                 }
             }
             HirStmt::Break

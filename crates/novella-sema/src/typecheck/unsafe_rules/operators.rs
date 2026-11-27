@@ -111,6 +111,33 @@ pub(super) fn check_binary_operands(
             _ => Ty::Unknown,
         };
     }
+    // 投影可作为不透明值传递，但未固定其实际类型时不能用于算术。
+    if matches!(
+        op,
+        BinaryOp::Plus
+            | BinaryOp::Minus
+            | BinaryOp::Multiply
+            | BinaryOp::Divide
+            | BinaryOp::Modulus
+    ) {
+        let mut invalid = false;
+        for (operand, ty) in [(left, &lhs), (right, &rhs)] {
+            if matches!(ty, Ty::Associated { .. }) {
+                sema.type_error(
+                    ctx.module,
+                    operand.span(),
+                    format!(
+                        "未约束的关联类型 `{ty}` 不能当作具体类型参与 `{}` 运算",
+                        binary_op_text(op)
+                    ),
+                );
+                invalid = true;
+            }
+        }
+        if invalid {
+            return Ty::Error;
+        }
+    }
     match op {
         BinaryOp::LogicalAnd | BinaryOp::LogicalOr => {
             if !matches!(lhs, Ty::Boolean) || !matches!(rhs, Ty::Boolean) {
@@ -384,6 +411,9 @@ pub(crate) fn check_cast(
     let source = check_expr(sema, ctx, expr);
     let target = sema.resolve_type(ctx.module, ctx.scope, ty, &ctx.type_env);
     if source.is_opaque() || target.is_opaque() {
+        return target;
+    }
+    if !ty_eq(&source, &target) && sema.record_dyn_conversion(ctx.module, span, &target, &source) {
         return target;
     }
     // 数值互转（含 int→float）本身安全；null 可显式转任意可空类型

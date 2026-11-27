@@ -15,6 +15,7 @@ mod type_defs;
 pub(crate) use decl::check_module;
 pub(crate) use type_defs::{
     build_type_defs, check_inherited_signatures, check_value_layout_cycles, is_abstract_class,
+    register_associated_definitions, register_owner_bounds, register_trait_items,
     resolve_class_parents,
 };
 

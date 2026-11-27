@@ -1,5 +1,7 @@
 # Novella 编译器：工作流程与代码架构
 
+> 这是 2026-11-21 的实现快照。泛型和 trait 的当前阶段职责及支持范围见 [编译器设计](compiler-design.md) 与 [HIR 交接文档](hir-handover.md)。
+
 > 2026-11-21 · 对应当前 workspace（Rust edition 2024，11 个 crate）
 >
 > 这篇文档想把整个编译器讲清楚：一份源码进来，经过了哪些阶段，每个阶段把数据变成了什么，

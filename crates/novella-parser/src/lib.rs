@@ -568,7 +568,7 @@ impl Parser {
     ) -> Option<Item> {
         let name = self.expect(TokenKind::Identifier)?;
         let type_parameters = self.parse_type_parameters();
-        let (members, end) = self.parse_member_block()?;
+        let (members, end) = self.parse_member_block(true)?;
         Some(Item::Trait(TraitItem {
             directives,
             name: name.slice,
@@ -595,7 +595,7 @@ impl Parser {
         let name = self.expect(TokenKind::Identifier)?;
         let type_parameters = self.parse_type_parameters();
         let parent = self.parse_class_parent();
-        let (members, end) = self.parse_member_block()?;
+        let (members, end) = self.parse_member_block(false)?;
         Some(Item::Class(ClassItem {
             directives,
             name: name.slice,
@@ -686,16 +686,21 @@ impl Parser {
         parent
     }
 
-    /// 解析成员块 `{ member }`，返回成员列表与块的结束位置。
-    fn parse_member_block(&mut self) -> Option<(Vec<ClassMember>, usize)> {
+    /// 解析成员块 `{ member }`，按所属类型区分关联类型的声明与定义。
+    fn parse_member_block(&mut self, in_trait: bool) -> Option<(Vec<ClassMember>, usize)> {
         self.expect(TokenKind::OpenBrace)?;
         let mut members = vec![];
         while !self.check(TokenKind::CloseBrace) && !self.at_eof() {
             let before = self.pos;
-            if let Some(member) = self.parse_member() {
+            if self.check(TokenKind::Type) {
+                if let Some(member) = self.parse_associated_type_member(in_trait) {
+                    members.push(ClassMember::AssociatedType(member));
+                } else {
+                    self.recover_to_statement_boundary();
+                }
+            } else if let Some(member) = self.parse_member() {
                 members.push(member);
-            }
-            if self.pos == before {
+            } else if self.pos == before {
                 // 无法识别成员：跳到下一个分号或本行行尾，保证前进
                 self.recover_to_statement_boundary();
             }
@@ -993,8 +998,8 @@ impl Parser {
     /// → [`Item::Struct`]。
     ///
     /// 文法中 struct 与 class 同构（仅缺 `parent`），故复用成员块解析。
-    /// 继承子句按 class 语法解析后保留在 [`StructItem::heritage`]（D-06）：
-    /// struct 是否允许继承是语义问题，由语义分析判定并给出诊断，parser 只保留信息。
+    /// trait 实现列表按 class 的子句语法解析后保留在 [`StructItem::heritage`]；
+    /// 各条目是否合法由语义分析判定。
     /// `start` 为整条 item 的 span 起点（见 [`Parser::parse_item`]）。
     fn parse_struct(
         &mut self,
@@ -1005,7 +1010,7 @@ impl Parser {
         let name = self.expect(TokenKind::Identifier)?;
         let type_parameters = self.parse_type_parameters();
         let heritage = self.parse_class_parent();
-        let (members, end) = self.parse_member_block()?;
+        let (members, end) = self.parse_member_block(false)?;
         Some(Item::Struct(StructItem {
             directives,
             name: name.slice,

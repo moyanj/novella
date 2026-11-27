@@ -177,6 +177,15 @@ pub fn analyze_with_options(
         if !sema.no_std {
             resolve::bind_site_imports(&mut sema);
         }
+        // 先登记全部模块的关联类型名称，再解析约束、显式实现及关联定义。
+        for id in 0..sema.modules.len() {
+            check::register_trait_items(&mut sema, id);
+        }
+        for id in 0..sema.modules.len() {
+            check::register_owner_bounds(&mut sema, id);
+        }
+        check::resolve_class_parents(&mut sema);
+        check::register_associated_definitions(&mut sema);
         // Phase 2b：构建类型注册表（字段 / 方法签名）
         for id in 0..sema.modules.len() {
             if loader.is_cancelled() {
@@ -187,8 +196,7 @@ pub fn analyze_with_options(
         if loader.is_cancelled() {
             return false;
         }
-        // Phase 2c：注册继承关系，再按依赖定型字段、全局变量和函数返回类型。
-        check::resolve_class_parents(&mut sema);
+        // Phase 2c：按依赖定型字段、全局变量和函数返回类型。
         check::returns::collect(&mut sema);
         check::globals::collect(&mut sema);
         check::fields::check_fields(&mut sema);
@@ -209,8 +217,13 @@ pub fn analyze_with_options(
         for ((module, span), ty) in sema.generic_uses.clone() {
             let subst = ty::instance_substitution(&sema, &ty);
             for (param, actual) in &subst {
-                if let Some(bound) = sema.type_param_bounds.get(param) {
-                    let bound = ty::substitute_type_params(bound, &subst);
+                for bound in sema
+                    .type_param_bounds
+                    .get(param)
+                    .cloned()
+                    .unwrap_or_default()
+                {
+                    let bound = sema.instantiate_type(&bound, &subst);
                     if !sema.satisfies_bound(&bound, actual) {
                         sema.type_error(
                             module,
@@ -222,6 +235,7 @@ pub fn analyze_with_options(
             }
         }
 
+        sema.check_dyn_safety();
         !loader.is_cancelled()
     })();
     if !complete {
@@ -233,6 +247,7 @@ pub fn analyze_with_options(
 
     crate::freestanding::validate(&mut sema);
     let string_type = sema.string_type().map(|ty| ty.view());
+    let trait_implementations = sema.trait_implementations();
     let types = sema.type_summaries();
     let definitions = sema.definition_index();
     let codegen_modules = crate::dependencies::codegen_modules(&sema);
@@ -274,6 +289,9 @@ pub fn analyze_with_options(
         string_type,
         fstrings: sema.fstrings,
         declarations: Default::default(),
+        call_instances: sema.call_instances,
+        dyn_conversions: sema.dyn_conversions,
+        trait_implementations,
         exhaustive_matches: sema.exhaustive_matches,
         diagnostics: DiagnosticReport {
             modules: module_diagnostics,

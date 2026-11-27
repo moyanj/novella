@@ -115,7 +115,7 @@ impl BodyBuilder<'_> {
         let (HirType::Class(module, name) | HirType::Struct(module, name)) = ty else {
             return Ok(false);
         };
-        Ok(instance_fields(self.sema, *module, name, span)?[index].is_weak)
+        Ok(instance_fields(self.sema, &self.instances, *module, name, span)?[index].is_weak)
     }
 
     pub(super) fn build_address(

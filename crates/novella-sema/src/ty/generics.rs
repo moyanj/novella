@@ -34,6 +34,24 @@ pub(crate) fn member_substitution(
     ty: &Ty,
     owner: &(ModuleId, String),
 ) -> HashMap<String, Ty> {
+    if matches!(sema.type_defs.get(owner), Some(TypeDef::Trait(_))) {
+        let Some(trait_ref) = sema
+            .implemented_traits(ty)
+            .into_iter()
+            .find(|t| crate::typecheck::this_ty_key(t) == *owner)
+        else {
+            return HashMap::new();
+        };
+        let mut subst = instance_substitution(sema, &trait_ref);
+        subst.insert(crate::traits::self_key(owner.0, &owner.1), ty.clone());
+        return subst;
+    }
+    if !matches!(
+        crate::traits::nominal_base(ty),
+        Ty::Struct(..) | Ty::Class(..) | Ty::Trait(..)
+    ) {
+        return HashMap::new();
+    }
     let mut current = ty.clone();
     let mut visited = std::collections::HashSet::new();
     loop {
@@ -61,44 +79,61 @@ pub(crate) fn substitute_type_params(ty: &Ty, subst: &std::collections::HashMap<
     if subst.is_empty() {
         return ty.clone();
     }
+    rewrite_type(ty, &mut |ty| match ty {
+        Ty::TypeParam(name) => subst.get(name).cloned(),
+        _ => None,
+    })
+}
+
+/// 逐层重写类型；命中的节点由调用者完全替换，不再递归进入替换值。
+pub(crate) fn rewrite_type(ty: &Ty, rewrite: &mut impl FnMut(&Ty) -> Option<Ty>) -> Ty {
+    if let Some(ty) = rewrite(ty) {
+        return ty;
+    }
     match ty {
-        Ty::TypeParam(name) => subst.get(name).cloned().unwrap_or_else(|| ty.clone()),
         Ty::Applied(base, args) => Ty::Applied(
             base.clone(),
-            args.iter()
-                .map(|t| substitute_type_params(t, subst))
-                .collect(),
+            args.iter().map(|t| rewrite_type(t, rewrite)).collect(),
         ),
-        Ty::Future(inner) => Ty::Future(Box::new(substitute_type_params(inner, subst))),
+        Ty::Future(inner) => Ty::Future(Box::new(rewrite_type(inner, rewrite))),
+        Ty::Associated {
+            receiver,
+            trait_ref,
+            name,
+        } => Ty::Associated {
+            receiver: Box::new(rewrite_type(receiver, rewrite)),
+            trait_ref: Box::new(rewrite_type(trait_ref, rewrite)),
+            name: name.clone(),
+        },
+        Ty::Dynamic {
+            trait_ref,
+            bindings,
+        } => Ty::Dynamic {
+            trait_ref: Box::new(rewrite_type(trait_ref, rewrite)),
+            bindings: bindings
+                .iter()
+                .map(|(n, t)| (n.clone(), rewrite_type(t, rewrite)))
+                .collect(),
+        },
         Ty::Object(fields) => Ty::Object(
             fields
                 .iter()
-                .map(|(n, t)| (n.clone(), substitute_type_params(t, subst)))
+                .map(|(n, t)| (n.clone(), rewrite_type(t, rewrite)))
                 .collect(),
         ),
-        Ty::Array(element, length) => {
-            Ty::Array(Box::new(substitute_type_params(element, subst)), *length)
+        Ty::Array(element, length) => Ty::Array(Box::new(rewrite_type(element, rewrite)), *length),
+        Ty::Pointer(element) => Ty::Pointer(Box::new(rewrite_type(element, rewrite))),
+        Ty::Tuple(elements) => {
+            Ty::Tuple(elements.iter().map(|e| rewrite_type(e, rewrite)).collect())
         }
-        Ty::Pointer(element) => Ty::Pointer(Box::new(substitute_type_params(element, subst))),
-        Ty::Tuple(elements) => Ty::Tuple(
-            elements
-                .iter()
-                .map(|e| substitute_type_params(e, subst))
-                .collect(),
-        ),
-        Ty::Union(members) => Ty::Union(
-            members
-                .iter()
-                .map(|m| substitute_type_params(m, subst))
-                .collect(),
-        ),
+        Ty::Union(members) => Ty::Union(members.iter().map(|m| rewrite_type(m, rewrite)).collect()),
         Ty::Function(sig) => {
             let params = sig
                 .params
                 .iter()
                 .map(|p| ParamSig {
                     name: p.name.clone(),
-                    ty: substitute_type_params(&p.ty, subst),
+                    ty: rewrite_type(&p.ty, rewrite),
                     has_default: p.has_default,
                 })
                 .collect();
@@ -106,7 +141,7 @@ pub(crate) fn substitute_type_params(ty: &Ty, subst: &std::collections::HashMap<
                 module: sig.module,
                 name: sig.name.clone(),
                 params,
-                ret: substitute_type_params(&sig.ret, subst),
+                ret: rewrite_type(&sig.ret, rewrite),
                 type_param_count: sig.type_param_count,
                 type_params: sig.type_params.clone(),
                 is_async: sig.is_async,

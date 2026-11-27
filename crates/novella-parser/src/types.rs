@@ -15,8 +15,14 @@
 //!   （仅 lambda 返回注解 / match 类型模式等「类型之后紧跟外层 `=>`」的位置例外，
 //!   由 [`Parser::allow_arrow_after_type`] 标记）。
 
-use novella_ast::types::{FunctionType, Param, TypeExpr, TypeParameter};
-use novella_core::{Span, token::TokenKind};
+use novella_ast::{
+    program::AssociatedTypeMember,
+    types::{AssociatedTypeBinding, FunctionType, Param, TypeExpr, TypeParameter},
+};
+use novella_core::{
+    Span,
+    token::{Token, TokenKind},
+};
 
 use crate::Parser;
 
@@ -180,7 +186,7 @@ impl Parser {
         } else {
             vec![]
         };
-        let (params, _) = self.parse_typed_params()?;
+        let (params, _) = self.parse_function_type_params()?;
         self.expect_type_arrow()?;
         let return_type = self.parse_type_expr()?;
         let end = return_type.span().end;
@@ -252,7 +258,7 @@ impl Parser {
         ))
     }
 
-    /// 解析主类型（对应文法 `primaryType`）：`null` / 类型引用，
+    /// 解析主类型（对应文法 `primaryType`）：`null` / 类型引用 / 动态 trait 类型，
     /// 并处理 `[]` 与 `*` 后缀。后缀可叠加（`int*[]`、`int**`）。
     fn parse_primary_type(&mut self) -> Option<TypeExpr> {
         let ty = match self.peek().map(|token| token.kind) {
@@ -263,7 +269,13 @@ impl Parser {
                     span: token.span,
                 }
             }
-            Some(TokenKind::Identifier) => self.parse_type_reference()?,
+            Some(TokenKind::Identifier)
+                if self.peek().is_some_and(|token| token.slice == "dyn")
+                    && self.check_n(TokenKind::Identifier, 1) =>
+            {
+                self.parse_dynamic_type()?
+            }
+            Some(TokenKind::Identifier) => self.parse_type_reference(false)?,
             _ => {
                 self.error_here("此处应为类型表达式");
                 return None;
@@ -321,45 +333,128 @@ impl Parser {
         ty
     }
 
-    /// 解析类型引用：`Foo` / `Foo<T>` / `mod.Foo<T>`（对应文法 `typeReference`）。
-    ///
-    /// 限定段（`mod.Foo` 的 `mod`）记入 `qualifier`，末段为类型名；
-    /// 命名空间归属留待语义分析按 `import "mod";` 绑定解析。
-    fn parse_type_reference(&mut self) -> Option<TypeExpr> {
-        let first = self.expect(TokenKind::Identifier)?;
-        let start = first.span.start;
-        let mut qualifier = vec![];
-        let mut name_token = first;
-        // 限定段链：`a.b.C` → qualifier=["a","b"]、name="C"；
-        // `Dot` 后不是标识符时结束类型解析，把 `Dot` 留给外层
-        while self.check(TokenKind::Dot) && self.check_n(TokenKind::Identifier, 1) {
-            self.advance();
-            qualifier.push(name_token.slice);
-            name_token = self.expect(TokenKind::Identifier)?;
-        }
+    /// 解析 `Foo` / `mod.Foo<T>`（对应文法 `typeReference`）。
+    fn parse_type_reference(&mut self, associated_definition: bool) -> Option<TypeExpr> {
+        let (qualifier, name, start) = self.parse_reference_path(associated_definition)?;
         let mut generic_args = vec![];
-        let mut end = name_token.span.end;
+        let mut end = name.span.end;
         if self.eat(TokenKind::LessThan).is_some() {
-            // 泛型实参之间用 `,` 分隔；`>>` 已由 angle 辅助函数按深度拆分
             loop {
                 generic_args.push(self.parse_type_expr()?);
-                if self.eat(TokenKind::Comma).is_some() {
-                    continue;
+                if self.eat(TokenKind::Comma).is_none() {
+                    break;
                 }
-                break;
             }
-            let close = self.expect_angle_close()?;
-            end = close.span.end;
+            end = self.expect_angle_close()?.span.end;
         }
         Some(TypeExpr::Reference {
             qualifier,
-            name: name_token.slice,
+            name: name.slice,
             generic_args,
             span: Span { start, end },
         })
     }
 
-    /// 解析类型参数列表 `<T, U: Bound>`（对应文法 `typeParameters`）。
+    /// 读取引用路径。关联类型定义中的末尾 `.Item =` 不属于 trait 引用。
+    fn parse_reference_path(
+        &mut self,
+        associated_definition: bool,
+    ) -> Option<(Vec<String>, Token, usize)> {
+        let mut name = self.expect(TokenKind::Identifier)?;
+        let start = name.span.start;
+        let mut qualifier = vec![];
+        while self.check(TokenKind::Dot) && self.check_n(TokenKind::Identifier, 1) {
+            if associated_definition && self.check_n(TokenKind::Assign, 2) {
+                break;
+            }
+            self.advance();
+            qualifier.push(name.slice);
+            name = self.expect(TokenKind::Identifier)?;
+        }
+        Some((qualifier, name, start))
+    }
+
+    /// 解析 `dyn Trait<Args, Item = Type>`（对应文法 `dynamicType`）。
+    fn parse_dynamic_type(&mut self) -> Option<TypeExpr> {
+        let start = self.advance()?.span.start;
+        let (qualifier, name, trait_start) = self.parse_reference_path(false)?;
+        let mut end = name.span.end;
+        let mut generic_args = vec![];
+        let mut bindings = vec![];
+        if self.eat(TokenKind::LessThan).is_some() {
+            loop {
+                if self.check(TokenKind::Identifier) && self.check_n(TokenKind::Assign, 1) {
+                    let name = self.expect(TokenKind::Identifier)?;
+                    self.expect(TokenKind::Assign)?;
+                    let ty = self.parse_type_expr()?;
+                    bindings.push(AssociatedTypeBinding {
+                        name: name.slice,
+                        name_span: name.span,
+                        ty,
+                        span: Span {
+                            start: name.span.start,
+                            end: self.last_end(),
+                        },
+                    });
+                } else if bindings.is_empty() {
+                    generic_args.push(self.parse_type_expr()?);
+                } else {
+                    self.error_here("位置泛型实参应写在关联类型绑定之前");
+                    return None;
+                }
+                if self.eat(TokenKind::Comma).is_none() {
+                    break;
+                }
+            }
+            end = self.expect_angle_close()?.span.end;
+        }
+        let trait_ref = TypeExpr::Reference {
+            qualifier,
+            name: name.slice,
+            generic_args,
+            span: Span {
+                start: trait_start,
+                end,
+            },
+        };
+        Some(TypeExpr::Dynamic {
+            trait_ref: Box::new(trait_ref),
+            bindings,
+            span: Span { start, end },
+        })
+    }
+
+    /// trait 中声明 `type Item;`，class / struct 中定义 `type Trait<T>.Item = Type;`。
+    pub(crate) fn parse_associated_type_member(
+        &mut self,
+        in_trait: bool,
+    ) -> Option<AssociatedTypeMember> {
+        let start = self.expect(TokenKind::Type)?.span.start;
+        let qualifier = if in_trait {
+            None
+        } else {
+            let qualifier = self.parse_type_reference(true)?;
+            self.expect(TokenKind::Dot)?;
+            Some(qualifier)
+        };
+        let name = self.expect(TokenKind::Identifier)?;
+        let ty = if in_trait {
+            None
+        } else {
+            self.expect(TokenKind::Assign)?;
+            Some(self.parse_type_expr()?)
+        };
+        let end = self.expect(TokenKind::SemiColon)?.span.end;
+        Some(AssociatedTypeMember {
+            name: name.slice,
+            name_span: name.span,
+            qualifier,
+            ty,
+            span: Span { start, end },
+        })
+    }
+
+    /// 解析类型参数列表 `<T, U: A + B>`（对应文法 `typeParameters`）。
     ///
     /// 前置：游标位于 `<`。
     pub(crate) fn parse_type_parameters(&mut self) -> Vec<TypeParameter> {
@@ -369,16 +464,25 @@ impl Parser {
         }
         while let Some(name_token) = self.expect(TokenKind::Identifier) {
             let mut bound = None;
+            let mut additional_bounds = vec![];
             let mut end = name_token.span.end;
             if self.eat(TokenKind::Colon).is_some()
                 && let Some(ty) = self.parse_type_expr()
             {
-                end = ty.span().end;
+                end = self.last_end();
                 bound = Some(ty);
+                while self.eat(TokenKind::Plus).is_some() {
+                    let Some(ty) = self.parse_type_expr() else {
+                        break;
+                    };
+                    end = self.last_end();
+                    additional_bounds.push(ty);
+                }
             }
             parameters.push(TypeParameter {
                 name: name_token.slice,
                 bound,
+                additional_bounds,
                 span: Span {
                     start: name_token.span.start,
                     end,

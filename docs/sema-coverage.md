@@ -64,6 +64,8 @@
 | T08 | 泛型实参参与类型身份（Box<i32> ≠ Box<string>） | 已确认 D05 | `Ty::Applied` / `ty::ty_eq` | 已实现 | generic-identity 拒绝互赋；generic-struct-ok 保留 i32 实参 | S11 |
 | T09 | 类型参数按声明身份判等 | 已确认 D05 | `ty::param_key` / `resolve/types.rs` | 已实现 | 函数、类型、方法、别名的 T 携带模块与声明位置；泛型覆写按位置重命名 | S11 |
 | T10 | 泛型 arity 检查 | design §5.1 | `resolve.rs::instantiate_type` | 已实现（递归实例化） | 反：`Box<i32, i64>` 报错 | — |
+| T10A | 组合约束和关联类型定义、投影 | [语言设计 §4.6.2](design.md#462-trait关联类型与动态值) | `traits.rs`、`check/type_defs` | 已实现 | 拒绝缺少绑定、重复绑定、未实现的 trait 限定名及多个同名投影 |
+| T10B | 拥有型 `dyn` 的类型和转换 | [语言设计 §4.6.2](design.md#462-trait关联类型与动态值) | `traits.rs`、`DynConversion` | 已实现 | 所有关联类型固定，具体实现及绑定须匹配；静态/泛型方法不入槽，拒绝非对象安全签名 |
 | T11 | 别名展开与循环别名检测 | design §4.4 | `resolve.rs` + `resolving_aliases` | 已实现 | 反：`type A = B; type B = A;` 报错 | S07 |
 | T12 | `T*` 嵌套右结合、`(A \| B)*` | design §5.3 | `parser` + `resolve.rs` | 已实现 | 正：`u8**` 为 `Pointer(Pointer(u8))` | — |
 | T13 | `void*` 解引用 / 算术报错 | design §6.5 S8 | `expr.rs::check_unary` / `unsafe_rules` | 已实现 | 反：`*vp` 报错 | — |
@@ -225,7 +227,7 @@
 - D01：普通赋值 RHS→定位 LHS→写回；复合赋值定位 LHS→读取旧值→RHS→写回。
 - D02 补充：禁止子类字段与父类字段同名及字段/方法相互遮蔽；构造器不继承；self 仅实例方法首参且显式注解须为属主类型；静态方法禁止 self/this。既有可见性、覆写、抽象类决定沿用。
 - D03：读取局部前须在所有可达路径完成赋值；无注解普通形参继续容错，不启动普通参数推导。
-- D04/D05：trait 保持显式括号列表实现，无字段/默认实现；完整显式泛型代入，允许从调用实参递归推导泛型参数，不从期望返回类型反推；冲突或缺失报错；支持现有语法中的 trait 约束。
+- D04/D05：class 与 struct 均通过显式括号列表实现 trait，无 trait 字段或独立 impl；支持方法默认体、关联类型、组合约束和拥有型 `dyn`。允许从调用实参递归推导泛型参数，不从期望返回类型反推；冲突或缺失报错。
 - D06：值 match 必须穷尽；布尔与可判定联合类型模式可无 default，其他要求 default；块分支 void，不允许值/void 混合；重复常量与被前项覆盖的类型分支报错。
 - D07：匿名对象结构类型允许宽对象赋给窄对象；b 字符串 u8[]，仅单字节字符与字节转义；f16 IEEE binary16；分析目标配置指定 usize/isize 的 32/64 位宽，默认宿主宽度；f-string 仅 {表达式} 与 {{/}}，不增加格式说明符，沿用已确认转义。
 - D08：编译器提供 std:exception 的 Exception 名义基类静态身份，throw/catch 仅其子类；throw; 仅 catch 内重抛，catch 不得被前项覆盖；内建可写 Future<T>，async 调用返回 Future<T>，仅 async 内可 await，main 保持同步；with as 绑定原资源，可选 __enter/__exit 无显式参数且返回 void，__init/__destroy 返回 void、__str 返回 string。仅实现静态协议，不实现运行时。

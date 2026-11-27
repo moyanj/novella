@@ -1,0 +1,44 @@
+// 拥有型 dyn：动态派发、关联类型绑定、struct 装箱与 ARC 共享。
+trait Read {
+    type Item;
+    func read(self) -> Self.Item;
+    // 默认方法也能通过见证表派发
+    func tag(self) -> i32 { return 1; }
+}
+
+// struct 实现 trait：关联类型绑定写在类型体内
+struct Number(Read) {
+    type Read.Item = i32;
+    pub item: i32;
+    pub func read(self) -> i32 { return this.item; }
+}
+
+// class 实现 trait：dyn 值直接持有对象（同一指针）
+class Counter(Read) {
+    type Read.Item = i32;
+    pub item: i32;
+    pub func __init(self, item: i32) { this.item = item; }
+    pub func read(self) -> i32 { return this.item * 2; }
+    pub func tag(self) -> i32 { return 5; }
+}
+
+// 泛型函数内部把具体宿主转成 dyn（struct 装箱拷贝）
+func boxed(value: i32, extra: i32) -> dyn Read<Item = i32> {
+    let dynamic: dyn Read<Item = i32> = Number{ item: value + extra };
+    return dynamic;
+}
+
+func read_dyn(value: dyn Read<Item = i32>) -> i32 {
+    return value.read() + value.tag();
+}
+
+func main() -> i32 {
+    // 隐式转换：struct 装箱拷贝，写进 dyn
+    let number: dyn Read<Item = i32> = Number{ item: 21 };
+    // 显式 cast
+    let counter = new Counter(10);
+    let object = counter as dyn Read<Item = i32>;
+    // 再赋给另一个 dyn：共享同一载荷，析构只跑一次
+    let shared = number;
+    return read_dyn(shared) + read_dyn(object) + read_dyn(boxed(3, 4)) - 55;
+}

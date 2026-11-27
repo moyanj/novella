@@ -1,7 +1,7 @@
 //! 成员与类型遍历：字段、方法、类型形参、参数、类型表达式。
 
 use novella_ast::{
-    program::{ClassMember, FieldMember, MethodMember},
+    program::{AssociatedTypeMember, ClassMember, FieldMember, MethodMember},
     types::{FunctionType, Param, TypeExpr, TypeParameter},
 };
 
@@ -9,13 +9,37 @@ use super::name::signature_text;
 use super::{FoldKind, OutlineKind, Walker, type_expr_text};
 
 impl Walker<'_> {
-    /// 类型成员的统一入口：字段与方法各走各自的收集函数。
+    /// 类型成员的统一入口：字段、方法与关联类型分别收集。
     pub(crate) fn members(&mut self, members: &[ClassMember], parent: usize) {
         for member in members {
             match member {
                 ClassMember::Field(field) => self.field(field, parent),
                 ClassMember::Method(method) => self.method(method, parent),
+                ClassMember::AssociatedType(associated) => self.associated_type(associated, parent),
             }
+        }
+    }
+
+    fn associated_type(&mut self, member: &AssociatedTypeMember, parent: usize) {
+        let detail = match (&member.qualifier, &member.ty) {
+            (Some(qualifier), Some(ty)) => Some(format!(
+                "{}.{} = {}",
+                type_expr_text(qualifier),
+                member.name,
+                type_expr_text(ty),
+            )),
+            _ => None,
+        };
+        let index = self.push(
+            &member.name,
+            OutlineKind::AssociatedType,
+            member.span,
+            Some(parent),
+            detail,
+        );
+        self.symbols[index].name_span = member.name_span;
+        for ty in member.qualifier.iter().chain(&member.ty) {
+            self.type_expr(ty, index);
         }
     }
 
@@ -61,14 +85,22 @@ impl Walker<'_> {
     }
 
     pub(crate) fn type_parameter(&mut self, parameter: &TypeParameter, parent: Option<usize>) {
+        let bounds = parameter.bound.iter().chain(&parameter.additional_bounds);
+        let detail = parameter.bound.as_ref().map(|_| {
+            bounds
+                .clone()
+                .map(type_expr_text)
+                .collect::<Vec<_>>()
+                .join(" + ")
+        });
         let index = self.push(
             &parameter.name,
             OutlineKind::TypeParameter,
             parameter.span,
             parent,
-            None,
+            detail,
         );
-        if let Some(bound) = &parameter.bound {
+        for bound in bounds {
             self.type_expr(bound, index);
         }
     }
@@ -111,6 +143,16 @@ impl Walker<'_> {
             TypeExpr::Reference { generic_args, .. } => {
                 for argument in generic_args {
                     self.type_expr(argument, parent);
+                }
+            }
+            TypeExpr::Dynamic {
+                trait_ref,
+                bindings,
+                ..
+            } => {
+                self.type_expr(trait_ref, parent);
+                for binding in bindings {
+                    self.type_expr(&binding.ty, parent);
                 }
             }
             TypeExpr::Array { element, .. } | TypeExpr::Pointer { element, .. } => {

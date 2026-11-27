@@ -107,9 +107,9 @@ fn symbol_items(outline: &Outline, kinds: &[OutlineKind]) -> Vec<CompletionItem>
                 OutlineKind::Class => CompletionItemKind::CLASS,
                 OutlineKind::Struct => CompletionItemKind::STRUCT,
                 OutlineKind::Trait => CompletionItemKind::INTERFACE,
-                OutlineKind::TypeAlias | OutlineKind::TypeParameter => {
-                    CompletionItemKind::TYPE_PARAMETER
-                }
+                OutlineKind::TypeAlias
+                | OutlineKind::AssociatedType
+                | OutlineKind::TypeParameter => CompletionItemKind::TYPE_PARAMETER,
                 OutlineKind::Parameter | OutlineKind::Variable => CompletionItemKind::VARIABLE,
                 OutlineKind::Field => CompletionItemKind::FIELD,
                 OutlineKind::Import => CompletionItemKind::MODULE,

@@ -231,6 +231,12 @@ fn value_type<'ctx>(
         HirType::Pointer(_) => Ok(context.ptr_type(AddressSpace::default()).into()),
         // class 在 ABI 中始终以指向 runtime 对象载荷的 opaque pointer 表示。
         HirType::Class(_, _) => Ok(context.ptr_type(AddressSpace::default()).into()),
+        HirType::Dynamic(_) => {
+            let pointer = context.ptr_type(AddressSpace::default());
+            Ok(context
+                .struct_type(&[pointer.into(), pointer.into()], false)
+                .into())
+        }
         HirType::Function(signature) => {
             function_type(context, types, signature)?;
             Ok(context.ptr_type(AddressSpace::default()).into())

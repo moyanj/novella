@@ -1,6 +1,6 @@
 //! 类型表达式 → 简短文本：供 `DocumentSymbol.detail` 与补全详情使用。
 
-use novella_ast::types::{FunctionType, PredefinedType, TypeExpr};
+use novella_ast::types::{AssociatedTypeBinding, FunctionType, PredefinedType, TypeExpr};
 
 /// 类型表达式的简短文本（写入 `DocumentSymbol.detail` / 补全详情）。
 ///
@@ -13,25 +13,26 @@ pub fn type_expr_text(ty: &TypeExpr) -> String {
             name,
             generic_args,
             ..
+        } => reference_text(qualifier, name, generic_args, &[]),
+        TypeExpr::Dynamic {
+            trait_ref,
+            bindings,
+            ..
         } => {
-            let mut text = String::new();
-            for segment in qualifier {
-                text.push_str(segment);
-                text.push('.');
+            if let TypeExpr::Reference {
+                qualifier,
+                name,
+                generic_args,
+                ..
+            } = trait_ref.as_ref()
+            {
+                format!(
+                    "dyn {}",
+                    reference_text(qualifier, name, generic_args, bindings)
+                )
+            } else {
+                format!("dyn {}", type_expr_text(trait_ref))
             }
-            text.push_str(name);
-            if !generic_args.is_empty() {
-                text.push('<');
-                text.push_str(
-                    &generic_args
-                        .iter()
-                        .map(type_expr_text)
-                        .collect::<Vec<_>>()
-                        .join(", "),
-                );
-                text.push('>');
-            }
-            text
         }
         TypeExpr::Array {
             element, length, ..
@@ -56,6 +57,37 @@ pub fn type_expr_text(ty: &TypeExpr) -> String {
             .collect::<Vec<_>>()
             .join(" | "),
     }
+}
+
+/// 合并位置实参与关联类型绑定，不为两组实参各写一对尖括号。
+fn reference_text(
+    qualifier: &[String],
+    name: &str,
+    generic_args: &[TypeExpr],
+    bindings: &[AssociatedTypeBinding],
+) -> String {
+    let mut text = qualifier
+        .iter()
+        .map(String::as_str)
+        .chain([name])
+        .collect::<Vec<_>>()
+        .join(".");
+    if !generic_args.is_empty() || !bindings.is_empty() {
+        let args = generic_args
+            .iter()
+            .map(type_expr_text)
+            .chain(
+                bindings
+                    .iter()
+                    .map(|binding| format!("{} = {}", binding.name, type_expr_text(&binding.ty))),
+            )
+            .collect::<Vec<_>>()
+            .join(", ");
+        text.push('<');
+        text.push_str(&args);
+        text.push('>');
+    }
+    text
 }
 
 pub(crate) fn function_type_text(function_type: &FunctionType) -> String {

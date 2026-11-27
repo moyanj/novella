@@ -87,12 +87,12 @@ directiveArgument: '(' directiveArgument* ')' | ~(OpenParen | CloseParen);
 // 类型别名（对应 `TypeAliasItem`）
 typeAliasDeclaration: Type identifier typeParameters? Assign typeExpression SemiColon;
 
-// 泛型参数列表（对应 `TypeParameter`：`T` 或 `T: Bound`）
+// 泛型参数列表（对应 `TypeParameter`：`T` 或 `T: A + B`）
 typeParameters: '<' typeParameterList '>';
 
 typeParameterList: typeParameter (',' typeParameter)*;
 
-typeParameter: identifier (Colon typeExpression)?;
+typeParameter: identifier (Colon typeExpression (Plus typeExpression)*)?;
 
 // 类型表达式（对应 `TypeExpr`）。
 // 联合类型解析时折叠为扁平列表（`TypeExpr::Union.types`），不保留二元嵌套结构。
@@ -109,14 +109,15 @@ typeExpression:
 // 各维护一份类型名表而与 `TokenKind` 这一事实源冲突。
 predefinedType: Null;
 
-// 主类型：元组 / 基础类型 / 类型引用 / 数组 / 指针（对应 `TypeExpr::Tuple` /
-// `Predefined` / `Reference` / `Array` / `Pointer`）。
+// 主类型：元组 / 基础类型 / 类型引用 / 动态 trait / 数组 / 指针（对应 `TypeExpr::Tuple` /
+// `Predefined` / `Reference` / `Dynamic` / `Array` / `Pointer`）。
 // 指针后缀 `'*'` 复用 `Multiply` token（类型位后缀用法，与表达式前缀解引用
 // 区分）；`u8**` 词法即 `u8` + `*` + `*`，parser 直接循环套两层，无 `**` 特例。
 primaryType:
 	'(' typeList? ')'		# TupleTypeCase
 	| predefinedType		# PredefinedTypeCase
 	| typeReference			# ReferenceTypeCase
+	| dynamicType			# DynamicTypeCase
 	| primaryType '[' DecimalLiteral? ']'	# ArrayTypeCase
 	| primaryType '*'		# PointerTypeCase;
 
@@ -124,17 +125,32 @@ typeList: typeExpression (',' typeExpression)*;
 
 // 类型引用：`Foo` / `mod.Foo<T>`（对应 `TypeExpr::Reference{qualifier, name, generic_args}`；
 // `identifier` 前段记入 qualifier，命名空间归属由语义分析按 `import "mod";` 绑定解析）
-typeReference: identifier (Dot identifier)* typeGeneric?;
+typeReference: typePath typeGeneric?;
+
+typePath: identifier (Dot identifier)*;
+
+// `dyn` 仅在类型位且后接 trait 名时作上下文关键字，不在词法层保留。
+// 此处按校验台架的 Java 目标读取当前标识符文本。
+dynamicType: {"dyn".equals(_input.LT(1).getText())}? Identifier typePath dynamicTypeArguments?;
+
+dynamicTypeArguments:
+	LessThan (typeArgumentList (Comma associatedTypeBindings)? | associatedTypeBindings) MoreThan;
+
+associatedTypeBindings: associatedTypeBinding (Comma associatedTypeBinding)*;
+
+associatedTypeBinding: identifier Assign typeExpression;
 
 typeGeneric: '<' typeArgumentList '>';
 
 typeArgumentList: typeExpression (',' typeExpression)*;
 
 // 箭头函数类型：`<T>(int) -> string`（对应 `TypeExpr::Function`）
-arrowFunctionType: typeParameters? '(' typeList? ')' ReturnArrow typeExpression;
+arrowFunctionType: typeParameters? functionTypeParameters ReturnArrow typeExpression;
 
-// 具名函数类型：`func (a: int) -> int`（与 arrowFunctionType 合并进同一 `FunctionType` 节点）
-functionType: Func typeParameters? '(' parameterList? ')' ReturnArrow typeExpression;
+// `func` 函数类型可使用匿名类型或具名参数（与 arrowFunctionType 共用 FunctionType 节点）。
+functionType: Func typeParameters? functionTypeParameters ReturnArrow typeExpression;
+
+functionTypeParameters: '(' (typeList ','? | parameterList)? ')';
 
 // 类型注解：`name: Type`（对应各处 `typeAnnotation?`）
 typeAnnotation: Colon typeExpression;
@@ -146,8 +162,9 @@ traitDeclaration:
 
 traitBody: '{' traitMember* '}';
 
-// trait 成员与类成员同构（对应 `TraitItem.members: Vec<ClassMember>`）
-traitMember: methodDeclaration | fieldDeclaration;
+// trait 成员与类成员共享 AST（对应 `TraitItem.members: Vec<ClassMember>`）；
+// `methodDeclaration` 的块形态同时承载 trait 默认实现。
+traitMember: methodDeclaration | fieldDeclaration | associatedTypeDeclaration;
 
 // 类声明（对应 `ClassItem`：attributes / name / type_parameters / members / parent / scope）
 classDeclaration:
@@ -156,24 +173,29 @@ classDeclaration:
 // 继承子句 = 「父类 / trait」混合列表（以代码为准：parser 支持逗号分隔多项）。
 // 各项语义由 sema 按符号表分类——class 项是父类（仅首项生效，多于一个报多继承），
 // trait 项是实现的 trait（D04，见 docs/sema-coverage.md）。
-classHeritage: '(' typeReference (',' typeReference)* ')';
+classHeritage: '(' typeList? ')' (Colon typeList)? | Colon typeList;
 
 classBody: '{' classMember* '}';
 
 // 类成员（对应 `ClassMember`）
-classMember: methodDeclaration | fieldDeclaration;
+classMember: methodDeclaration | fieldDeclaration | associatedTypeDefinition;
 
 // ====================== struct 声明 ======================
 // struct 声明（对应 `StructItem`：attributes / name / type_parameters / heritage /
 // members / scope）。值语义：无构造器（字段初始化构造，见 structInit）；
-// 继承子句按 classHeritage 语法解析后保留在 `StructItem.heritage`——struct 是否
-// 允许继承由语义分析判定（parser 只保留信息）；成员文法复用 class 成员。
+// trait 实现列表按 classHeritage 语法解析后保留在 `StructItem.heritage`；
+// 具体类型是否允许出现在列表中由语义分析判定，成员文法复用 class 成员。
 structDeclaration:
 	directive* (Pub | Pri | Pkg)? Struct identifier typeParameters? classHeritage? structBody;
 
 structBody: '{' classMember* '}';
 
 // ====================== 成员声明 ======================
+// 关联类型声明与定义（对应 `AssociatedTypeMember`）。
+associatedTypeDeclaration: Type identifier SemiColon;
+
+associatedTypeDefinition: Type typeReference Dot identifier Assign typeExpression SemiColon;
+
 // 字段成员（对应 `FieldMember`：attributes / modifiers / name / ty / initializer）。
 // `Weak?` 弱引用修饰（仅 class / struct 字段，对应 object-model 的 weak 语法）：
 // 赋值不 retain、不参与引用计数，访问过期对象属未定义行为（无空安全保证）。

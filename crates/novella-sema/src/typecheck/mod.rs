@@ -38,27 +38,16 @@ fn check_defaults(
     module: ModuleId,
     params: &[novella_ast::types::Param],
     sig: &crate::ty::FunctionSig,
-    this_ty: Option<Ty>,
+    owner: Option<&Ty>,
+    is_static: bool,
 ) {
     let global = sema.modules[module].global_scope;
     let scope = sema.scopes.new_scope(Some(global), ScopeKind::Function);
     let mut ctx = BodyCtx::base(module, scope);
-    ctx.this_ty = this_ty;
-    for id in &sig.type_params {
-        ctx.type_env.insert(
-            id.split('@').next().unwrap_or(id).to_owned(),
-            Ty::TypeParam(id.clone()),
-        );
+    if let Some(owner) = owner {
+        init_method_context(sema, &mut ctx, owner, is_static);
     }
-    if let Some(owner) = &ctx.this_ty
-        && let Some(def) = sema.type_defs.get(&this_ty_key(owner))
-    {
-        for id in def.type_params() {
-            ctx.type_env
-                .entry(id.split('@').next().unwrap_or(id).to_owned())
-                .or_insert(Ty::TypeParam(id.clone()));
-        }
-    }
+    bind_type_parameters(&mut ctx, &sig.type_params);
     for (param, resolved) in params.iter().zip(&sig.params) {
         if let Some(expr) = &param.default {
             let actual = expr::check_expr_with_hint(sema, &mut ctx, expr, &resolved.ty);
@@ -82,6 +71,29 @@ fn check_defaults(
     }
 }
 
+fn bind_type_parameters(ctx: &mut BodyCtx, keys: &[String]) {
+    for id in keys {
+        ctx.type_env.insert(
+            id.split('@').next().unwrap_or(id).to_owned(),
+            Ty::TypeParam(id.clone()),
+        );
+    }
+}
+
+/// 方法体与默认参数共享声明环境：trait 的 `this` 使用合成的 `Self` 类型。
+fn init_method_context(sema: &Sema, ctx: &mut BodyCtx, owner: &Ty, is_static: bool) {
+    ctx.this_ty = (!is_static).then(|| sema.identity_instance(owner.clone()));
+    if let Some(def) = sema.type_defs.get(&this_ty_key(owner)) {
+        bind_type_parameters(ctx, def.type_params());
+    }
+    if let Ty::Trait(module, name) = crate::traits::nominal_base(owner) {
+        ctx.type_env.insert(
+            "Self".into(),
+            Ty::TypeParam(crate::traits::self_key(*module, name)),
+        );
+    }
+}
+
 pub(crate) fn check_function_defaults(sema: &mut Sema, module: ModuleId, function: &FunctionItem) {
     let global = sema.modules[module].global_scope;
     if let Some(Symbol {
@@ -90,7 +102,7 @@ pub(crate) fn check_function_defaults(sema: &mut Sema, module: ModuleId, functio
     }) = sema.scopes.lookup_local(global, &function.name).cloned()
         && let Some(ty) = &function.r#type
     {
-        check_defaults(sema, module, &ty.params, &sig, None);
+        check_defaults(sema, module, &ty.params, &sig, None, true);
     }
 }
 
@@ -106,7 +118,8 @@ pub(crate) fn check_method_defaults(
             module,
             &method.params,
             &sig.sig,
-            (!method.modifiers.is_static).then(|| owner.clone()),
+            Some(owner),
+            method.modifiers.is_static,
         );
     }
 }
@@ -181,30 +194,14 @@ pub(crate) fn check_method_body(
     let fn_scope = sema.scopes.new_scope(Some(global), ScopeKind::Function);
     let mut ctx = BodyCtx::base(module, fn_scope);
     ctx.inferred_returns = infer_return.then(Default::default);
-    ctx.this_ty = (!method.modifiers.is_static).then(|| this_ty.clone());
+    init_method_context(sema, &mut ctx, this_ty, method.modifiers.is_static);
     if method.name == "__destroy" && matches!(this_ty, Ty::Class(..)) {
         ctx.destructor_self = method.params.first().map(|param| param.span);
     }
-    for param in &method.type_parameters {
-        ctx.type_env.insert(
-            param.name.clone(),
-            Ty::TypeParam(crate::ty::param_key(module, param)),
-        );
-    }
-    // 属主类型的泛型形参同样可见（class<T> 的方法内可用 T）
-    if let Some(def) = sema
-        .type_defs
-        .get(&(this_ty_key(this_ty).0, this_ty_key(this_ty).1))
-    {
-        for id in def.type_params() {
-            ctx.type_env
-                .entry(id.split('@').next().unwrap_or(id).to_owned())
-                .or_insert(Ty::TypeParam(id.clone()));
-        }
-    }
-    // 从注册表读取方法签名以绑定形参
+    // 从注册表读取方法签名以绑定方法类型形参与值形参。
     let method_sig = lookup_method_def(sema, this_ty, &method.name).map(|m| m.sig.clone());
     if let Some(sig) = &method_sig {
+        bind_type_parameters(&mut ctx, &sig.type_params);
         crate::freestanding::check_body_signature(sema, module, method.span, sig);
         ctx.expected_return = Some(sig.ret.clone());
         for (syntax, param) in method.params.iter().zip(&sig.params) {
@@ -245,6 +242,7 @@ pub(crate) fn lookup_method_def(
     match sema.type_defs.get(&key) {
         Some(TypeDef::Struct(StructDef { methods, .. }))
         | Some(TypeDef::Class(ClassDef { methods, .. })) => methods.get(name).cloned(),
+        Some(TypeDef::Trait(def)) => def.methods.get(name).cloned(),
         _ => None,
     }
 }

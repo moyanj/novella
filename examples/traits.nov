@@ -1,0 +1,66 @@
+// trait：struct/class 显式实现、组合约束、默认方法与关联类型。
+trait Shape {
+    func area(self) -> i32;
+    func name(self) -> i32;
+    // 默认方法：宿主未提供同名方法时使用默认体
+    func describe(self) -> i32 { return this.name() + 100; }
+}
+
+trait Tagged {
+    func tag(self) -> i32;
+}
+
+// 同时实现两个 trait 的宿主，供组合约束实例化
+struct Badge(Shape, Tagged) {
+    pub func area(self) -> i32 { return 2; }
+    pub func name(self) -> i32 { return 4; }
+    pub func tag(self) -> i32 { return 7; }
+}
+
+struct Square(Shape) {
+    pub side: i32;
+    pub func area(self) -> i32 { return this.side * this.side; }
+    pub func name(self) -> i32 { return 1; }
+}
+
+class Circle(Shape) {
+    pub radius: i32;
+    pub func __init(self, radius: i32) { this.radius = radius; }
+    pub func area(self) -> i32 { return 3 * this.radius * this.radius; }
+    // 覆盖默认方法；默认方法体里的 this.name() 也改走覆写
+    pub func name(self) -> i32 { return 2; }
+    pub func describe(self) -> i32 { return this.name() + 200; }
+}
+
+// 组合约束：同一实参须同时满足两个 trait
+func total<T: Shape + Tagged>(value: T, area: i32) -> i32 {
+    return area + value.tag();
+}
+
+func scaled<T: Shape>(value: T, factor: i32) -> i32 {
+    return value.area() * factor;
+}
+
+// 关联类型：只在返回位置使用投影
+trait Fixed {
+    type Unit;
+    func size(self) -> Self.Unit;
+}
+
+struct Length(Fixed) {
+    type Fixed.Unit = i32;
+    pub value: i32;
+    pub func size(self) -> i32 { return this.value; }
+}
+
+func measure<T: Fixed>(value: T) -> T.Unit {
+    return value.size();
+}
+
+func main() -> i32 {
+    let square = Square{ side: 3 };
+    let circle = new Circle(2);
+    let badge = Badge{};
+    return scaled(square, 2) + square.describe() + total(badge, badge.area())
+        + circle.area() + circle.describe() + measure(Length{ value: 10 }) - 352;
+}

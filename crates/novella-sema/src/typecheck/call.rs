@@ -249,7 +249,7 @@ pub(crate) fn check_call(
         Ty::Function(sig) => Some(
             instance_param_tys(sig)
                 .iter()
-                .map(|ty| crate::ty::substitute_type_params(ty, &explicit))
+                .map(|ty| sema.instantiate_type(ty, &explicit))
                 .collect::<Vec<_>>(),
         ),
         _ => None,
@@ -275,6 +275,9 @@ pub(crate) fn check_call(
                 &arg_tys,
                 span,
             );
+            // 方法约束可能同时引用属主与方法本身的形参。
+            let (mut bound_subst, _) = sema.call_owner_substitution(ctx.module, callee, sig);
+            bound_subst.extend(subst.iter().map(|(name, ty)| (name.clone(), ty.clone())));
             for param in &sig.type_params {
                 if !subst.contains_key(param) {
                     sema.type_error(
@@ -283,24 +286,26 @@ pub(crate) fn check_call(
                         format!("无法推导泛型参数 `{param}`，请显式提供类型实参"),
                     );
                 }
-                if let (Some(bound), Some(actual)) =
+                if let (Some(bounds), Some(actual)) =
                     (sema.type_param_bounds.get(param).cloned(), subst.get(param))
                 {
-                    let bound = crate::ty::substitute_type_params(&bound, &subst);
-                    if !sema.satisfies_bound(&bound, actual) {
-                        sema.type_error(
-                            ctx.module,
-                            span,
-                            format!("泛型实参 `{actual}` 不满足约束 `{bound}`"),
-                        );
+                    for bound in bounds {
+                        let bound = sema.instantiate_type(&bound, &bound_subst);
+                        if !sema.satisfies_bound(&bound, actual) {
+                            sema.type_error(
+                                ctx.module,
+                                span,
+                                format!("泛型实参 `{actual}` 不满足约束 `{bound}`"),
+                            );
+                        }
                     }
                 }
             }
-            let instantiated =
-                crate::ty::substitute_type_params(&Ty::Function(sig.clone()), &subst);
+            let instantiated = sema.instantiate_type(&Ty::Function(sig.clone()), &subst);
             let Ty::Function(instantiated) = instantiated else {
                 unreachable!()
             };
+            sema.record_call_instance(ctx.module, span, callee, &instantiated, &subst);
             check_call_against_sig(
                 sema,
                 ctx,
@@ -414,7 +419,9 @@ pub(crate) fn check_call_against_sig(
             if readonly_decay_source(sema, ctx, arg) {
                 sema.type_error(ctx.module, arg.span(), "只读数组不能退化为可写指针");
             }
-        } else if !sema.is_assignable(&param.ty, arg_ty) {
+        } else if !sema.is_assignable(&param.ty, arg_ty)
+            && !sema.record_dyn_conversion(ctx.module, arg.span(), &param.ty, arg_ty)
+        {
             sema.type_error(
                 ctx.module,
                 arg.span(),

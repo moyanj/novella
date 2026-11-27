@@ -447,7 +447,7 @@ impl BodyBuilder<'_> {
                 .with_site(self.module, span));
             }
         };
-        let fields = instance_fields(self.sema, module, name, span)?;
+        let fields = instance_fields(self.sema, &self.instances, module, name, span)?;
         fields
             .iter()
             .enumerate()

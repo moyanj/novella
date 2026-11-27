@@ -3,7 +3,9 @@
 > 历史快照说明（2026-11-22）：本文的逐行分析保留编写时状态。后端现已支持静态全局、
 > x86-64 裸机 small/kernel 目标、显式 C ABI 导出和无 libc runtime；本轮现状以
 > [裸机支持](freestanding.md) 与 [编译器设计](compiler-design.md) 为准。下文关于仅 Linux、
-> 不支持全局及固定入口的旧描述不适用于新目标。
+> 不支持全局及固定入口的旧描述不适用于新目标。§19–§23 给出的"struct/数组/字符串/
+> trait 一律拒绝"同样已过时：2026-11-27 起 HIR 单态化与 `dyn` 见证表已接通，
+> [`examples/dyn-traits.nov`](design.md) 等程序可原生编译运行。
 
 > 文档版本：2026-11-21
 > 适用代码：novella 编译器 workspace（`crates/novella-codegen`，edition 2024）

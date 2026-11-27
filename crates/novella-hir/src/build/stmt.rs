@@ -177,7 +177,7 @@ impl<'a> BodyBuilder<'a> {
             .as_ref()
             .and_then(|binding| binding.ty.as_ref())
         {
-            Some(annotation) => annotation_type(self.sema, self.module, annotation)?,
+            Some(annotation) => self.annotation_type(annotation)?,
             None => self.expr_type(with_stmt.expr.span())?,
         };
         let receiver = self.build_typed_expression(&with_stmt.expr, &receiver_ty, block)?;
@@ -224,7 +224,8 @@ impl<'a> BodyBuilder<'a> {
                 })
                 .with_site(self.module, variable.span)
             })?;
-        let ty = HirType::from_view(view, &mut function_id_of)
+        let ty = self
+            .concrete_type(view, None)
             .map_err(|error| error.with_site(self.module, variable.span))?;
         // 在引入新名字前求初始化值，遮蔽时仍引用外层绑定。
         let first_temporary = self.next_local;
@@ -242,7 +243,7 @@ impl<'a> BodyBuilder<'a> {
         if let (BindingPattern::Ident { name, .. }, Some(HirOperand::Local(source))) =
             (&variable.pattern, &init)
             && source.0 >= first_temporary
-            && super::requirements::managed(self.sema, &ty)
+            && super::requirements::managed(self.sema, &self.instances, &ty)
         {
             let id = self.declare_var(name.clone(), ty.clone());
             block.push(HirStmt::Instr(HirInstr::Adopt {
@@ -343,8 +344,11 @@ impl<'a> BodyBuilder<'a> {
             }
             _ => {}
         }
-        if same_value_type(from, to) {
+        if from.same_value_type(to) {
             return Ok(operand);
+        }
+        if matches!(to, HirType::Dynamic(_)) {
+            return self.pack_dynamic(operand, from, to, span, block);
         }
         if !castable(from, to) {
             return Err(BuildError::at(BuildErrorKind::ImplicitCast {

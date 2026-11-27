@@ -32,6 +32,25 @@ impl<'ctx> Body<'ctx, '_> {
                     )?;
                 }
             }
+            HirInstr::DynPack {
+                operand,
+                source,
+                witness,
+                ty,
+                dst,
+            } => {
+                self.pack_dynamic(operand, source, witness, ty, *dst)?;
+            }
+            HirInstr::DynCall {
+                receiver,
+                receiver_ty,
+                signature,
+                slot,
+                args,
+                dst,
+            } => {
+                self.call_dynamic((receiver, receiver_ty), signature, *slot, args, *dst)?;
+            }
             HirInstr::StringLiteral { value, ty, dst } => {
                 let object = self.string_literal(value, ty)?;
                 self.save(*dst, ty, object.into())?;
@@ -66,7 +85,7 @@ impl<'ctx> Body<'ctx, '_> {
             }
             HirInstr::LocalAddress { local, ty, dst } => {
                 let (pointer, actual) = self.slot(*local)?;
-                if actual != ty {
+                if !actual.same_value_type(ty) {
                     return Err(CodegenError("局部变量取址类型不匹配".into()));
                 }
                 self.save(

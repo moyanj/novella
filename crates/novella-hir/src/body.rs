@@ -219,6 +219,23 @@ pub enum HirInstr {
         dst: Option<LocalId>,
         dst_ty: Option<HirType>,
     },
+    /// 将拥有 class 引用或 struct 值包装成动态对象；槽顺序由类型决定。
+    DynPack {
+        operand: HirOperand,
+        source: HirType,
+        witness: Vec<crate::ty::HirFunctionId>,
+        ty: HirType,
+        dst: LocalId,
+    },
+    /// 通过接收者的 witness table 调用一个定型实例方法。
+    DynCall {
+        receiver: HirOperand,
+        receiver_ty: HirType,
+        signature: Box<crate::ty::FunctionSignature>,
+        slot: u32,
+        args: Vec<HirOperand>,
+        dst: Option<LocalId>,
+    },
     /// 一元运算（`dst_ty` 决定具体指令，如浮点取负 vs 整数取负）
     Unary {
         op: HirUnaryOp,

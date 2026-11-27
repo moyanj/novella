@@ -40,6 +40,8 @@ pub enum OutlineKind {
     Struct,
     Trait,
     TypeAlias,
+    /// trait 的关联类型声明或实现。
+    AssociatedType,
     /// 类型参数（`<T>`）与函数参数
     TypeParameter,
     Parameter,

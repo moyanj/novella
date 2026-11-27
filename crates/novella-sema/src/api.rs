@@ -162,6 +162,17 @@ pub enum TypeView {
     /// 具名泛型实例的基类型与实参，后端不得擦除这些实参。
     Applied(Box<TypeView>, Vec<TypeView>),
     Future(Box<TypeView>),
+    /// 拥有型动态 trait 对象；关联绑定按名字排序。
+    Dynamic {
+        trait_ref: Box<TypeView>,
+        bindings: Vec<(String, TypeView)>,
+    },
+    /// 泛型模板中尚待具体实例化的关联类型投影。
+    Associated {
+        receiver: Box<TypeView>,
+        trait_ref: Box<TypeView>,
+        name: String,
+    },
     Object(std::collections::BTreeMap<String, TypeView>),
     Void,
     Boolean,
@@ -211,6 +222,8 @@ pub struct FunctionView {
     pub ret: Box<TypeView>,
     /// 泛型参数个数（调用检查已完成代入与约束验证）
     pub type_param_count: usize,
+    /// 泛型形参的声明身份，按声明顺序。
+    pub type_parameters: Vec<String>,
     /// 是否 `async` 函数
     pub is_async: bool,
     /// 是否 `extern` 函数（仅有签名、无函数体）
@@ -282,6 +295,12 @@ pub struct SemaResult {
     pub modules: ModuleOutput,
     /// 表达式级语义类型（键为 `(模块, span)`）
     pub expression_types: ExpressionTypes,
+    /// 调用点的定型签名及泛型实例替换表，含尚待外层单态化的类型。
+    pub call_instances: HashMap<(ModuleId, Span), crate::CallInstance>,
+    /// 隐式或显式转换到拥有型动态 trait 的位置。
+    pub dyn_conversions: HashMap<(ModuleId, Span), crate::DynConversion>,
+    /// 已验证的显式实现，包括方法指派和关联类型。
+    pub trait_implementations: Vec<crate::TraitImplementation>,
     /// 类型注解的解析结果（含别名展开与限定名；键为注解 span）。
     pub annotation_types: ExpressionTypes,
     /// 声明的最终类型（函数签名 / 变量绑定；键为声明 span）。
@@ -347,6 +366,10 @@ pub struct TypeSummary {
     pub span: Span,
     /// 解析后的父类（仅 class 可能有）
     pub parent: Option<(ModuleId, String)>,
+    /// 父类类型模板，保留显式泛型实参。
+    pub applied_parent: Option<TypeView>,
+    /// 类型形参的声明身份，按源码顺序。
+    pub type_parameters: Vec<String>,
     /// 字段（声明顺序；struct / class 可能有，其余为空）
     pub fields: Vec<FieldSummary>,
     /// 方法（按名字排序，保证下游输出稳定）
@@ -376,6 +399,8 @@ pub struct MethodSummary {
     /// 方法签名（`this` 不占参数位；`name` 恒为 `Some(方法名)`）
     pub signature: FunctionView,
     pub is_static: bool,
+    /// 是否为拥有型 `dyn` 的派发槽（仅 trait 声明可为真）。
+    pub is_dyn_dispatchable: bool,
 }
 
 /// 类型摘要的种类。

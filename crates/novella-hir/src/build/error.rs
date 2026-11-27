@@ -66,6 +66,8 @@ pub enum BuildErrorKind {
     UnionUnsupported,
     /// 泛型形参未消解
     GenericUnsupported,
+    /// 具体 struct 通过按值字段无限包含自身。
+    InfiniteValueLayout,
     /// 尚未降级的 AST 构造
     Unimplemented { node: &'static str },
     /// 类型注解缺失且无法从上下文补全
@@ -96,6 +98,7 @@ impl std::fmt::Display for BuildErrorKind {
             }
             BuildErrorKind::UnknownTypeName { name } => write!(f, "无法识别的类型名 `{name}`"),
             BuildErrorKind::UnionUnsupported => f.write_str("联合类型的值表示尚未实现"),
+            BuildErrorKind::InfiniteValueLayout => f.write_str("结构体按值递归，无法确定实例布局"),
             BuildErrorKind::GenericUnsupported => f.write_str("泛型形参尚未单态化"),
             BuildErrorKind::Unimplemented { node } => write!(f, "暂不支持降级语法节点 `{node}`"),
             BuildErrorKind::MissingType { what } => write!(f, "缺少类型注解：{what}"),

@@ -30,7 +30,13 @@ pub(crate) fn check_expr_with_hint(
         check_expr_with_hint_inner(sema, ctx, expr, hint)
     });
     record_expression_type(sema, ctx.module, expr.span(), ty.clone());
-    ty
+    if !crate::ty::ty_eq(hint, &ty)
+        && sema.record_dyn_conversion(ctx.module, expr.span(), hint, &ty)
+    {
+        hint.clone()
+    } else {
+        ty
+    }
 }
 
 /// 把「表达式 span → 类型」写进类型表；与 [`check_expr`] 共用同一键空间。

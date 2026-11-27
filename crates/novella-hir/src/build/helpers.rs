@@ -38,7 +38,7 @@ pub(super) fn castable(from: &HirType, to: &HirType) -> bool {
         (HirType::Pointer(_), HirType::Pointer(_)) | (HirType::Class(..), HirType::Class(..)) => {
             true
         }
-        (a, b) => same_value_type(a, b),
+        (a, b) => a.same_value_type(b),
     }
 }
 
@@ -56,6 +56,7 @@ pub(super) fn type_label(ty: &HirType) -> &'static str {
         HirType::Struct(..) => "struct",
         HirType::Class(..) => "class",
         HirType::Trait(..) => "trait",
+        HirType::Dynamic(_) => "dyn",
     }
 }
 
@@ -169,28 +170,5 @@ pub(super) fn function_id_of(view: &novella_sema::FunctionView) -> HirFunctionId
     match &view.name {
         Some(name) => HirFunctionId(format!("m{}::{}", view.module, name)),
         None => HirFunctionId::anonymous(view.module),
-    }
-}
-
-/// 函数类型按签名兼容，实体 id 不参与值类型判等。
-pub(super) fn same_value_type(a: &HirType, b: &HirType) -> bool {
-    match (a, b) {
-        (HirType::Function(a), HirType::Function(b)) => {
-            a.receiver == b.receiver
-                && a.params.len() == b.params.len()
-                && a.params
-                    .iter()
-                    .zip(&b.params)
-                    .all(|(a, b)| same_value_type(a, b))
-                && same_value_type(&a.ret, &b.ret)
-        }
-        (HirType::Tuple(a), HirType::Tuple(b)) => {
-            a.len() == b.len() && a.iter().zip(b).all(|(a, b)| same_value_type(a, b))
-        }
-        (HirType::Array(a, left), HirType::Array(b, right)) if left == right => {
-            same_value_type(a, b)
-        }
-        (HirType::Pointer(a), HirType::Pointer(b)) => same_value_type(a, b),
-        _ => a == b,
     }
 }

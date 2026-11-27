@@ -53,6 +53,7 @@ mod aggregate;
 mod call;
 mod coalesce;
 mod context;
+mod dynamic;
 mod error;
 mod expr;
 mod globals;
@@ -61,6 +62,7 @@ mod layout;
 mod loops;
 mod lvalue;
 mod module;
+mod mono;
 mod operators;
 mod requirements;
 mod stmt;
@@ -71,11 +73,12 @@ pub use error::{BuildError, BuildErrorKind};
 use helpers::*;
 use layout::instance_fields;
 pub use module::build_hir;
-use types::annotation_type;
+use mono::{Instances, Substitution};
 
 /// 单个模块的构造状态。
 struct ModuleBuilder<'a> {
     sema: &'a SemaResult,
+    instances: Instances,
     module: ModuleId,
     program: &'a Program,
     /// 已登记的函数签名
@@ -95,12 +98,15 @@ struct ModuleBuilder<'a> {
 /// 函数体构造器：把 AST 语句 / 表达式展开成「块 → 语句 / 指令」。
 struct BodyBuilder<'a> {
     sema: &'a SemaResult,
+    instances: Instances,
     module: ModuleId,
     /// 本模块的顶层函数（标识符解析时按名字匹配）
     ///
     /// 持有副本而非借用：`ModuleBuilder` 在函数体降级期间还要把 lambda
     /// 推进 `pending`，借用会让 `&mut self` 无法使用。
     functions: Vec<(String, HirFunctionId)>,
+    /// 当前定义的类型参数代入。
+    subst: Substitution,
     /// 局部槽位分配（形参与临时值共用）
     next_local: u32,
     /// 局部类型表（`LocalId` → `HirType`），供隐式转换与左值运算使用

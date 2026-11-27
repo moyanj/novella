@@ -8,6 +8,9 @@ pub(super) struct IndexPlace {
     pub(super) receiver_ty: HirType,
 }
 
+mod target;
+use target::CallTarget;
+
 impl BodyBuilder<'_> {
     pub(super) fn overloaded_index_receiver(
         &self,
@@ -112,16 +115,11 @@ impl BodyBuilder<'_> {
     pub(super) fn build_new(
         &mut self,
         _target: &Expression,
-        type_args: &[TypeExpr],
+        _type_args: &[TypeExpr],
         args: &[Expression],
         span: Span,
         block: &mut HirBlock,
     ) -> Result<HirOperand, BuildError> {
-        if !type_args.is_empty() {
-            return Err(
-                BuildError::at(BuildErrorKind::GenericUnsupported).with_site(self.module, span)
-            );
-        }
         let ty = self.expr_type(span)?;
         let HirType::Class(module, name) = &ty else {
             return Err(BuildError::at(BuildErrorKind::Unimplemented {
@@ -129,6 +127,15 @@ impl BodyBuilder<'_> {
             })
             .with_site(self.module, span));
         };
+        let (summary, subst) =
+            mono::aggregate_definition(self.sema, &self.instances, *module, name).ok_or_else(
+                || {
+                    BuildError::at(BuildErrorKind::MissingType {
+                        what: "class 实例定义",
+                    })
+                    .with_site(self.module, span)
+                },
+            )?;
         let init = self.class_method_signature(*module, name, "__init", span)?;
         if args.len() > init.as_ref().map_or(0, |signature| signature.params.len()) {
             return Err(BuildError::at(BuildErrorKind::MissingType {
@@ -151,7 +158,7 @@ impl BodyBuilder<'_> {
                 let declaration = self
                     .sema
                     .declarations
-                    .named(*module, &format!("{name}::__init"))
+                    .named(*module, &format!("{}::__init", summary.name))
                     .and_then(|id| self.sema.declarations.parameters(&self.sema.modules, id))
                     .ok_or_else(|| {
                         BuildError::at(BuildErrorKind::MissingType {
@@ -168,6 +175,7 @@ impl BodyBuilder<'_> {
                 defaults_signature.receiver = false;
                 self.expand_default_arguments(
                     *module,
+                    subst.clone(),
                     params,
                     &defaults_signature,
                     &mut operands,
@@ -208,31 +216,15 @@ impl BodyBuilder<'_> {
         let HirType::Class(module, name) = ty else {
             unreachable!("new 已验证 class")
         };
-        let mut chain = Vec::new();
-        let mut current = Some((*module, name.clone()));
-        while let Some((module, name)) = current {
-            let summary = self
-                .sema
-                .types
-                .summaries
-                .iter()
-                .find(|summary| summary.module == module && summary.name == name)
-                .ok_or_else(|| {
-                    BuildError::at(BuildErrorKind::MissingType {
-                        what: "class 字段定义",
-                    })
-                    .with_site(self.module, span)
-                })?;
-            chain.push((module, name));
-            current = summary.parent.clone();
-        }
-        let fields = instance_fields(self.sema, *module, name, span)?;
+        let chain = layout::instance_lineage(self.sema, &self.instances, *module, name, span)?;
+        let fields = instance_fields(self.sema, &self.instances, *module, name, span)?;
         let mut index = 0;
-        for (module, name) in chain.into_iter().rev() {
+        for (definition, subst) in chain {
+            let module = definition.module;
             let members = self
                 .sema
                 .declarations
-                .named(module, &name)
+                .named(module, &definition.name)
                 .and_then(|id| self.sema.declarations.members(&self.sema.modules, id))
                 .ok_or_else(|| {
                     BuildError::at(BuildErrorKind::MissingType {
@@ -248,6 +240,7 @@ impl BodyBuilder<'_> {
                         let value = self.in_definition_scope(
                             module,
                             vec![("self".to_owned(), receiver)],
+                            subst.clone(),
                             |this| this.build_typed_expression(&expr, field_ty, block),
                         )?;
                         block.push(HirStmt::Instr(HirInstr::FieldStore {
@@ -273,31 +266,33 @@ impl BodyBuilder<'_> {
         method_name: &str,
         span: Span,
     ) -> Result<Option<FunctionSignature>, BuildError> {
-        let Some(summary) = self
-            .sema
-            .types
-            .summaries
-            .iter()
-            .find(|summary| summary.module == module && summary.name == type_name)
+        let Some((summary, subst)) =
+            mono::aggregate_definition(self.sema, &self.instances, module, type_name)
         else {
             return Ok(None);
         };
-        let Some(method) = summary
+        if let Some(method) = summary
             .methods
             .iter()
             .find(|method| method.name == method_name)
-        else {
-            // __str 等实例方法遵循名义继承链；构造器仍按当前类的声明契约处理。
-            if method_name != "__init"
-                && let Some((parent_module, parent_name)) = &summary.parent
-            {
-                return self.class_method_signature(*parent_module, parent_name, method_name, span);
-            }
-            return Ok(None);
-        };
-        FunctionSignature::from_view(&method.signature, &mut function_id_of)
+        {
+            return mono::instantiate_function(
+                self.sema,
+                &self.instances,
+                &method.signature,
+                subst,
+            )
             .map(Some)
-            .map_err(|error| error.with_site(self.module, span))
+            .map_err(|error| error.with_site(self.module, span));
+        }
+        // 构造器只查本类；其它隐式协议跟随已实例化的父链。
+        if method_name != "__init"
+            && let Some((module, name)) =
+                layout::instance_parent(self.sema, &self.instances, summary, &subst)?
+        {
+            return self.class_method_signature(module, &name, method_name, span);
+        }
+        Ok(None)
     }
 
     pub(super) fn build_call(
@@ -307,12 +302,37 @@ impl BodyBuilder<'_> {
         span: Span,
         block: &mut HirBlock,
     ) -> Result<HirOperand, BuildError> {
-        let HirType::Function(signature) = self.expr_type(callee.span())? else {
-            return Err(BuildError::at(BuildErrorKind::MissingType {
-                what: "调用签名"
-            })
-            .with_site(self.module, span));
+        let instance = self.sema.call_instances.get(&(self.module, span));
+        let mut substitutions = instance
+            .filter(|instance| instance.signature.name.is_some())
+            .map_or_else(
+                || Ok(Vec::new()),
+                |instance| {
+                    mono::concrete_substitution(
+                        self.sema,
+                        &self.instances,
+                        &instance.substitutions,
+                        &self.subst,
+                    )
+                },
+            )?;
+        let signature_site = |error: BuildError| error.with_site(self.module, span);
+        let (signature, target_kind) = if let Some(instance) = instance {
+            self.resolve_call_instance(instance, &mut substitutions, span)
+                .map_err(signature_site)?
+        } else {
+            let HirType::Function(signature) = self.expr_type(callee.span())? else {
+                return Err(BuildError::at(BuildErrorKind::MissingType {
+                    what: "调用签名"
+                })
+                .with_site(self.module, span));
+            };
+            (*signature, CallTarget::Expression)
         };
+        let mut callee = callee;
+        while let Expression::Paren { expr, .. } = callee {
+            callee = expr;
+        }
         if signature.params.len() < args.len() {
             return Err(BuildError::at(BuildErrorKind::Unimplemented {
                 node: "omitted default arguments",
@@ -320,6 +340,7 @@ impl BodyBuilder<'_> {
             .with_site(self.module, span));
         }
         let mut operands = Vec::new();
+        let mut dyn_receiver = None;
         let callee_operand = if signature.receiver {
             let target = match callee {
                 Expression::MemberAccess { target, .. } => target.as_ref().clone(),
@@ -349,7 +370,9 @@ impl BodyBuilder<'_> {
                 match target_ty {
                     HirType::Struct(..) => self.aggregate_address(&target, block)?,
                     // class 值本身就是运行时对象引用，实例方法按引用传递。
-                    HirType::Class(..) => self.build_expression(&target, block)?,
+                    HirType::Class(..) | HirType::Dynamic(_) => {
+                        self.build_expression(&target, block)?
+                    }
                     HirType::Pointer(_) => self.build_expression(&target, block)?,
                     _ => {
                         return Err(BuildError::at(BuildErrorKind::Unimplemented {
@@ -359,7 +382,10 @@ impl BodyBuilder<'_> {
                     }
                 }
             };
+            dyn_receiver = Some((receiver.clone(), target_ty));
             operands.push(receiver);
+            HirOperand::FunctionPtr(signature.id.clone())
+        } else if matches!(target_kind, CallTarget::Direct { .. }) {
             HirOperand::FunctionPtr(signature.id.clone())
         } else {
             self.build_expression(callee, block)?
@@ -370,26 +396,48 @@ impl BodyBuilder<'_> {
         if args.len() < signature.params.len() {
             self.append_default_arguments(
                 callee.span(),
+                substitutions,
                 &signature,
                 &mut operands,
-                args.len(),
                 span,
                 block,
             )?;
         }
-        let ret = signature.ret.clone();
+        let ret = match &target_kind {
+            CallTarget::Direct { return_type } => return_type.clone(),
+            _ => signature.ret.clone(),
+        };
         let dst = if ret == HirType::Void {
             None
         } else {
             Some(self.fresh_local(ret.clone()))
         };
-        block.push(HirStmt::Instr(HirInstr::Call {
-            callee: callee_operand,
-            args: operands,
-            dst,
-            dst_ty: dst.map(|_| ret),
-        }));
-        Ok(dst.map_or(HirOperand::Unit, HirOperand::Local))
+        let declared_return = signature.ret.clone();
+        let instruction = if let CallTarget::Dynamic(slot) = target_kind {
+            let (receiver, receiver_ty) = dyn_receiver.expect("动态调用总有接收者");
+            operands.remove(0);
+            HirInstr::DynCall {
+                receiver,
+                receiver_ty,
+                slot,
+                signature: Box::new(signature),
+                args: operands,
+                dst,
+            }
+        } else {
+            HirInstr::Call {
+                callee: callee_operand,
+                args: operands,
+                dst,
+                dst_ty: dst.map(|_| ret.clone()),
+            }
+        };
+        block.push(HirStmt::Instr(instruction));
+        if let Some(dst) = dst {
+            self.coerce(HirOperand::Local(dst), &ret, &declared_return, span, block)
+        } else {
+            Ok(HirOperand::Unit)
+        }
     }
     /// 默认实参从原始声明取表达式；调用处只替换此前参数的已求值快照。
     pub(super) fn build_call_argument(
@@ -401,7 +449,7 @@ impl BodyBuilder<'_> {
         if let HirType::Pointer(pointee) = expected {
             let actual = self.expr_type_pref(arg.span(), Some(expected))?;
             if let HirType::Array(element, _) = &actual
-                && same_value_type(pointee, element)
+                && pointee.same_value_type(element)
             {
                 let address = self.aggregate_address(arg, block)?;
                 return self.coerce(
@@ -419,35 +467,46 @@ impl BodyBuilder<'_> {
     fn append_default_arguments(
         &mut self,
         callee_span: Span,
+        subst: Substitution,
         signature: &FunctionSignature,
         operands: &mut Vec<HirOperand>,
-        provided: usize,
         span: Span,
         block: &mut HirBlock,
     ) -> Result<(), BuildError> {
+        let provided = operands.len() - usize::from(signature.receiver);
         let declaration = match self.sema.expression_types.get(self.module, callee_span) {
-            Some(novella_sema::TypeView::Function(view)) => view
-                .name
-                .as_ref()
-                .and_then(|name| self.sema.declarations.named(view.module, name))
-                .and_then(|id| {
-                    self.sema
-                        .declarations
-                        .parameters(&self.sema.modules, id)
-                        .map(|params| (id.module, params.to_vec()))
-                }),
+            Some(TypeView::Function(view)) => view.name.as_ref().and_then(|name| {
+                let id = self.sema.declarations.named(view.module, name)?;
+                let params = self.sema.declarations.parameters(&self.sema.modules, id)?;
+                Some((id.module, name.clone(), params.to_vec()))
+            }),
             _ => None,
         };
-        let (module, mut params) = declaration.ok_or_else(|| {
+        let (module, symbol, mut params) = declaration.ok_or_else(|| {
             BuildError::at(BuildErrorKind::Unimplemented {
                 node: "defaults of indirect function",
             })
             .with_site(self.module, span)
         })?;
+        // 继承方法的默认表达式在父类布局中解释 self；实际调用仍保留原接收者。
+        if signature.receiver
+            && let Some(HirOperand::Local(id)) = operands.first()
+            && let Some((owner, _)) = symbol.split_once("::")
+        {
+            let actual = self.local_type(*id);
+            if matches!(actual, HirType::Class(..)) {
+                let expected =
+                    mono::method_receiver(self.sema, &self.instances, module, owner, &subst)?;
+                operands[0] =
+                    self.coerce(HirOperand::Local(*id), &actual, &expected, span, block)?;
+            }
+        }
         if signature.receiver && params.first().is_some_and(|param| param.name == "self") {
             params.remove(0);
         }
-        self.expand_default_arguments(module, params, signature, operands, provided, span, block)
+        self.expand_default_arguments(
+            module, subst, params, signature, operands, provided, span, block,
+        )
     }
 
     /// 在定义环境展开默认值，并把先前实参保存为可供后续默认表达式引用的局部值。
@@ -455,6 +514,7 @@ impl BodyBuilder<'_> {
     fn expand_default_arguments(
         &mut self,
         module: novella_sema::ModuleId,
+        subst: Substitution,
         params: Vec<novella_ast::types::Param>,
         signature: &FunctionSignature,
         operands: &mut Vec<HirOperand>,
@@ -486,9 +546,10 @@ impl BodyBuilder<'_> {
                     })
                     .with_site(module, param.span)
                 })?;
-                let value = self.in_definition_scope(module, bindings.clone(), |this| {
-                    this.build_typed_expression(expr, ty, block)
-                })?;
+                let value =
+                    self.in_definition_scope(module, bindings.clone(), subst.clone(), |this| {
+                        this.build_typed_expression(expr, ty, block)
+                    })?;
                 operands.push(value.clone());
                 value
             };
@@ -498,6 +559,7 @@ impl BodyBuilder<'_> {
                 ty: ty.clone(),
                 init: Some(value),
             }));
+            operands[index + receiver_count] = HirOperand::Local(id);
             bindings.push((param.name.clone(), id));
         }
         Ok(())

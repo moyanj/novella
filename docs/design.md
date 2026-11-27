@@ -301,7 +301,7 @@ pub import "mod";              // 命名空间导入同样可重导出
 ```
 typeAliasDeclaration: Type identifier typeParameters? Assign typeExpression SemiColon;
 typeParameters: '<' typeParameterList '>';
-typeParameter: identifier (Colon typeExpression)?;
+typeParameter: identifier (Colon typeExpression (Plus typeExpression)*)?;
 ```
 
 - **可见性限制（本期）**：别名**不可跨模块导入**（文法上 `type` 前无
@@ -311,9 +311,10 @@ typeParameter: identifier (Colon typeExpression)?;
   定义位置的类型投影保留符号形参，不被不同实例覆盖；
 - **循环检测**：`type A = B; type B = A;` 类循环在展开点报「类型别名
   循环」；
-- `T: Trait` 约束参与成员查找与实参检查，包括 trait 的泛型实参。类型参数用
-  模块和声明位置区分；调用可从实参递归推导，不从期望返回类型反推，冲突或
-  无法推导时报错。后端单态化是独立阶段。
+- `T: A + B` 要求同一实参同时满足所有上界；泛型 trait 的具体实参也参与
+  匹配。类型参数用模块和声明位置区分。调用可以从实参递归推导，不从期望
+  返回类型反推，冲突或无法推导时报错。原生编译在降级时按具体实参生成
+  函数、方法和聚合布局，复用相同实例；不会生成只有符号形参的机器代码。
 
 ### 4.5 编译器指令 `@`（directive 语义）
 
@@ -339,10 +340,10 @@ directiveArgument: '(' directiveArgument* ')' | ~(OpenParen | CloseParen);
 
 ```
 classDeclaration: directive* Pub? Class identifier typeParameters? classHeritage? classBody;
-classHeritage: '(' typeReference ')';              // 文法仅单父类，语言按多继承预留
+classHeritage: '(' typeExpression (',' typeExpression)* ')';
 classBody: '{' classMember* '}';
 traitDeclaration: directive* (Pub|Pri|Pkg)? Trait identifier typeParameters? traitBody;
-classMember: methodDeclaration | fieldDeclaration;
+classMember: methodDeclaration | fieldDeclaration | associatedTypeDefinition;
 fieldDeclaration: directive* accessModifier? Static? Weak? identifier typeAnnotation? (Assign expression)? SemiColon;
 methodDeclaration: directive* accessModifier? Static? Func identifier typeParameters?
     '(' parameterList? ')' typeAnnotation? ReturnArrow? typeExpression? (block | SemiColon);
@@ -351,7 +352,7 @@ accessModifier: Pub | Pri;
 
 AST：`ClassItem { directives, name, type_parameters, members, parent, scope }`；
 `TraitItem { directives, name, type_parameters, members, scope }`；
-`ClassMember::Field` / `ClassMember::Method`；
+`ClassMember::Field` / `ClassMember::Method` / `ClassMember::AssociatedType`；
 `MemberModifiers { scope: Option<Scope>, is_static, is_weak }`。
 
 - 方法**必须**以 `func` 开头：传统省略形态（`constructor(...)` /
@@ -382,12 +383,72 @@ AST：`ClassItem { directives, name, type_parameters, members, parent, scope }`�
   前缀方法名报错；调用时机属 codegen；
 - 双下划线同时是**保留命名空间**：普通方法不得以 `__` 开头，防止撞名。
 
+#### 4.6.2 trait、关联类型与动态值
+
+- class 和 struct 在声明名后的括号列表显式实现 trait，例如 `struct S(Iter)`；
+  仅拥有同名方法不会建立实现，不存在独立 `impl` 块。trait 本身不声明字段。
+- trait 方法以 `;` 结束时要求实现提供方法；有方法体时提供默认实现。
+  宿主上签名兼容的同名方法优先于默认体。参数类型须匹配，返回类型仅允许同类型或
+  class 子类引用协变，不做数值扩宽。静态泛型调用根据具体接收者和已验证的实现
+  选择目标；默认体中的 `Self` 代表具体宿主。在同一个宿主或父子链上，不允许两个可能
+  匹配同一具体实例的 trait 实现。
+- `type Item;` 声明关联类型。实现以 `type Iter.Item = i32;` 给出定义；
+  泛型 trait 可用 `type Iter<i32>.Item = i32;` 精确指定。`T.Item` 从约束
+  中解析，trait 内用 `Self.Item`；若多个约束声明同名关联类型而无法唯一确定，
+  则报歧义。
+- `dyn Iter<Item = i32>` 是拥有型的动态 trait 值。位置实参先于关联类型绑定，
+  例如 `dyn Lookup<i32, Item = i32>`。必须固定该 trait 的全部关联类型；
+  转换需匹配该具体 trait 实例及其关联类型。可在类型标注、传参和返回等
+  上下文转换，也可写 `value as dyn Iter<Item = i32>`。
+- class 转换后保留原对象，struct 转换后在堆上保存值的副本。复制动态值
+  共享该载荷并计入 ARC。动态调用只开放具有固定签名的非泛型实例方法；
+  静态方法与泛型方法不进入表，也不能在 `dyn` 上调用。非泛型实例方法若为异步，
+  或显式参数/返回类型依赖裸 `Self`（不是有绑定的 `Self.Item`），则整个 trait 不可用于 `dyn`。
+  转换按源值的静态类型选取见证；class 的普通方法调用仍不做虚派发。
+
+下面的 `read` 会单态化到具体类型；`read_dyn` 则通过见证表调用同一个接口。
+
+```novella
+trait Read {
+    type Item;
+    func get(self) -> Self.Item;
+}
+
+struct Box<T>(Read) {
+    type Read.Item = T;
+    pub item: T;
+    pub func get(self) -> T { return this.item; }
+}
+
+func read<T: Read>(value: T) -> T.Item { return value.get(); }
+func read_dyn(value: dyn Read<Item = i32>) -> i32 { return value.get(); }
+
+func main() -> i32 {
+    let item = Box<i32>{ item: 21 };
+    return read(item) + read_dyn(item) - 42;
+}
+```
+
+**未约束的关联类型不能当具体类型用。** 上例 `read<T: Read>` 的返回类型是
+`T.Item`，身体里只能原样透传（`return value.get();`），不能对它做 `+`、`*`
+等算术，也不能返回一个 `i32`——泛型定义必须对所有满足约束的 `T` 都成立，不能
+借调用点的具体实参倒推。需要在这个位置做具体计算时，要么让函数声明具体返回
+类型并从实现方读取（如 `func scaled(value: Square) -> i32`），要么经过已绑定
+关联类型的 `dyn`（`dyn Read<Item = i32>` 的 `Item` 已固定为 `i32`）。
+当前尚未提供 `T: Read<Item = i32>` 这类「约束内的关联等式」写法（只有 `dyn`
+位置允许绑定），sema 会把投影保留在诊断里，例如：
+`* 的操作数类型不兼容（T@m0:<off>.Unit 与 i32）`。
+
+可运行示例见 `examples/generics.nov`（泛型单态化）、`examples/traits.nov`
+（显式实现、默认方法、组合约束、关联类型）与 `examples/dyn-traits.nov`
+（拥有型 dyn、装箱、ARC 共享、默认方法的见证派发）。
+
 ### 4.7 struct（值类型，已确认新增）
 
 ```
 structDeclaration: directive* (Pub|Pri|Pkg)? Struct identifier typeParameters? classHeritage? structBody;
 structBody: '{' structMember* '}';
-structMember: methodDeclaration | fieldDeclaration;   // 复用 class 成员文法
+structMember: methodDeclaration | fieldDeclaration | associatedTypeDefinition;
 ```
 
 AST：`StructItem { directives, name, type_parameters, heritage, members: Vec<ClassMember>, scope, span }`。
@@ -396,9 +457,8 @@ AST：`StructItem { directives, name, type_parameters, heritage, members: Vec<Cl
 
 - **值语义**：赋值 / 传参 / 返回均为逐位拷贝（含 class 引用字段的「指针拷贝」，
   见 §8.3）；
-- **无继承**：struct 不可有 `parent`，不可被继承——parser 仍按 classHeritage
-  语法解析并把结果保留在 `StructItem.heritage`（AST 信息完整），
-  「struct 继承不合法」由语义分析判定；
+- **无继承**：struct 不能继承或被继承；括号列表中的每一项必须是显式实现的
+  trait，保留在 `StructItem.heritage`，由语义分析检查；
 - **无构造器**：用字段初始化构造 `TypeName{ x: 1, y: 2 }`（§5.4）；
 - **方法可选**：允许方法，方法内 `this` 为**编译器注入的可信指针**，字段访问
   无需 unsafe（§8.4）；
@@ -1092,9 +1152,9 @@ func main() {
 
 ## 12. 静态语义补全的已确认规则（2026-11-15）
 
-- class 括号列表按解析到的符号区分唯一父类和 trait，不按排列位置猜测。trait
-  只有方法声明，不允许字段与默认方法体。实现签名、继承覆写与抽象类实例化
-  均在静态阶段检查；构造器不继承。子类字段不能遮蔽继承成员，方法不能遮蔽字段。
+- class 括号列表按解析到的符号区分唯一父类和显式实现的 trait，不按排列
+  位置猜测。实现签名、继承覆写与抽象类实例化均在静态阶段检查；构造器不
+  继承。子类字段不能遮蔽继承成员，方法不能遮蔽字段。trait 规则见 §4.6.2。
 - 成员默认/pri 可在同模块、所属类型及已确认的子类内部访问；跨模块类型外需 pub。
   static 成员通过类型访问，实例成员通过实例访问。self 仅实例方法首参，
   显式注解须为所属类型（含符号泛型实参）；static 无 self/this。

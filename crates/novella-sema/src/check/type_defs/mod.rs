@@ -17,6 +17,10 @@ use crate::typecheck::member::{MemberInfo, lookup_member_chain};
 
 use super::CLASS_SPECIAL_METHODS;
 
+mod associated;
+pub(crate) use associated::*;
+mod conformance;
+mod overlap;
 mod registration;
 pub(crate) use registration::*;
 mod inheritance;

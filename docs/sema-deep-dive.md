@@ -1,5 +1,7 @@
 # novella-sema 深度技术文档
 
+> 这是 2026-11-20 的实现快照。组合约束、trait 默认方法、关联类型和 `dyn` 的当前语义见 [语言设计](design.md#462-trait关联类型与动态值) 与 [语义覆盖表](sema-coverage.md)。
+
 > 生成时间：2026-11-20 · 基于当前工作树源码逐文件精读
 > 适用对象：需要完整理解语义分析层工作流程、代码架构、设计决策的维护者
 > 阅读前提：已了解 novella 的 TokenKind / AST / Parser 基础（见根目录 `AGENTS.md`、`docs/design.md`）

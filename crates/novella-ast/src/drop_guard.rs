@@ -363,6 +363,18 @@ impl TypeExpr {
         match self {
             TypeExpr::Predefined { .. } => {}
             TypeExpr::Reference { generic_args, .. } => out.append(generic_args),
+            TypeExpr::Dynamic {
+                trait_ref,
+                bindings,
+                ..
+            } => {
+                out.push(take_boxed(trait_ref, no_type()));
+                out.extend(
+                    std::mem::take(bindings)
+                        .into_iter()
+                        .map(|binding| binding.ty),
+                );
+            }
             TypeExpr::Array { element, .. } | TypeExpr::Pointer { element, .. } => {
                 out.push(take_boxed(element, no_type()));
             }
@@ -377,8 +389,12 @@ impl TypeExpr {
     }
 }
 
-/// 取走函数类型的参数类型 / 默认值表达式 / 返回类型。
+/// 取走函数类型的泛型上界、参数类型、默认值表达式及返回类型。
 fn take_function_children(f: &mut FunctionType, out: &mut Vec<TypeExpr>) {
+    for parameter in &mut f.type_parameters {
+        out.extend(parameter.bound.take());
+        out.append(&mut parameter.additional_bounds);
+    }
     for mut param in std::mem::take(&mut f.params) {
         // 参数默认值是表达式，交给 `Expression::drop` 切段
         if let Some(default) = param.default.take() {

@@ -15,6 +15,10 @@ pub(crate) fn ty_eq(a: &Ty, b: &Ty) -> bool {
         (Ty::Float(x), Ty::Float(y)) => x == y,
         (Ty::Applied(x, a), Ty::Applied(y, b)) => ty_eq(x, y) && a.len() == b.len() && a.iter().zip(b).all(|(a,b)| ty_eq(a,b)),
         (Ty::Future(x), Ty::Future(y)) => ty_eq(x,y),
+        (Ty::Dynamic { trait_ref: x, bindings: a }, Ty::Dynamic { trait_ref: y, bindings: b }) =>
+            ty_eq(x, y) && a.len() == b.len() && a.iter().zip(b).all(|((n, a), (m, b))| n == m && ty_eq(a, b)),
+        (Ty::Associated { receiver: x, trait_ref: a, name: n }, Ty::Associated { receiver: y, trait_ref: b, name: m }) =>
+            n == m && ty_eq(x, y) && ty_eq(a, b),
         (Ty::Object(x), Ty::Object(y)) => x.len() == y.len() && x.iter().all(|(n,t)| y.get(n).is_some_and(|s| ty_eq(t,s))),
         (Ty::Pointer(x), Ty::Pointer(y)) => ty_eq(x, y),
         (Ty::Array(x, left), Ty::Array(y, right)) => left == right && ty_eq(x, y),

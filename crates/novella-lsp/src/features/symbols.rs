@@ -59,8 +59,9 @@ fn symbol_kind(kind: OutlineKind) -> lsp_types::SymbolKind {
         OutlineKind::Class => lsp_types::SymbolKind::CLASS,
         OutlineKind::Struct => lsp_types::SymbolKind::STRUCT,
         OutlineKind::Trait => lsp_types::SymbolKind::INTERFACE,
-        OutlineKind::TypeAlias => lsp_types::SymbolKind::TYPE_PARAMETER,
-        OutlineKind::TypeParameter => lsp_types::SymbolKind::TYPE_PARAMETER,
+        OutlineKind::TypeAlias | OutlineKind::AssociatedType | OutlineKind::TypeParameter => {
+            lsp_types::SymbolKind::TYPE_PARAMETER
+        }
         OutlineKind::Parameter => lsp_types::SymbolKind::VARIABLE,
         OutlineKind::Field => lsp_types::SymbolKind::FIELD,
         OutlineKind::Variable => lsp_types::SymbolKind::VARIABLE,

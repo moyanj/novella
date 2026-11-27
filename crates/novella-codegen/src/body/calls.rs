@@ -47,7 +47,7 @@ impl<'ctx> Body<'ctx, '_> {
         if args.len() != signature.params.len() + receiver_count {
             return Err(CodegenError(format!("`{id}` 实参个数与签名不一致")));
         }
-        if dst.is_some() && dst_ty != Some(&signature.ret) {
+        if dst.is_some() && !dst_ty.is_some_and(|ty| ty.same_value_type(&signature.ret)) {
             return Err(CodegenError(format!("`{id}` 调用的返回类型与 HIR 不一致")));
         }
         let mut values: Vec<BasicMetadataValueEnum<'ctx>> = Vec::with_capacity(args.len());
@@ -77,7 +77,17 @@ impl<'ctx> Body<'ctx, '_> {
                     .build_indirect_call(function_type, pointer, &values, "call")?
             }
         };
-        for (location, attribute) in crate::abi::extensions(self.context, &signature) {
+        self.finish_call(call, &signature, dst)
+    }
+
+    pub(super) fn finish_call(
+        &mut self,
+        call: inkwell::values::CallSiteValue<'ctx>,
+        signature: &FunctionSignature,
+        dst: Option<LocalId>,
+    ) -> Result<()> {
+        let id = &signature.id;
+        for (location, attribute) in crate::abi::extensions(self.context, signature) {
             call.add_attribute(location, attribute);
         }
         if let Some(dst) = dst {

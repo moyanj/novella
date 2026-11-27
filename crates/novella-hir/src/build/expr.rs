@@ -151,17 +151,8 @@ impl<'a> BodyBuilder<'a> {
                 span,
             } => self.build_assignment(target, *op, value, *span, false, block),
             Expression::Call {
-                callee,
-                args,
-                span,
-                type_args,
-            } => {
-                if !type_args.is_empty() {
-                    return Err(BuildError::at(BuildErrorKind::GenericUnsupported)
-                        .with_site(self.module, *span));
-                }
-                self.build_call(callee, args, *span, block)
-            }
+                callee, args, span, ..
+            } => self.build_call(callee, args, *span, block),
             Expression::Ternary {
                 condition,
                 then_expr,
@@ -198,7 +189,7 @@ impl<'a> BodyBuilder<'a> {
                 Ok(HirOperand::Local(dst))
             }
             Expression::Is { operand, ty, .. } => {
-                let target = annotation_type(self.sema, self.module, ty)?;
+                let target = self.annotation_type(ty)?;
                 let operand_ty = self.expr_type(operand.span())?;
                 let value = self.build_typed_expression(operand, &operand_ty, block)?;
                 let dst = self.fresh_local(HirType::Boolean);
@@ -211,7 +202,7 @@ impl<'a> BodyBuilder<'a> {
                 Ok(HirOperand::Local(dst))
             }
             Expression::Cast { expr, ty, span } => {
-                let target = annotation_type(self.sema, self.module, ty)?;
+                let target = self.annotation_type(ty)?;
                 let from = self.expr_type_pref(expr.span(), Some(&target))?;
                 let value = self.build_expression_inner(expr, Some(&from), block)?;
                 self.coerce(value, &from, &target, *span, block)

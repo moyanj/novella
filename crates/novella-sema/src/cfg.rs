@@ -38,6 +38,7 @@ pub(crate) fn configure(program: &mut Program, options: &CfgOptions) -> Vec<(Spa
                 let directives = match member {
                     ClassMember::Field(value) => &mut value.directives,
                     ClassMember::Method(value) => &mut value.directives,
+                    ClassMember::AssociatedType(_) => return true,
                 };
                 enabled(directives, options, &mut errors)
             });

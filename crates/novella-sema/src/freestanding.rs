@@ -13,7 +13,7 @@ use crate::{
 pub(crate) fn managed(sema: &Sema, ty: &Ty) -> bool {
     fn visit(sema: &Sema, ty: &Ty, seen: &mut HashSet<(ModuleId, String)>) -> bool {
         match ty {
-            Ty::Class(..) | Ty::Trait(..) | Ty::Future(_) => true,
+            Ty::Class(..) | Ty::Trait(..) | Ty::Future(_) | Ty::Dynamic { .. } => true,
             Ty::Array(element, length) => *length != 0 && visit(sema, element, seen),
             Ty::Tuple(items) | Ty::Union(items) => items.iter().any(|ty| visit(sema, ty, seen)),
             Ty::Object(items) => items.values().any(|ty| visit(sema, ty, seen)),
@@ -44,6 +44,18 @@ fn floating(sema: &Sema, ty: &Ty, seen: &mut HashSet<(ModuleId, String)>) -> boo
     match ty {
         Ty::Float(_) | Ty::FloatLiteral(_) => true,
         Ty::Pointer(inner) | Ty::Array(inner, _) | Ty::Future(inner) => floating(sema, inner, seen),
+        Ty::Associated {
+            receiver,
+            trait_ref,
+            ..
+        } => floating(sema, receiver, seen) || floating(sema, trait_ref, seen),
+        Ty::Dynamic {
+            trait_ref,
+            bindings,
+        } => {
+            floating(sema, trait_ref, seen)
+                || bindings.iter().any(|(_, ty)| floating(sema, ty, seen))
+        }
         Ty::Tuple(items) | Ty::Union(items) => items.iter().any(|ty| floating(sema, ty, seen)),
         Ty::Object(items) => items.values().any(|ty| floating(sema, ty, seen)),
         Ty::Applied(base, args) => {
@@ -73,7 +85,7 @@ fn c_abi(ty: &Ty, returns: bool) -> bool {
         Ty::Boolean | Ty::Int(_) | Ty::Float(_) => true,
         Ty::Pointer(inner) => !matches!(
             inner.as_ref(),
-            Ty::Class(..) | Ty::Trait(..) | Ty::Future(_)
+            Ty::Class(..) | Ty::Trait(..) | Ty::Future(_) | Ty::Dynamic { .. }
         ),
         Ty::Function(sig) => {
             !sig.is_async

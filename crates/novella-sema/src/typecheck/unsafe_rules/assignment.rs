@@ -62,8 +62,14 @@ pub(crate) fn check_assignment(
     if let Some(slot) = slot {
         ctx.uninitialized.insert(slot);
     }
-    let value_ty =
+    let mut value_ty =
         early_value.unwrap_or_else(|| check_expr_with_hint(sema, ctx, value, &target_ty));
+    if op == AssignOp::Assign
+        && !crate::ty::ty_eq(&target_ty, &value_ty)
+        && sema.record_dyn_conversion(ctx.module, value.span(), &target_ty, &value_ty)
+    {
+        value_ty = target_ty.clone();
+    }
     if let Some(symbol) = assigned {
         ctx.uninitialized.remove(&symbol.name_span);
     }

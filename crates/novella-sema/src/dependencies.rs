@@ -72,6 +72,23 @@ fn type_dependencies(ty: &Ty, targets: &mut HashSet<ModuleId>) {
             }
             type_dependencies(&signature.ret, targets);
         }
+        Ty::Associated {
+            receiver,
+            trait_ref,
+            ..
+        } => {
+            type_dependencies(receiver, targets);
+            type_dependencies(trait_ref, targets);
+        }
+        Ty::Dynamic {
+            trait_ref,
+            bindings,
+        } => {
+            type_dependencies(trait_ref, targets);
+            for (_, ty) in bindings {
+                type_dependencies(ty, targets);
+            }
+        }
         Ty::Object(fields) => {
             for ty in fields.values() {
                 type_dependencies(ty, targets);

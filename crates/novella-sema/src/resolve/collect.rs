@@ -31,6 +31,7 @@ pub(crate) fn collect_module(sema: &mut Sema, module: ModuleId) {
             }
             Item::Trait(trait_item) => {
                 let def = TraitDef {
+                    associated: HashMap::new(),
                     type_params: trait_item
                         .type_parameters
                         .iter()
@@ -54,6 +55,7 @@ pub(crate) fn collect_module(sema: &mut Sema, module: ModuleId) {
             }
             Item::Class(class) => {
                 let def = ClassDef {
+                    associated: Vec::new(),
                     parent_type: None,
                     trait_types: Vec::new(),
                     type_params: class
@@ -69,7 +71,7 @@ pub(crate) fn collect_module(sema: &mut Sema, module: ModuleId) {
                     parent_resolved: None,
                     name: class.name.clone(),
                     span: class.span,
-                    trait_impls: vec![],
+                    trait_impls: class.parent.clone(),
                     trait_impls_resolved: vec![],
                 };
                 sema.type_defs
@@ -78,6 +80,10 @@ pub(crate) fn collect_module(sema: &mut Sema, module: ModuleId) {
             }
             Item::Struct(struct_item) => {
                 let def = StructDef {
+                    trait_types: Vec::new(),
+                    heritage: struct_item.heritage.clone(),
+                    span: struct_item.span,
+                    associated: Vec::new(),
                     type_params: struct_item
                         .type_parameters
                         .iter()

@@ -1,0 +1,42 @@
+// 泛型单态化：函数、struct、方法与 class 都按具体实参生成原生代码。
+struct Box<T> {
+    pub value: T;
+    pub func map<U>(self, convert: func (T) -> U) -> Box<U> {
+        return Box<U>{ value: convert(this.value) };
+    }
+}
+
+class Base<T> {
+    pub label: T;
+    pub func __init(self, label: T) { this.label = label; }
+}
+
+class Tagged<T>(Base<T>) {
+    pub count: i32;
+    pub func __init(self, label: T, count: i32) {
+        this.label = label;
+        this.count = count;
+    }
+}
+
+const seed: Box<i32> = Box<i32>{ value: 20 };
+
+func plus(a: i32, b: i32) -> i32 { return a + b; }
+func twice<T>(value: T, combine: func (T, T) -> T) -> T { return combine(value, value); }
+
+// 递归泛型调用
+func depth<T>(value: T, n: i32) -> Box<Box<T>> {
+    let inner = Box<T>{ value };
+    if (n == 0) {
+        return Box<Box<T>>{ value: inner };
+    }
+    return Box<Box<T>>{ value: depth(value, n - 1).value };
+}
+
+func main() -> i32 {
+    let root = depth<i32>(seed.value, 3);
+    let tagged = new Tagged<i32>(root.value.value, 2);
+    let mapper = (b: Box<i32>) => twice<i32>(b.value, plus);
+    let mapped = root.map<i32>(mapper);
+    return tagged.label + tagged.count + mapped.value - 62;
+}

@@ -8,6 +8,7 @@ impl<'a> BodyBuilder<'a> {
         &mut self,
         module: ModuleId,
         locals: Vec<(String, LocalId)>,
+        subst: Substitution,
         f: impl FnOnce(&mut Self) -> Result<T, BuildError>,
     ) -> Result<T, BuildError> {
         let previous_module = std::mem::replace(&mut self.module, module);
@@ -15,7 +16,9 @@ impl<'a> BodyBuilder<'a> {
         let previous_functions = std::mem::take(&mut self.functions);
         let previous_captures = std::mem::take(&mut self.capture_names);
         let previous_receiver = self.with_receiver.take();
+        let previous_subst = std::mem::replace(&mut self.subst, subst);
         let result = f(self);
+        self.subst = previous_subst;
         self.module = previous_module;
         self.locals = previous_locals;
         self.functions = previous_functions;
@@ -27,11 +30,15 @@ impl<'a> BodyBuilder<'a> {
         sema: &'a SemaResult,
         module: ModuleId,
         functions: Vec<(String, HirFunctionId)>,
+        instances: Instances,
+        subst: Substitution,
     ) -> Self {
         BodyBuilder {
             sema,
             module,
             functions,
+            instances,
+            subst,
             next_local: 0,
             local_types: Vec::new(),
             locals: Vec::new(),
@@ -112,7 +119,7 @@ impl<'a> BodyBuilder<'a> {
             .ok_or_else(|| {
                 BuildError::at(BuildErrorKind::MissingExpressionType).with_site(self.module, span)
             })?;
-        HirType::from_view(view, &mut |fv| self.synth_function_id(fv))
+        self.concrete_type(view, None)
             .map_err(|error| error.with_site(self.module, span))
     }
 
@@ -134,15 +141,15 @@ impl<'a> BodyBuilder<'a> {
             .ok_or_else(|| {
                 BuildError::at(BuildErrorKind::MissingExpressionType).with_site(self.module, span)
             })?;
-        HirType::from_view_with(view, &mut |fv| self.synth_function_id(fv), preferred)
+        self.concrete_type(view, preferred)
             .map_err(|error| error.with_site(self.module, span))
     }
 
-    /// 具名实体沿用所属模块；匿名键只描述签名，不代表唯一函数实体。
-    pub(super) fn synth_function_id(&self, view: &novella_sema::FunctionView) -> HirFunctionId {
-        match &view.name {
-            Some(name) => HirFunctionId(format!("m{}::{}", view.module, name)),
-            None => HirFunctionId(format!("m{}::anon#{}", self.module, view.params.len())),
-        }
+    pub(super) fn concrete_type(
+        &self,
+        view: &TypeView,
+        preferred: Option<&HirType>,
+    ) -> Result<HirType, BuildError> {
+        mono::concrete_type(self.sema, &self.instances, view, &self.subst, preferred)
     }
 }

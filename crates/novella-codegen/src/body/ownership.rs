@@ -104,6 +104,29 @@ impl<'ctx> Body<'ctx, '_> {
 
     pub(super) fn runtime_alloc(&mut self, ty: &HirType) -> Result<PointerValue<'ctx>> {
         let aggregate = self.aggregate_type(ty)?;
+        // 实际分配才声明析构包装，未使用的 class 不产生 ARC 依赖。
+        let name = crate::ownership::destructor_name(ty)?;
+        let pointer = self.context.ptr_type(inkwell::AddressSpace::default());
+        let destroy = self
+            .module
+            .get_function(&name)
+            .unwrap_or_else(|| {
+                self.module.add_function(
+                    &name,
+                    self.context.void_type().fn_type(&[pointer.into()], false),
+                    Some(inkwell::module::Linkage::Internal),
+                )
+            })
+            .as_global_value()
+            .as_pointer_value();
+        self.runtime_alloc_layout(aggregate, destroy)
+    }
+
+    pub(super) fn runtime_alloc_layout(
+        &self,
+        aggregate: impl inkwell::types::BasicType<'ctx>,
+        destroy: PointerValue<'ctx>,
+    ) -> Result<PointerValue<'ctx>> {
         let layout = self.module.get_data_layout();
         let target = inkwell::targets::TargetData::create(
             layout
@@ -139,21 +162,6 @@ impl<'ctx> Body<'ctx, '_> {
             .context
             .i64_type()
             .const_int(u64::from(target.get_abi_alignment(&aggregate)), false);
-        // 实际分配才声明析构包装，未使用的 class 不产生 ARC 依赖。
-        let name = crate::ownership::destructor_name(ty)?;
-        let pointer = self.context.ptr_type(inkwell::AddressSpace::default());
-        let destroy = self
-            .module
-            .get_function(&name)
-            .unwrap_or_else(|| {
-                self.module.add_function(
-                    &name,
-                    self.context.void_type().fn_type(&[pointer.into()], false),
-                    Some(inkwell::module::Linkage::Internal),
-                )
-            })
-            .as_global_value()
-            .as_pointer_value();
         let call = self.builder.build_call(
             alloc,
             &[size.into(), alignment.into(), destroy.into()],

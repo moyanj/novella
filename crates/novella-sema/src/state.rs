@@ -25,7 +25,7 @@ pub(crate) struct Sema {
     pub module_only: bool,
     pub exception_imports: HashSet<(ModuleId, String)>,
     pub generic_uses: HashMap<(ModuleId, Span), ty::Ty>,
-    pub type_param_bounds: HashMap<String, ty::Ty>,
+    pub type_param_bounds: HashMap<String, Vec<ty::Ty>>,
     pub target: AnalysisTarget,
     pub build_target: novella_core::target::BuildTarget,
     /// 目标描述；语义阶段按指针宽度、浮点能力与 @no_std 约束读取。
@@ -53,6 +53,8 @@ pub(crate) struct Sema {
     pub references: HashMap<(ModuleId, Span), Definition>,
     /// 表达式 → 语义类型（键为 `(模块, 表达式 span)`），供 codegen 推导布局
     pub expression_types: HashMap<(ModuleId, Span), ty::Ty>,
+    pub call_instances: HashMap<(ModuleId, Span), crate::CallInstance>,
+    pub dyn_conversions: HashMap<(ModuleId, Span), crate::DynConversion>,
     pub annotation_types: HashMap<(ModuleId, Span), ty::Ty>,
     pub declaration_types: HashMap<(ModuleId, Span), ty::Ty>,
 }
@@ -149,6 +151,8 @@ impl Sema {
             global_diagnostics: Vec::new(),
             references: HashMap::new(),
             expression_types: HashMap::new(),
+            call_instances: HashMap::new(),
+            dyn_conversions: HashMap::new(),
             annotation_types: HashMap::new(),
             declaration_types: HashMap::new(),
         }
@@ -195,13 +199,18 @@ impl Sema {
                 .global_scope_symbol(&self.scopes, name)
                 .map(|symbol| symbol.name_span)
                 .unwrap_or(Span { start: 0, end: 0 });
-            let (fields, methods) = self.type_members(def);
+            let (fields, methods) = self.type_members(*module, name, def);
             summaries.push(TypeSummary {
                 module: *module,
                 name: name.clone(),
                 kind,
                 span,
                 parent,
+                applied_parent: match def {
+                    TypeDef::Class(class) => class.parent_type.as_ref().map(ty::Ty::view),
+                    _ => None,
+                },
+                type_parameters: def.type_params().to_vec(),
                 fields,
                 methods,
             });
@@ -210,11 +219,17 @@ impl Sema {
     }
 
     /// 汇总类型定义的字段与方法（方法按名字排序，跨 HashMap 迭代顺序稳定）。
-    fn type_members(&self, def: &TypeDef) -> (Vec<FieldSummary>, Vec<MethodSummary>) {
+    fn type_members(
+        &self,
+        module: ModuleId,
+        name: &str,
+        def: &TypeDef,
+    ) -> (Vec<FieldSummary>, Vec<MethodSummary>) {
         let (fields, methods) = match def {
             TypeDef::Struct(item) => (&item.fields, &item.methods),
             TypeDef::Class(item) => (&item.fields, &item.methods),
             TypeDef::Trait(item) => {
+                let trait_ref = self.identity_instance(ty::Ty::Trait(module, name.to_owned()));
                 let mut methods: Vec<_> = item
                     .methods
                     .iter()
@@ -222,6 +237,7 @@ impl Sema {
                         name: name.clone(),
                         signature: method.sig.view(),
                         is_static: method.is_static,
+                        is_dyn_dispatchable: self.dyn_dispatchable(&trait_ref, method),
                     })
                     .collect();
                 methods.sort_by(|a, b| a.name.cmp(&b.name));
@@ -245,6 +261,7 @@ impl Sema {
                 name: name.clone(),
                 signature: method.sig.view(),
                 is_static: method.is_static,
+                is_dyn_dispatchable: false,
             })
             .collect();
         methods.sort_by(|a, b| a.name.cmp(&b.name));

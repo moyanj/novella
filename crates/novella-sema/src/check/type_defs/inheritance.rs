@@ -6,25 +6,27 @@ pub(crate) fn resolve_class_parents(sema: &mut Sema) {
     let class_keys: Vec<(ModuleId, String)> = sema
         .type_defs
         .iter()
-        .filter(|(_, def)| matches!(def, TypeDef::Class(_)))
+        .filter(|(_, def)| matches!(def, TypeDef::Class(_) | TypeDef::Struct(_)))
         .map(|(key, _)| key.clone())
         .collect();
     for key in class_keys {
-        let Some(TypeDef::Class(def)) = sema.type_defs.get(&key).cloned() else {
-            continue;
+        let (is_class, heritage) = match sema.type_defs.get(&key) {
+            Some(TypeDef::Class(def)) => (true, def.trait_impls.clone()),
+            Some(TypeDef::Struct(def)) => (false, def.heritage.clone()),
+            _ => continue,
         };
         let env = type_env_for(sema, &key);
         let scope = sema.modules[key.0].global_scope;
         let mut parent = None;
         let mut traits = Vec::new();
-        for expression in &def.trait_impls {
+        for expression in &heritage {
             let ty = sema.resolve_type(key.0, scope, expression, &env);
             let base = match &ty {
                 Ty::Applied(base, _) => &**base,
                 ty => ty,
             };
             match base {
-                Ty::Class(..) => {
+                Ty::Class(..) if is_class => {
                     if parent.is_some() {
                         sema.decl_error(key.0, expression.span(), "class 只能有一个父类");
                     } else {
@@ -39,7 +41,15 @@ pub(crate) fn resolve_class_parents(sema: &mut Sema) {
                     }
                 }
                 other if other.is_opaque() => {}
-                _ => sema.decl_error(key.0, expression.span(), "继承列表只允许 class 或 trait"),
+                _ => sema.decl_error(
+                    key.0,
+                    expression.span(),
+                    if is_class {
+                        "继承列表只允许 class 或 trait"
+                    } else {
+                        "struct 不支持继承，父列表只允许 trait"
+                    },
+                ),
             }
         }
         if let Some(TypeDef::Class(current)) = sema.type_defs.get_mut(&key) {
@@ -47,6 +57,8 @@ pub(crate) fn resolve_class_parents(sema: &mut Sema) {
             current.parent_type = parent;
             current.trait_impls_resolved =
                 traits.iter().map(crate::typecheck::this_ty_key).collect();
+            current.trait_types = traits;
+        } else if let Some(TypeDef::Struct(current)) = sema.type_defs.get_mut(&key) {
             current.trait_types = traits;
         }
     }
@@ -81,32 +93,11 @@ pub(crate) fn resolve_class_parents(sema: &mut Sema) {
 /// 方法返回类型定型后，校验覆写和 trait 实现的签名兼容性。
 pub(crate) fn check_inherited_signatures(sema: &mut Sema) {
     check_overrides(sema);
-    check_trait_impls(sema);
-}
-
-/// D04：校验 class 声明的 trait 实现。
-///
-/// 语法复用 `classHeritage`：`class C (Parent, Trait1, Trait2)` 中首项是父类，
-/// 其余是 trait。要求：
-/// - 列表里除首项外必须是 trait 类型（写成别的类型报错）；
-/// - trait 的每个方法都必须在类（含继承链）中有**兼容实现**：形参类型完全一致、
-///   返回类型可赋给 trait 的返回类型（协变）、且不是抽象方法。
-fn check_trait_impls(sema: &mut Sema) {
-    let mut tasks = Vec::new();
-    for (key, def) in &sema.type_defs {
-        if let TypeDef::Class(def) = def {
-            for ty in &def.trait_types {
-                tasks.push((key.clone(), ty.clone()));
-            }
-        }
-    }
-    for (class, ty) in tasks {
-        check_trait_impl(sema, &class, ty);
-    }
+    super::conformance::check_trait_impls(sema);
 }
 
 /// 类型定义的名字环境与声明身份对应；方法形参可在其上遮蔽。
-fn type_env_for(sema: &Sema, key: &(ModuleId, String)) -> HashMap<String, Ty> {
+pub(super) fn type_env_for(sema: &Sema, key: &(ModuleId, String)) -> HashMap<String, Ty> {
     sema.type_defs
         .get(key)
         .map(|def| {
@@ -123,91 +114,12 @@ fn type_env_for(sema: &Sema, key: &(ModuleId, String)) -> HashMap<String, Ty> {
         .unwrap_or_default()
 }
 
-/// 单个 (class, trait) 的一致性检查：trait 的每个方法都必须被实现。
-fn check_trait_impl(sema: &mut Sema, class: &(ModuleId, String), trait_ty: Ty) {
-    let trait_key = crate::typecheck::this_ty_key(&trait_ty);
-    let subst = crate::ty::instance_substitution(sema, &trait_ty);
-    let Some(TypeDef::Trait(def)) = sema.type_defs.get(&trait_key).cloned() else {
-        return;
-    };
-    let class_span = match sema.type_defs.get(class) {
-        Some(TypeDef::Class(def)) => def.span,
-        _ => Span { start: 0, end: 0 },
-    };
-    for (name, required) in def.methods.iter() {
-        let found = find_implementation(sema, class, name, required.is_static);
-        match found {
-            None => sema.decl_error(
-                class.0,
-                class_span,
-                format!(
-                    "class `{}` 声明实现 trait `{}`，但缺少方法 `{name}` 的实现",
-                    class.1, def.name
-                ),
-            ),
-            Some(implemented) => {
-                let required_ty = crate::ty::substitute_type_params(
-                    &Ty::Function(std::rc::Rc::new(required.sig.clone())),
-                    &subst,
-                );
-                let Ty::Function(required_sig) = required_ty else {
-                    unreachable!()
-                };
-                if !trait_signature_compatible(sema, &required_sig, &implemented.sig) {
-                    sema.decl_error(
-                        class.0,
-                        implemented.span,
-                        format!(
-                            "方法 `{name}` 的实现与 trait `{}` 声明的签名不一致",
-                            def.name
-                        ),
-                    );
-                }
-            }
-        }
-    }
-}
-
-/// 查找继承链中生效的方法，抽象声明会遮蔽父类的实现。
-fn find_implementation(
+/// trait 声明与实现的签名兼容：显式实参逐位相同，返回值保持同一表示。
+pub(super) fn trait_signature_compatible(
     sema: &Sema,
-    class: &(ModuleId, String),
-    name: &str,
-    want_static: bool,
-) -> Option<MethodSig> {
-    let mut current = Some(class.clone());
-    let mut visited = HashSet::new();
-    while let Some(k) = current {
-        if !visited.insert(k.clone()) {
-            return None;
-        }
-        let Some(TypeDef::Class(def)) = sema.type_defs.get(&k) else {
-            return None;
-        };
-        if let Some(method) = def.methods.get(name) {
-            if method.is_abstract || method.is_static != want_static {
-                return None;
-            }
-            let mut resolved = method.clone();
-            let receiver = Ty::Class(class.0, class.1.clone());
-            let subst = crate::ty::member_substitution(sema, &receiver, &k);
-            if let Ty::Function(sig) = crate::ty::substitute_type_params(
-                &Ty::Function(std::rc::Rc::new(resolved.sig)),
-                &subst,
-            ) {
-                resolved.sig = (*sig).clone();
-            } else {
-                unreachable!();
-            }
-            return Some(resolved);
-        }
-        current = def.parent_resolved.clone();
-    }
-    None
-}
-
-/// trait 声明与实现的签名兼容：实参逐位相同、返回类型可赋给 trait 的声明。
-fn trait_signature_compatible(sema: &Sema, required: &FunctionSig, actual: &FunctionSig) -> bool {
+    required: &FunctionSig,
+    actual: &FunctionSig,
+) -> bool {
     if required.type_params.len() != actual.type_params.len()
         || required.is_async != actual.is_async
     {
@@ -225,20 +137,30 @@ fn trait_signature_compatible(sema: &Sema, required: &FunctionSig, actual: &Func
     ) else {
         unreachable!()
     };
-    if required.params.len() != actual.params.len() {
-        return false;
-    }
-    for (want, have) in required.params.iter().zip(actual.params.iter()) {
-        // 首个 self 在两侧分别是 trait 与 class 的属主，不参与比较
-        if want.name == "self" {
-            continue;
-        }
-        if !crate::ty::ty_eq(&want.ty, &have.ty) {
-            return false;
-        }
-    }
-    // 返回类型协变
-    sema.is_assignable(&required.ret, &actual.ret)
+    // `self` 或隐式 `this` 均为接收者，不参与对外显式参数列表。
+    let params = |sig: &FunctionSig| {
+        usize::from(sig.is_method && sig.params.first().is_some_and(|p| p.name == "self"))
+    };
+    let required_params = &required.params[params(required)..];
+    let actual_params = &actual.params[params(&actual)..];
+    required_params.len() == actual_params.len()
+        && required_params
+            .iter()
+            .zip(actual_params)
+            .all(|(want, have)| crate::ty::ty_eq(&want.ty, &have.ty))
+        && covariant_return(sema, &required.ret, &actual.ret)
+}
+
+/// 派发不会执行任意隐式转换：仅允许同类型或同表示的 class 引用协变。
+fn covariant_return(sema: &Sema, required: &Ty, actual: &Ty) -> bool {
+    crate::ty::ty_eq(required, actual)
+        || matches!(
+            (
+                crate::traits::nominal_base(required),
+                crate::traits::nominal_base(actual)
+            ),
+            (Ty::Class(..), Ty::Class(..))
+        ) && sema.is_subclass(required, actual)
 }
 
 /// D02 覆写校验：子类同名方法必须与父类签名一致（返回类型允许协变）。
@@ -389,8 +311,7 @@ fn check_override_sig(
             );
         }
     }
-    // 返回类型协变：子类返回可赋给父类返回类型即可
-    if !sema.is_assignable(&base.sig.ret, &method.sig.ret) {
+    if !covariant_return(sema, &base.sig.ret, &method.sig.ret) {
         sema.decl_error(
             module,
             signature_span(method),

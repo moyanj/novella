@@ -38,6 +38,16 @@ pub(crate) fn reference_op<'ctx>(
                 value.into_pointer_value(),
             )?;
         }
+        HirType::Dynamic(_) => {
+            let data = builder.build_extract_value(value.into_struct_value(), 0, "dyn.data")?;
+            reference_call(
+                context,
+                module,
+                builder,
+                operation,
+                data.into_pointer_value(),
+            )?;
+        }
         HirType::Array(element, length) if has_owned_members(types, element) => {
             for index in (0..*length).rev() {
                 let member = builder.build_extract_value(
@@ -85,7 +95,7 @@ pub(crate) fn reference_op<'ctx>(
 
 pub(crate) fn has_owned_members(types: &Types<'_>, ty: &HirType) -> bool {
     match ty {
-        HirType::Class(..) => true,
+        HirType::Class(..) | HirType::Dynamic(_) => true,
         HirType::Array(element, length) => *length != 0 && has_owned_members(types, element),
         HirType::Tuple(elements) => elements
             .iter()

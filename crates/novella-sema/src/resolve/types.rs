@@ -19,6 +19,7 @@ impl Sema {
         let resolved = stacker::maybe_grow(128 * 1024, 2 * 1024 * 1024, || {
             self.resolve_type_inner(module, scope, ty, type_env)
         });
+        let resolved = self.normalize_associated(&resolved);
         self.annotation_types
             .insert((module, ty.span()), resolved.clone());
         resolved
@@ -73,6 +74,14 @@ impl Sema {
                 *span,
                 type_env,
             ),
+            TypeExpr::Dynamic {
+                trait_ref,
+                bindings,
+                span,
+            } => {
+                let trait_ref = self.resolve_type(module, scope, trait_ref, type_env);
+                self.resolve_dynamic_type(module, scope, *span, trait_ref, bindings, type_env)
+            }
             TypeExpr::Array {
                 element,
                 length: Some(length),
@@ -124,6 +133,7 @@ impl Sema {
         span: Span,
         type_env: &HashMap<String, Ty>,
     ) -> Ty {
+        let original_span = span;
         // 引用绑定只选择末尾类型名，不能覆盖限定路径或泛型实参。
         let span = self.modules[module]
             .tokens
@@ -174,6 +184,39 @@ impl Sema {
             return self.type_from_symbol(module, span, &symbol, name, args, type_env);
         }
 
+        // 首段不是命名空间，或路径已超出一次模块跳转：末段是关联类型。
+        let ns_symbol = self.scopes.lookup(scope, &qualifier[0]);
+        let namespace =
+            ns_symbol.is_some_and(|s| matches!(s.kind, SymbolKind::NamespaceImport { .. }));
+        if type_env.contains_key(&qualifier[0]) || !namespace || qualifier.len() > 1 {
+            let (receiver_name, prefix) = qualifier.split_last().unwrap();
+            let receiver_end = self.modules[module]
+                .tokens
+                .iter()
+                .rev()
+                .find(|token| {
+                    token.span.start < span.start && token.slice == receiver_name.as_str()
+                })
+                .map_or(span.start, |token| token.span.end);
+            let receiver_span = Span {
+                start: original_span.start,
+                end: receiver_end,
+            };
+            let receiver = self.resolve_type_reference(
+                module,
+                scope,
+                prefix,
+                receiver_name,
+                &[],
+                receiver_span,
+                type_env,
+            );
+            if !args.is_empty() {
+                self.type_error(module, span, "关联类型不能带类型实参");
+                return Ty::Error;
+            }
+            return self.resolve_associated_projection(module, span, receiver, name, type_env);
+        }
         // 限定名：首段须为命名空间导入绑定；多级限定暂不支持
         if qualifier.len() > 1 {
             self.error(
@@ -231,6 +274,121 @@ impl Sema {
                 }
                 self.type_from_symbol(module, span, &target_symbol, name, args, type_env)
             }
+        }
+    }
+
+    pub(crate) fn resolve_associated_projection(
+        &mut self,
+        module: ModuleId,
+        span: Span,
+        receiver: Ty,
+        name: &str,
+        env: &HashMap<String, Ty>,
+    ) -> Ty {
+        if receiver.is_opaque() {
+            return Ty::Error;
+        }
+        let candidates = self
+            .implemented_traits(&receiver)
+            .into_iter()
+            .filter(|trait_ref| self.associated_declaration(trait_ref, name).is_some())
+            .collect::<Vec<_>>();
+        match candidates.as_slice() {
+            [trait_ref] => {
+                // `Iter.Item` 在该 trait 内是 `Self.Item` 的名义拼写；trait 本身不是值类型见证。
+                let receiver = if matches!(crate::traits::nominal_base(&receiver), Ty::Trait(..)) {
+                    let Some(actual) = env
+                        .get("Self")
+                        .filter(|t| self.satisfies_bound(trait_ref, t))
+                    else {
+                        self.type_error(
+                            module,
+                            span,
+                            "关联类型投影需要具体接收者或有约束的类型参数",
+                        );
+                        return Ty::Error;
+                    };
+                    actual.clone()
+                } else {
+                    receiver
+                };
+                Ty::Associated {
+                    receiver: Box::new(receiver),
+                    trait_ref: Box::new(trait_ref.clone()),
+                    name: name.into(),
+                }
+            }
+            [] => {
+                self.type_error(
+                    module,
+                    span,
+                    format!("`{receiver}` 没有可用的关联类型 `{name}`"),
+                );
+                Ty::Error
+            }
+            _ => {
+                self.type_error(
+                    module,
+                    span,
+                    format!("`{receiver}.{name}` 的关联类型有多个匹配的 trait 约束"),
+                );
+                Ty::Error
+            }
+        }
+    }
+
+    fn resolve_dynamic_type(
+        &mut self,
+        module: ModuleId,
+        scope: ScopeId,
+        span: Span,
+        trait_ref: Ty,
+        bindings: &[novella_ast::types::AssociatedTypeBinding],
+        env: &HashMap<String, Ty>,
+    ) -> Ty {
+        let Ty::Trait(id, name) = crate::traits::nominal_base(&trait_ref) else {
+            if !trait_ref.is_opaque() {
+                self.type_error(module, span, "`dyn` 只能引用 trait 类型");
+            }
+            return Ty::Error;
+        };
+        let Some(TypeDef::Trait(def)) = self.type_defs.get(&(*id, name.clone())) else {
+            return Ty::Error;
+        };
+        let mut required = def.associated.keys().cloned().collect::<Vec<_>>();
+        required.sort_unstable();
+        let mut values = Vec::new();
+        for binding in bindings {
+            let ty = self.resolve_type(module, scope, &binding.ty, env);
+            if !required.contains(&binding.name) {
+                self.type_error(
+                    module,
+                    binding.name_span,
+                    format!("trait `{trait_ref}` 无关联类型 `{}`", binding.name),
+                );
+            } else if values.iter().any(|(n, _)| n == &binding.name) {
+                self.type_error(
+                    module,
+                    binding.name_span,
+                    format!("重复绑定关联类型 `{}`", binding.name),
+                );
+            } else {
+                values.push((binding.name.clone(), ty));
+            }
+        }
+        for name in required {
+            if !values.iter().any(|(n, _)| n == &name) {
+                self.type_error(
+                    module,
+                    span,
+                    format!("`dyn {trait_ref}` 必须绑定关联类型 `{name}`"),
+                );
+            }
+        }
+        values.sort_unstable_by(|a, b| a.0.cmp(&b.0));
+        Ty::Dynamic {
+            trait_ref: Box::new(trait_ref),
+            bindings: values,
         }
     }
 
@@ -437,7 +595,8 @@ impl Sema {
         env: &HashMap<String, Ty>,
     ) {
         for param in params {
-            if let Some(bound) = &param.bound {
+            let mut bounds = Vec::new();
+            for bound in param.bound.iter().chain(&param.additional_bounds) {
                 let ty = self.resolve_type(module, scope, bound, env);
                 let base = match &ty {
                     Ty::Applied(base, _) => &**base,
@@ -446,8 +605,17 @@ impl Sema {
                 if !matches!(base, Ty::Trait(..)) && !ty.is_opaque() {
                     self.type_error(module, bound.span(), "泛型约束必须是 trait 类型");
                 }
+                if matches!(base, Ty::Trait(..)) {
+                    if bounds.iter().any(|prior| crate::ty::ty_eq(prior, &ty)) {
+                        self.type_error(module, bound.span(), format!("重复的泛型约束 `{ty}`"));
+                    } else {
+                        bounds.push(ty);
+                    }
+                }
+            }
+            if !bounds.is_empty() {
                 self.type_param_bounds
-                    .insert(crate::ty::param_key(module, param), ty);
+                    .insert(crate::ty::param_key(module, param), bounds);
             }
         }
     }
@@ -456,46 +624,10 @@ impl Sema {
         if actual.is_opaque() || bound.is_opaque() {
             return true;
         }
-        if let Ty::TypeParam(name) = actual {
-            return self
-                .type_param_bounds
-                .get(name)
-                .is_some_and(|ty| crate::ty::ty_eq(bound, ty));
-        }
-        let mut current = actual.clone();
-        let mut visited = std::collections::HashSet::new();
-        loop {
-            if crate::ty::ty_eq(bound, &current) {
-                return true;
-            }
-            let base = match &current {
-                Ty::Applied(base, _) => &**base,
-                other => other,
-            };
-            if !matches!(base, Ty::Class(..)) {
-                break;
-            }
-            let key = crate::typecheck::this_ty_key(&current);
-            if !visited.insert(key.clone()) {
-                break;
-            }
-            let Some(TypeDef::Class(def)) = self.type_defs.get(&key) else {
-                break;
-            };
-            let subst = crate::ty::instance_substitution(self, &current);
-            if def.trait_types.iter().any(|implemented| {
-                crate::ty::ty_eq(
-                    bound,
-                    &crate::ty::substitute_type_params(implemented, &subst),
-                )
-            }) {
-                return true;
-            }
-            let Some(parent) = &def.parent_type else {
-                break;
-            };
-            current = crate::ty::substitute_type_params(parent, &subst);
-        }
-        false
+        crate::ty::ty_eq(bound, actual)
+            || self
+                .implemented_traits(actual)
+                .iter()
+                .any(|ty| crate::ty::ty_eq(bound, ty))
     }
 }

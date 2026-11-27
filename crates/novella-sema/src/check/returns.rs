@@ -58,6 +58,9 @@ pub(crate) fn collect(sema: &mut Sema) {
                 Item::Class(item) => {
                     collect_methods(sema, module, Ty::Class(module, item.name), item.members)
                 }
+                Item::Trait(item) => {
+                    collect_methods(sema, module, Ty::Trait(module, item.name), item.members)
+                }
                 _ => {}
             }
         }
@@ -185,6 +188,19 @@ fn inference_state(ty: &Ty) -> InferenceState {
         Ty::Pointer(inner) | Ty::Array(inner, _) | Ty::Future(inner) => inference_state(inner),
         Ty::Tuple(types) | Ty::Union(types) => merge(types),
         Ty::Applied(base, args) => inference_state(base).max(merge(args)),
+        Ty::Associated {
+            receiver,
+            trait_ref,
+            ..
+        } => inference_state(receiver).max(inference_state(trait_ref)),
+        Ty::Dynamic {
+            trait_ref,
+            bindings,
+        } => bindings
+            .iter()
+            .fold(inference_state(trait_ref), |state, (_, ty)| {
+                state.max(inference_state(ty))
+            }),
         Ty::Object(fields) => fields
             .values()
             .map(inference_state)
@@ -232,6 +248,7 @@ fn set_return(sema: &mut Sema, module: ModuleId, name: &str, task: &ReturnTask, 
             let methods = match sema.type_defs.get_mut(&key) {
                 Some(TypeDef::Struct(def)) => &mut def.methods,
                 Some(TypeDef::Class(def)) => &mut def.methods,
+                Some(TypeDef::Trait(def)) => &mut def.methods,
                 _ => return,
             };
             methods.get_mut(method.name.as_str()).map(|method| {

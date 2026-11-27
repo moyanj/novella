@@ -12,22 +12,23 @@ pub(crate) fn build_type_defs(sema: &mut Sema, module: ModuleId) {
         match item {
             Item::TypeAlias(alias) => {
                 let env = identity_env(module, &alias.type_parameters);
-                sema.register_bounds(module, global_scope, &alias.type_parameters, &env);
                 // 别名定义本身也须检查，未使用的循环/非法类型不能躲过诊断。
                 sema.resolve_type(module, global_scope, &alias.alias, &env);
             }
             Item::Function(function) => build_function_sig(sema, module, global_scope, function),
             Item::Trait(trait_item) => {
-                // D04：登记 trait 方法签名，供 class 实现一致性检查。
-                // trait 的成员只允许方法（字段要求与布局绑定，语义未定义）。
-                let env = identity_env(module, &trait_item.type_parameters);
-                sema.register_bounds(module, global_scope, &trait_item.type_parameters, &env);
+                let mut env = identity_env(module, &trait_item.type_parameters);
+                env.insert(
+                    "Self".into(),
+                    Ty::TypeParam(crate::traits::self_key(module, &trait_item.name)),
+                );
                 let mut methods = HashMap::new();
                 let mut names = HashMap::new();
                 for member in &trait_item.members {
                     let (name, span, directives) = match member {
                         ClassMember::Field(f) => (&f.name, f.name_span, &f.directives),
                         ClassMember::Method(m) => (&m.name, m.name_span, &m.directives),
+                        ClassMember::AssociatedType(_) => continue,
                     };
                     check_member_collision(sema, module, &mut names, name, span);
                     for directive in directives {
@@ -40,29 +41,17 @@ pub(crate) fn build_type_defs(sema: &mut Sema, module: ModuleId) {
                             format!("trait `{}` 不能声明字段 `{}`", trait_item.name, field.name),
                         ),
                         ClassMember::Method(method) => {
-                            if method.block.is_some() {
-                                // 默认方法体属于后续期（需要 trait 到实现类的动态派发）
-                                sema.decl_error(
-                                    module,
-                                    method.span,
-                                    format!(
-                                        "trait `{}` 的方法 `{}` 暂不能带函数体（默认方法未实现）",
-                                        trait_item.name, method.name
-                                    ),
-                                );
-                            }
                             check_special_method_name(sema, module, method, true);
                             let owner = Ty::Trait(module, trait_item.name.clone());
-                            let sig = build_method_sig_trait(
-                                sema,
-                                module,
-                                global_scope,
-                                method,
-                                &env,
-                                &owner,
+                            let sig =
+                                build_method_sig(sema, module, global_scope, method, &env, &owner);
+                            sema.declaration_types.insert(
+                                (module, method.span),
+                                Ty::Function(std::rc::Rc::new(sig.sig.clone())),
                             );
                             methods.insert(method.name.clone(), sig);
                         }
+                        ClassMember::AssociatedType(_) => {}
                     }
                 }
                 if let Some(TypeDef::Trait(def)) =
@@ -73,7 +62,6 @@ pub(crate) fn build_type_defs(sema: &mut Sema, module: ModuleId) {
             }
             Item::Class(class) => {
                 let env = identity_env(module, &class.type_parameters);
-                sema.register_bounds(module, global_scope, &class.type_parameters, &env);
                 let mut fields = vec![];
                 let mut methods = HashMap::new();
                 let mut member_names: HashMap<String, Span> = HashMap::new();
@@ -103,16 +91,8 @@ pub(crate) fn build_type_defs(sema: &mut Sema, module: ModuleId) {
                                 build_method_sig(sema, module, global_scope, method, &env, &owner);
                             methods.insert(method.name.clone(), sig);
                         }
+                        ClassMember::AssociatedType(_) => {}
                     }
-                }
-                // D04（按名解析）：括号列表当作「父类 / trait」混合列表，全部记入
-                // trait_impls 候选，由 resolve_class_parents 按符号表逐项分类——
-                // class 项是父类，trait 项是实现。列表长度 > 1 不再意味着多继承。
-                if let Some(TypeDef::Class(def)) =
-                    sema.type_defs.get_mut(&(module, class.name.clone()))
-                {
-                    def.trait_impls = class.parent.clone();
-                    def.span = class.span;
                 }
                 if let Some(TypeDef::Class(def)) =
                     sema.type_defs.get_mut(&(module, class.name.clone()))
@@ -123,7 +103,6 @@ pub(crate) fn build_type_defs(sema: &mut Sema, module: ModuleId) {
             }
             Item::Struct(struct_item) => {
                 let env = identity_env(module, &struct_item.type_parameters);
-                sema.register_bounds(module, global_scope, &struct_item.type_parameters, &env);
                 let mut fields = vec![];
                 let mut methods = HashMap::new();
                 let mut member_names: HashMap<String, Span> = HashMap::new();
@@ -153,11 +132,8 @@ pub(crate) fn build_type_defs(sema: &mut Sema, module: ModuleId) {
                                 build_method_sig(sema, module, global_scope, method, &env, &owner);
                             methods.insert(method.name.clone(), sig);
                         }
+                        ClassMember::AssociatedType(_) => {}
                     }
-                }
-                // struct 无继承（design.md §4.7；parser 保留 heritage，sema 判定）
-                if !struct_item.heritage.is_empty() {
-                    sema.decl_error(module, struct_item.span, "struct 不支持继承");
                 }
                 if let Some(TypeDef::Struct(def)) =
                     sema.type_defs.get_mut(&(module, struct_item.name.clone()))
@@ -172,7 +148,7 @@ pub(crate) fn build_type_defs(sema: &mut Sema, module: ModuleId) {
 }
 
 /// 泛型形参的恒等映射环境（`T` → `Ty::TypeParam("T")`）。
-fn identity_env(
+pub(super) fn identity_env(
     module: ModuleId,
     params: &[novella_ast::types::TypeParameter],
 ) -> HashMap<String, Ty> {
@@ -292,6 +268,7 @@ fn build_method_sig(
             Ty::TypeParam(crate::ty::param_key(module, param)),
         );
     }
+    sema.register_bounds(module, scope, &method.type_parameters, &env);
     check_duplicate_params(sema, module, &method.params, method.span);
     let params: Vec<crate::ty::ParamSig> = method
         .params
@@ -304,7 +281,10 @@ fn build_method_sig(
                 // 实例方法的首个 self 由属主确定，必须在语义阶段完成定型，
                 // 使成员访问及下游 expression_types 共用同一类型来源。
                 None if index == 0 && p.name == "self" && !method.modifiers.is_static => {
-                    owner.clone()
+                    match owner {
+                        Ty::Trait(_, _) => env["Self"].clone(),
+                        _ => sema.identity_instance(owner.clone()),
+                    }
                 }
                 None => Ty::Unknown,
             },
@@ -320,7 +300,6 @@ fn build_method_sig(
         }
         None => Ty::Void,
     };
-    sema.register_bounds(module, scope, &method.type_parameters, &env);
     for (index, param) in method.params.iter().enumerate() {
         if param.name == "self" && (method.modifiers.is_static || index != 0) {
             sema.decl_error(module, param.span, "self 只能是实例方法的第一个形参");
@@ -344,6 +323,9 @@ fn build_method_sig(
         if param.name == "self"
             && param.ty.is_some()
             && !crate::ty::ty_eq(&params[index].ty, &declared_owner)
+            && !env
+                .get("Self")
+                .is_some_and(|ty| crate::ty::ty_eq(ty, &params[index].ty))
         {
             sema.decl_error(module, param.span, "self 的类型标注必须是方法所属类型");
         }
@@ -519,22 +501,5 @@ fn check_duplicate_params(
         if seen.insert(param.name.as_str(), param.span).is_some() {
             sema.decl_error(module, param.span, format!("重复的形参 `{}`", param.name));
         }
-    }
-}
-
-/// trait 方法签名（属主是 trait：`类型::方法` 前缀与 `self` 定型都按 trait 名）。
-fn build_method_sig_trait(
-    sema: &mut Sema,
-    module: ModuleId,
-    scope: crate::symbol::ScopeId,
-    method: &MethodMember,
-    env: &HashMap<String, Ty>,
-    owner: &Ty,
-) -> MethodSig {
-    let sig = build_method_sig(sema, module, scope, method, env, owner);
-    // trait 方法一律是纯声明（抽象），成员可见性按 trait 的 `pub` 语义由调用方检查
-    MethodSig {
-        is_abstract: true,
-        ..sig
     }
 }

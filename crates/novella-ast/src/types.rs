@@ -4,13 +4,16 @@ use novella_core::Span;
 
 use crate::{Spanned, expr::Expression};
 
-/// 类型参数：`T` 或 `T: Bound`
+/// 类型参数：`T` 或 `T: A + B`（对应文法 `typeParameter`）。
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Spanned)]
 pub struct TypeParameter {
     /// 类型参数名称
     pub name: String,
     /// 上界约束（`T: Bound` 中的 `Bound`），无约束时为 None
     pub bound: Option<TypeExpr>,
+    /// `+` 分隔的后续上界，按源码顺序保存。
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub additional_bounds: Vec<TypeExpr>,
     /// 类型参数覆盖的源码区间
     pub span: Span,
 }
@@ -143,6 +146,19 @@ pub struct FunctionType {
     pub span: Span,
 }
 
+/// 动态 trait 类型的关联类型绑定（对应文法 `associatedTypeBinding`）。
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Spanned)]
+pub struct AssociatedTypeBinding {
+    /// 关联类型名。
+    pub name: String,
+    /// 关联类型标识符位置。
+    pub name_span: Span,
+    /// 等号右侧的类型。
+    pub ty: TypeExpr,
+    /// 整个绑定的源码区间。
+    pub span: Span,
+}
+
 /// 类型表达式（对应 `typeExpression` / `primaryType`）。
 ///
 /// 每个变体携带 `span` 记录类型表达式覆盖的源码区间，统一经 [`TypeExpr::span`] 访问。
@@ -165,6 +181,15 @@ pub enum TypeExpr {
         /// 泛型实参列表，非泛型引用时为空
         generic_args: Vec<TypeExpr>,
         /// 源码区间
+        span: Span,
+    },
+    /// 动态 trait 类型：`dyn Iter<i32, Item = i32>`（对应文法 `dynamicType`）。
+    Dynamic {
+        /// trait 引用，携带位置泛型实参。
+        trait_ref: Box<TypeExpr>,
+        /// 同一实参列表中后置的关联类型绑定。
+        bindings: Vec<AssociatedTypeBinding>,
+        /// 整个动态类型的源码区间。
         span: Span,
     },
     /// 数组类型 `T[N]`，或仅用于形参的 `T[]`。

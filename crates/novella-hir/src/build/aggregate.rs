@@ -18,7 +18,7 @@ impl<'a> BodyBuilder<'a> {
             })
             .with_site(self.module, span));
         };
-        let fields = instance_fields(self.sema, *module, name, span)?;
+        let fields = instance_fields(self.sema, &self.instances, *module, name, span)?;
         let mut slots = Vec::new();
         for property in properties {
             let expr = property
@@ -32,10 +32,19 @@ impl<'a> BodyBuilder<'a> {
             let value = self.build_typed_expression(&expr, &field_ty, block)?;
             slots.push((index, value));
         }
+        let (summary, subst) =
+            mono::aggregate_definition(self.sema, &self.instances, *module, name).ok_or_else(
+                || {
+                    BuildError::at(BuildErrorKind::MissingType {
+                        what: "struct 实例声明",
+                    })
+                    .with_site(self.module, span)
+                },
+            )?;
         let definition = self
             .sema
             .declarations
-            .named(*module, name)
+            .named(*module, &summary.name)
             .and_then(|id| self.sema.declarations.members(&self.sema.modules, id))
             .ok_or_else(|| {
                 BuildError::at(BuildErrorKind::MissingType {
@@ -55,9 +64,10 @@ impl<'a> BodyBuilder<'a> {
                     })
                     .with_site(*module, field.span)
                 })?;
-                let value = self.in_definition_scope(*module, Vec::new(), |this| {
-                    this.build_typed_expression(expr, &field_ty, block)
-                })?;
+                let value =
+                    self.in_definition_scope(*module, Vec::new(), subst.clone(), |this| {
+                        this.build_typed_expression(expr, &field_ty, block)
+                    })?;
                 slots.push((index, value));
             }
         }
@@ -142,7 +152,7 @@ impl<'a> BodyBuilder<'a> {
                     }));
                 }
                 MatchPattern::Type { ty, .. } => {
-                    let target = annotation_type(self.sema, self.module, ty)?;
+                    let target = self.annotation_type(ty)?;
                     prelude.push(HirStmt::Instr(HirInstr::TypeTest {
                         operand: subject.clone(),
                         operand_ty: subject_ty.clone(),
@@ -212,7 +222,19 @@ impl<'a> BodyBuilder<'a> {
             .with_site(self.module, node.span));
         };
         signature.id = HirFunctionId(format!("m{}::lambda#{}", self.module, node.span.start));
-        let mut inner = BodyBuilder::new(self.sema, self.module, self.functions.clone());
+        if !self.subst.is_empty() {
+            signature
+                .id
+                .0
+                .push_str(&mono::lambda_suffix(&self.instances, &self.subst)?);
+        }
+        let mut inner = BodyBuilder::new(
+            self.sema,
+            self.module,
+            self.functions.clone(),
+            self.instances.clone(),
+            self.subst.clone(),
+        );
         inner.return_type = Some(signature.ret.clone());
         inner.capture_names = self
             .locals

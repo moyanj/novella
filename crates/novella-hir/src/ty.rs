@@ -39,8 +39,19 @@ pub enum HirType {
     Struct(ModuleId, String),
     /// class 引用（hir 层按指针表示，保留名义键供虚调用 / 继承链查询）
     Class(ModuleId, String),
+    /// 拥有型 trait 对象；名义 trait 与关联类型决定调用 ABI。
+    Dynamic(Box<DynamicType>),
     /// trait 引用（仅 `is` / `as` / 约束位置有意义）
     Trait(ModuleId, String),
+}
+
+/// 动态值的具体 trait 身份，独立存储以避免膨胀普通 HIR 类型与指令。
+#[derive(Debug, Clone, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
+pub struct DynamicType {
+    pub module: ModuleId,
+    pub name: String,
+    pub args: Vec<HirType>,
+    pub bindings: Vec<(String, HirType)>,
 }
 
 /// 整数种类：与 [`novella_sema`] 内部 `IntKind` 一一对应（`int` 已归一化为 `I32`）。
@@ -179,6 +190,36 @@ pub struct FunctionSignature {
 }
 
 impl HirType {
+    /// 比较值类型：函数实体名、外部链接属性不属于函数值的签名。
+    pub fn same_value_type(&self, other: &Self) -> bool {
+        let same_list = |a: &[Self], b: &[Self]| {
+            a.len() == b.len() && a.iter().zip(b).all(|(a, b)| a.same_value_type(b))
+        };
+        match (self, other) {
+            (Self::Function(a), Self::Function(b)) => {
+                a.receiver == b.receiver
+                    && a.type_param_count == b.type_param_count
+                    && a.is_async == b.is_async
+                    && same_list(&a.params, &b.params)
+                    && a.ret.same_value_type(&b.ret)
+            }
+            (Self::Tuple(a), Self::Tuple(b)) => same_list(a, b),
+            (Self::Array(a, left), Self::Array(b, right)) => left == right && a.same_value_type(b),
+            (Self::Pointer(a), Self::Pointer(b)) => a.same_value_type(b),
+            (Self::Dynamic(a), Self::Dynamic(b)) => {
+                a.module == b.module
+                    && a.name == b.name
+                    && same_list(&a.args, &b.args)
+                    && a.bindings.len() == b.bindings.len()
+                    && a.bindings
+                        .iter()
+                        .zip(&b.bindings)
+                        .all(|((ak, av), (bk, bv))| ak == bk && av.same_value_type(bv))
+            }
+            _ => self == other,
+        }
+    }
+
     /// 从语义投影降级为 HIR 类型。
     ///
     /// `function_id`：遇到 `TypeView::Function` 时用于合成 / 取用稳定键的回调。
@@ -255,6 +296,33 @@ impl HirType {
             TypeView::Struct(module, name) => Ok(HirType::Struct(*module, name.clone())),
             TypeView::Class(module, name) => Ok(HirType::Class(*module, name.clone())),
             TypeView::Trait(module, name) => Ok(HirType::Trait(*module, name.clone())),
+            TypeView::Dynamic {
+                trait_ref,
+                bindings,
+            } => {
+                let (base, args) = match trait_ref.as_ref() {
+                    TypeView::Applied(base, args) => (base.as_ref(), args.as_slice()),
+                    base => (base, &[][..]),
+                };
+                let TypeView::Trait(module, name) = base else {
+                    return Err(BuildError::at(BuildErrorKind::InvalidInput));
+                };
+                let args = args
+                    .iter()
+                    .map(|ty| Self::from_view(ty, function_id))
+                    .collect::<Result<_, _>>()?;
+                let bindings = bindings
+                    .iter()
+                    .map(|(name, ty)| Self::from_view(ty, function_id).map(|ty| (name.clone(), ty)))
+                    .collect::<Result<_, _>>()?;
+                Ok(Self::Dynamic(Box::new(DynamicType {
+                    module: *module,
+                    name: name.clone(),
+                    args,
+                    bindings,
+                })))
+            }
+            TypeView::Associated { .. } => Err(BuildError::at(BuildErrorKind::GenericUnsupported)),
             // —— 以下投影不能作为 codegen 输入，一律 fail-fast ——
             TypeView::Unknown => Err(BuildError::at(BuildErrorKind::OpaqueType)),
             TypeView::Error => Err(BuildError::at(BuildErrorKind::InvalidInput)),

@@ -3,8 +3,10 @@
 use novella_core::Span;
 
 use crate::Sema;
-use crate::ty::{Ty, member_substitution, substitute_type_params};
-use crate::typecheck::member::{MemberInfo, lookup_typed_member_chain, type_key_of};
+use crate::ty::{Ty, member_substitution};
+use crate::typecheck::member::{
+    MemberInfo, lookup_typed_member_chain, trait_method_hit, type_key_of,
+};
 
 use super::BodyCtx;
 
@@ -46,27 +48,25 @@ fn protocol_method_return(
     name: &str,
     span: Span,
 ) -> Ty {
-    let lookup_ty = match receiver {
-        Ty::TypeParam(param) => sema
-            .type_param_bounds
-            .get(param)
-            .unwrap_or(receiver)
-            .clone(),
-        _ => receiver.clone(),
-    };
-    if lookup_ty.is_opaque() {
-        return lookup_ty;
+    if receiver.is_opaque() {
+        return receiver.clone();
     }
-    let base = match &lookup_ty {
-        Ty::Applied(base, _) => &**base,
-        other => other,
-    };
-    let hit = match base {
-        Ty::Struct(..) | Ty::Class(..) | Ty::Trait(..) => {
-            lookup_typed_member_chain(sema, &type_key_of(&lookup_ty), name, false)
+    let base = crate::traits::nominal_base(receiver);
+    let nominal = matches!(base, Ty::Struct(..) | Ty::Class(..) | Ty::Trait(..));
+    let mut hit = nominal
+        .then(|| lookup_typed_member_chain(sema, &type_key_of(receiver), name, false))
+        .flatten();
+    let mut applied_trait = None;
+    if hit.is_none() {
+        match trait_method_hit(sema, ctx, receiver, name, span, nominal) {
+            Some(Ok((trait_ref, found))) => {
+                applied_trait = Some(trait_ref);
+                hit = Some(found);
+            }
+            Some(Err(())) => return Ty::Error,
+            None => {}
         }
-        _ => None,
-    };
+    }
     let Some(hit) = hit else {
         sema.type_error(
             ctx.module,
@@ -97,8 +97,14 @@ fn protocol_method_return(
         );
         return Ty::Error;
     }
-    let subst = member_substitution(sema, &lookup_ty, &hit.owner);
-    let result = substitute_type_params(&method.sig.ret, &subst);
+    let result = if let Some(trait_ref) = applied_trait {
+        sema.instantiate_trait_member(&method.sig.ret, &trait_ref, receiver)
+    } else {
+        sema.instantiate_type(
+            &method.sig.ret,
+            &member_substitution(sema, receiver, &hit.owner),
+        )
+    };
     hit.check_visible(sema, ctx, name, span);
     ctx.record_possible_exception();
     result

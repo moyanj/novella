@@ -131,7 +131,7 @@ pub struct TraitItem {
     pub name: String,
     /// 泛型参数列表（对应文法 `typeParameters?`）
     pub type_parameters: Vec<TypeParameter>,
-    /// trait 成员列表（对应文法 `traitMember: methodDeclaration | fieldDeclaration`）
+    /// trait 成员列表（对应文法 `traitMember`）。
     pub members: Vec<ClassMember>,
     /// 可见性（对应文法 `(Pub | Pri | Pkg)?`），None 表示缺省
     pub scope: Option<Scope>,
@@ -195,13 +195,30 @@ pub struct MethodMember {
     pub span: Span,
 }
 
-/// 类成员（对应文法 `classMember: methodDeclaration | fieldDeclaration`）
+/// 关联类型成员（对应文法 `associatedTypeDeclaration` / `associatedTypeDefinition`）。
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Spanned)]
+pub struct AssociatedTypeMember {
+    /// 被声明或定义的关联类型名。
+    pub name: String,
+    /// 关联类型标识符位置，不含 trait 限定名。
+    pub name_span: Span,
+    /// 定义所属的 trait 引用，可带位置泛型实参；trait 内的声明没有限定名。
+    pub qualifier: Option<TypeExpr>,
+    /// 定义的类型；trait 内的声明没有等号右侧的类型。
+    pub ty: Option<TypeExpr>,
+    /// 整个成员的源码区间（含分号）。
+    pub span: Span,
+}
+
+/// 类、struct 或 trait 的成员（对应文法 `classMember` / `traitMember`）。
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Spanned)]
 pub enum ClassMember {
     /// 字段成员（对应文法 `fieldDeclaration`）
     Field(FieldMember),
     /// 方法成员（对应文法 `methodDeclaration`）
     Method(MethodMember),
+    /// 关联类型的声明或定义。
+    AssociatedType(AssociatedTypeMember),
 }
 
 /// 类声明（对应文法
@@ -213,7 +230,7 @@ pub struct ClassItem {
     pub name: String,
     pub type_parameters: Vec<TypeParameter>,
     pub members: Vec<ClassMember>,
-    /// 继承父类列表（对应文法 `classHeritage`，文法仅允许单个 `typeReference`，此处按多继承预留）
+    /// 父类或实现的 trait（对应文法 `classHeritage`），由语义分析区分。
     pub parent: Vec<TypeExpr>,
     /// 可见性（对应文法 `Pub?`）
     pub scope: Option<Scope>,
@@ -256,12 +273,10 @@ pub struct StructItem {
     pub directives: Vec<CompilerDirective>,
     pub name: String,
     pub type_parameters: Vec<TypeParameter>,
-    /// 成员列表（复用 `ClassMember`：Field / Method）
+    /// 成员列表（复用 `ClassMember`）。
     pub members: Vec<ClassMember>,
-    /// 继承信息（`struct S(A) {}` 的 `(A)`；对应文法 `structDeclaration` 的 `classHeritage?`）。
-    ///
-    /// design.md 中 struct 无继承语义：parser 只负责**保留**该信息（避免静默丢失），
-    /// 是否拒绝由语义分析判定。
+    /// trait 实现列表（`struct Point(Draw) {}` 的 `(Draw)`；对应文法 `classHeritage`）。
+    /// 语法层保留所有条目，语义分析负责判定各条目是否合法。
     pub heritage: Vec<TypeExpr>,
     /// 可见性（对应文法 `Pub?`）
     pub scope: Option<Scope>,

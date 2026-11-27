@@ -1,6 +1,6 @@
 # novella-hir 交接文档
 
-> 更新：2026-11-21。已接通原生 class ARC、weak、String 和数组；改动尚未提交。
+> 更新：2026-11-27。原生降级支持泛型单态化、静态 trait 调用与拥有型 `dyn`。
 > 2026-11-15 验证记录保留为历史，当前实现及验证见文末修订。
 > 本文记录 HIR 交接时的状态。后续 Linux x86-64 原生后端与 CLI 的现状见 [编译器设计](compiler-design.md) 第 8、9 节。
 
@@ -16,7 +16,7 @@
 - 字符串名义身份来自 `SemaResult.string_type`，不以文件 basename 推断；`HirInstr::StringLiteral`
   保存解码后的 UTF-16 码元。构造、内容运算、索引、格式化及原生发射已接通。
 - 类型读取 sema 的 `expression_types`、`annotation_types`、`declaration_types`，键均为 `(ModuleId, Span)`。分别提供表达式、已解析注解、变量最终绑定类型与顶层函数签名。HIR 不重新解析类型名或用初始化表达式冒充声明类型。
-- Unknown / Error、联合、泛型以及无上下文的未定型类型明确拒绝；字面量可由声明、返回值、实参等上下文定型，数组与元组递归传递期望类型。
+- Unknown / Error、联合、未完成单态化的类型以及无上下文的未定型类型明确拒绝；字面量可由声明、返回值、实参等上下文定型，数组与元组递归传递期望类型。
 - 用户确认：`p ?? backup` 非空时返回指针 `p`，为空才执行并返回 `backup`；不隐式解引用，读取内容另写 `*`。sema 已同步保留指针结果并检查备用值类型。
 - codegen 只消费 HIR，不直连 AST。String 为拥有 UTF-16 缓冲区的 class；定长数组类型携带长度，LLVM 布局为 `[N x T]`，没有运行时头部或分配。
 
@@ -40,7 +40,19 @@
 | 外部声明 | extern 产出 HirItem::ExternFunction，HirFunction.link_name 保存真实 C 符号；内部查找仍用名义键；LLVM 支持标量/指针 C ABI 与传出函数地址作为回调 |
 | 字符串 | 普通单双引号与 r/R 原始字符串；普通字符串解析换行、回车、制表、空字符、引号和反斜杠转义；未知转义明确拒绝 |
 
-## 3. 显式拒绝及后续期
+## 3. 泛型与 trait 的原生契约
+
+- 以声明身份和类型实参区分实例；在降级体之前登记实例以支持递归。
+  HIR 在选择函数 ABI 与字段布局前替换具名类型参数，并按实现归约关联类型。
+  未使用的泛型模板不发射；无限生成新实例的程序达到工程上限时报错。
+- 约束调用从已验证实现选择具体方法；泛型默认方法体在对应的 `Self`、trait 实参和
+  方法实参环境下实例化。trait 出现在约束中不需要运行时见证参数。
+- `DynPack` 保留源类型和按 trait 方法名排序的见证槽；`DynCall` 携带已解析签名、
+  槽号和动态接收者。LLVM 以 `{数据指针, 表指针}` 保存动态值，只对数据指针执行 ARC。
+  class 保留对象；struct 装箱的副本递归保留管理成员，最后由生成的析构函数释放。
+  需启用分配与 ARC 的目标才能使用该表示。
+
+## 4. 显式拒绝及后续期
 
 以下内容不静默跳过，也不伪装为普通求值或 return：
 
@@ -51,33 +63,35 @@
 | class 动态派发、绑定方法值 | 直接实例调用与 new 已接通，动态方法表及绑定接收者表示尚未实现 |
 | 编译器指令及指令块 | 尚无可消费的修饰结果；类型、字段、方法编译器指令同样拒绝 |
 | 闭包捕获 | 环境布局与生命周期 |
-| 泛型定义/调用、联合及不透明类型 | 无单态化或具体可生成类型；不能因投影抹除信息而接受泛型类型定义 |
+| 联合及不透明类型 | 无具体可生成的值布局 |
 | 动态对象字面量 | 尚无定型对象布局 |
 | 非数组 for-in | Sema 已检查 `iter()`、`hasNext()` 和 `next()`，HIR 尚未降级 |
 | 静态字段 | 静态存储 |
-| 有成员的 trait | sema 已携带方法签名；HIR 尚未实现 trait 派发，明确拒绝 |
 | 未证明穷尽的无 default 值 match、值/void 混合 | sema 拒绝；合法布尔穷尽 match 可由 exhaustive_matches 供 HIR 降级 |
 | 未定义转义、聚合身份比较 | 明确拒绝；格式化串、字节串及 class String 的身份比较已接通 |
 | 无实体声明的间接函数默认实参 | 函数值签名不携带默认表达式定义 |
 
-class 运行时已接通；trait 派发与无实体方法仍明确拒绝。String 的拼接、内容比较和索引调用标准库方法，身份比较使用引用身份。
+class 的普通调用仍按静态类型选择方法；只有 `dyn` 值通过见证表派发。String 的拼接、内容比较和索引调用标准库方法，身份比较使用引用身份。
 
-## 4. 实现位置
+## 5. 实现位置
 
 | 文件 | 职责 |
 | --- | --- |
 | build.rs | 模块声明、共享构造状态、公开重导出 |
 | build/module.rs、error.rs | 入口、声明、错误与拒绝边界、lambda 实体归属 |
 | build/types.rs、layout.rs | sema 注解投影、类型/方法、跨模块实例布局 |
+| build/mono.rs | 具体实例登记与工作队列、代入、关联类型归约及见证方法选择 |
+| build/dynamic.rs | 打包 `dyn` 值、稳定见证槽位 |
 | build/context.rs | 槽位、作用域、定义环境与类型查询 |
 | build/stmt.rs、loops.rs | 语句、with、解构及循环 |
 | build/expr.rs、operators.rs、coalesce.rs | 表达式分派、运算与短路 |
 | build/lvalue.rs | 一次定位、地址及间接读写 |
-| build/call.rs | 接收者、实参定型与默认实参展开 |
+| build/call.rs、build/call/target.rs | 接收者、实参定型与默认实参展开；直接 / 动态调用目标选择 |
 | build/aggregate.rs、helpers.rs | struct、match、lambda、常量与转换助手 |
+| ty.rs `HirType::same_value_type` | 值类型比较：忽略函数实体名，供 HIR 与 codegen 判定槽位/实参等价 |
 | ty.rs、body.rs、item.rs | 类型与签名、指令与控制流、模块与类型定义 |
 
-## 5. P2 验证
+## 6. P2 验证
 
 ```bash
 cargo run -q -p novella -- compile examples/native-main.nov --emit hir -o target/native-main.hir.json
@@ -97,6 +111,20 @@ git diff --check
 - workspace 现有 102 个测试（24 suites）通过；fmt、clippy（-D warnings）、all-targets check 与 diff 检查通过。
 
 解释器验证针对 HIR 求值与控制流，不代表 LLVM、机器码、内存 ABI 或引用计数已验证。临时 fixture/解释器位于 /tmp，不是项目新增测试。
+
+### 2026-11-27 泛型 / trait / dyn 原生验收
+
+- `examples/generics.nov`：泛型 struct + 泛型方法（接受函数值）、泛型 class 继承
+  `Base<T>`、泛型 `const`、递归泛型调用；原生退出 0。
+- `examples/traits.nov`：struct / class 显式实现、trait 默认方法与宿主覆写、
+  `T: A + B` 组合约束、关联类型投影返回；原生退出 0。
+- `examples/dyn-traits.nov`：隐式与显式 `as dyn` 转换、struct 装箱拷贝与 class 保对象、
+  同载荷 ARC 共享、默认方法经见证表派发；原生退出 0。
+- 函数值经泛型实例化后调用（`combine(value, value)`）、具名函数与 lambda 互赋的
+  名义 id 差异，均以 `HirType::same_value_type` 对齐 HIR 与 codegen 的槽位判等。
+- 负例 `traits_bad.nov`（非对象安全 / 重复绑定 / 歧义）、`traits_overlap.nov`
+  （实现重叠 + 签名不符）、`inline-cycle.nov`（无限值布局）均按预期拒绝；
+  `projection_diagnostic.nov` 的下划线落在投影操作数本身。
 
 ## 6. 交付与迁移
 

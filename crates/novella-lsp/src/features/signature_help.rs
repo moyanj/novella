@@ -132,6 +132,7 @@ pub(crate) fn collect_member_calls(members: &[ClassMember], out: &mut Vec<CallSi
                     }
                 }
             }
+            ClassMember::AssociatedType(_) => {}
         }
     }
 }

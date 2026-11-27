@@ -32,6 +32,8 @@ mod api;
 mod cfg;
 mod declarations;
 pub use declarations::{DeclarationId, DeclarationIndex};
+mod instances;
+pub use instances::{CallInstance, DynConversion, TraitImplementation, TraitMethodImplementation};
 mod check;
 mod dependencies;
 mod freestanding;
@@ -41,6 +43,7 @@ mod state;
 mod symbol;
 #[cfg(test)]
 mod tests;
+mod traits;
 mod ty;
 mod typecheck;
 

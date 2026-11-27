@@ -88,6 +88,7 @@ impl DeclarationIndex {
                     let (member_name, span) = match member {
                         ClassMember::Method(value) => (&value.name, value.name_span),
                         ClassMember::Field(value) => (&value.name, value.name_span),
+                        ClassMember::AssociatedType(value) => (&value.name, value.name_span),
                     };
                     result.insert(
                         module.id,

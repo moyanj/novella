@@ -227,15 +227,11 @@ pub(crate) fn member_type_of(
     span: Span,
 ) -> Ty {
     match target_ty {
-        Ty::TypeParam(param) => {
-            if let Some(bound) = sema.type_param_bounds.get(param).cloned() {
-                member_type_of(sema, ctx, &bound, name, span)
+        Ty::TypeParam(_) | Ty::Dynamic { .. } => {
+            if let Some(ty) = trait_member_type(sema, ctx, target_ty, name, span, false) {
+                ty
             } else {
-                sema.type_error(
-                    ctx.module,
-                    span,
-                    format!("无约束类型参数 `{param}` 没有已知成员 `{name}`"),
-                );
+                sema.type_error(ctx.module, span, format!("`{target_ty}` 没有成员 `{name}`"));
                 Ty::Error
             }
         }
@@ -260,9 +256,12 @@ pub(crate) fn member_type_of(
                             Ty::Function(Rc::new(method.sig))
                         }
                     };
-                    crate::ty::substitute_type_params(&result, &subst)
+                    sema.instantiate_type(&result, &subst)
                 }
                 None => {
+                    if let Some(ty) = trait_member_type(sema, ctx, target_ty, name, span, true) {
+                        return ty;
+                    }
                     sema.type_error(
                         ctx.module,
                         span,
@@ -293,6 +292,77 @@ pub(crate) fn member_type_of(
         }
     }
 }
+/// trait 方法不存在时返回 None；同名多个约束或默认体不选择任意一项。
+fn trait_member_type(
+    sema: &mut Sema,
+    ctx: &BodyCtx,
+    receiver: &Ty,
+    name: &str,
+    span: Span,
+    default_only: bool,
+) -> Option<Ty> {
+    trait_method_hit(sema, ctx, receiver, name, span, default_only)
+        .map(|result| {
+            let (trait_ref, hit) = result?;
+            hit.record(sema, ctx, name, span);
+            hit.check_visible(sema, ctx, name, span);
+            let MemberInfo::Method(method) = hit.info else {
+                unreachable!()
+            };
+            check_static_access(sema, ctx, &method, name, span);
+            Ok(sema.instantiate_trait_member(
+                &Ty::Function(Rc::new(method.sig)),
+                &trait_ref,
+                receiver,
+            ))
+        })
+        .map(|result: Result<Ty, ()>| result.unwrap_or(Ty::Error))
+}
+
+pub(crate) fn trait_method_hit(
+    sema: &mut Sema,
+    ctx: &BodyCtx,
+    receiver: &Ty,
+    name: &str,
+    span: Span,
+    default_only: bool,
+) -> Option<Result<(Ty, MemberHit), ()>> {
+    let mut candidates = Vec::new();
+    for trait_ref in sema.implemented_traits(receiver) {
+        if let Some(hit) = lookup_typed_member_chain(sema, &type_key_of(&trait_ref), name, false)
+            && matches!(&hit.info, MemberInfo::Method(m) if !default_only || !m.is_abstract)
+        {
+            candidates.push((trait_ref, hit));
+        }
+    }
+    match candidates.len() {
+        0 => None,
+        1 => {
+            let (trait_ref, hit) = candidates.pop().expect("唯一候选");
+            if let Ty::Dynamic { .. } = receiver
+                && let MemberInfo::Method(method) = &hit.info
+                && !sema.dyn_dispatchable(&trait_ref, method)
+            {
+                sema.type_error(
+                    ctx.module,
+                    span,
+                    format!("trait 方法 `{name}` 不能动态派发"),
+                );
+                return Some(Err(()));
+            }
+            Some(Ok((trait_ref, hit)))
+        }
+        _ => {
+            sema.type_error(
+                ctx.module,
+                span,
+                format!("成员 `{receiver}.{name}` 有多个匹配的 trait 实现或约束"),
+            );
+            Some(Err(()))
+        }
+    }
+}
+
 pub(crate) fn type_key_of(ty: &Ty) -> (ModuleId, String) {
     match ty {
         Ty::Applied(base, _) => type_key_of(base),

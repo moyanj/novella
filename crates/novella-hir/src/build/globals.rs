@@ -1,6 +1,7 @@
 //! 无托管引用的静态存储：常量求值不执行函数体，也不引入启动初始化函数。
-use super::*;
+use super::{mono, *};
 use crate::item::HirGlobal;
+use mono::{Instances, Substitution};
 use novella_ast::stmt::VariableType;
 
 fn unsupported(module: ModuleId, span: Span) -> BuildError {
@@ -40,6 +41,7 @@ pub(super) fn address(sema: &SemaResult, module: ModuleId, span: Span) -> Option
 
 pub(super) fn build_global(
     sema: &SemaResult,
+    instances: &Instances,
     module: ModuleId,
     declaration: &VariableStmt,
 ) -> Result<HirGlobal, BuildError> {
@@ -50,15 +52,25 @@ pub(super) fn build_global(
         .declaration_types
         .get(module, declaration.span)
         .ok_or_else(|| unsupported(module, declaration.span))?;
-    let ty = HirType::from_view(view, &mut function_id_of)
+    let ty = mono::concrete_type(sema, instances, view, &Vec::new(), None)
         .map_err(|e| e.with_site(module, declaration.span))?;
-    if super::requirements::managed(sema, &ty) {
+    if super::requirements::managed(sema, instances, &ty) {
         return Err(unsupported(module, declaration.span));
     }
     let init = declaration
         .value
         .as_ref()
-        .map(|expr| constant(sema, module, expr, &ty, &mut HashSet::new()))
+        .map(|expr| {
+            constant(
+                sema,
+                instances,
+                module,
+                expr,
+                &ty,
+                &Vec::new(),
+                &mut HashSet::new(),
+            )
+        })
         .transpose()?;
     Ok(HirGlobal {
         name: name.clone(),
@@ -71,9 +83,11 @@ pub(super) fn build_global(
 
 fn constant(
     sema: &SemaResult,
+    instances: &Instances,
     module: ModuleId,
     expr: &Expression,
     expected: &HirType,
+    subst: &Substitution,
     visiting: &mut HashSet<(ModuleId, Span)>,
 ) -> Result<HirOperand, BuildError> {
     let fail = || unsupported(module, expr.span());
@@ -93,15 +107,18 @@ fn constant(
             Literal::Null => Ok(HirOperand::Null),
             _ => Err(fail()),
         },
-        Expression::Paren { expr, .. } => constant(sema, module, expr, expected, visiting),
+        Expression::Paren { expr, .. } => {
+            constant(sema, instances, module, expr, expected, subst, visiting)
+        }
         Expression::Cast { expr: operand, .. } => {
             // 指针常量保留整数载荷，后端依据目标 Pointer 类型生成常量 inttoptr。
             let view = sema
                 .expression_types
                 .get(module, expr.span())
                 .ok_or_else(fail)?;
-            let target = HirType::from_view(view, &mut function_id_of).map_err(|_| fail())?;
-            let value = constant(sema, module, operand, &target, visiting)?;
+            let target =
+                mono::concrete_type(sema, instances, view, subst, None).map_err(|_| fail())?;
+            let value = constant(sema, instances, module, operand, &target, subst, visiting)?;
             match (value, target) {
                 (HirOperand::IntConst(value), HirType::Pointer(_)) => {
                     Ok(HirOperand::IntConst(value))
@@ -134,7 +151,7 @@ fn constant(
             ..
         } => address(sema, module, operand.span()).ok_or_else(fail),
         Expression::Unary { op, operand, .. } => {
-            let value = constant(sema, module, operand, expected, visiting)?;
+            let value = constant(sema, instances, module, operand, expected, subst, visiting)?;
             match (op, value) {
                 (UnaryOp::Minus, HirOperand::IntConst(value)) => value
                     .checked_neg()
@@ -170,9 +187,11 @@ fn constant(
             }
             let result = constant(
                 sema,
+                instances,
                 owner,
                 declaration.value.as_ref().ok_or_else(fail)?,
                 expected,
+                &Vec::new(),
                 visiting,
             );
             visiting.remove(&(owner, declaration.span));
@@ -182,10 +201,12 @@ fn constant(
             let HirType::Struct(owner, name) = expected else {
                 return Err(fail());
             };
-            let fields = instance_fields(sema, *owner, name, expr.span())?;
+            let fields = instance_fields(sema, instances, *owner, name, expr.span())?;
+            let (definition, owner_subst) =
+                mono::aggregate_definition(sema, instances, *owner, name).ok_or_else(fail)?;
             let members = sema
                 .declarations
-                .named(*owner, name)
+                .named(*owner, &definition.name)
                 .and_then(|id| sema.declarations.members(&sema.modules, id))
                 .ok_or_else(fail)?;
             let mut values = Vec::with_capacity(fields.len());
@@ -202,7 +223,9 @@ fn constant(
                         };
                         &shorthand
                     };
-                    values.push(constant(sema, module, value, &ty, visiting)?);
+                    values.push(constant(
+                        sema, instances, module, value, &ty, subst, visiting,
+                    )?);
                 } else {
                     let value = members
                         .iter()
@@ -213,7 +236,15 @@ fn constant(
                             _ => None,
                         })
                         .ok_or_else(fail)?;
-                    values.push(constant(sema, *owner, value, &ty, visiting)?);
+                    values.push(constant(
+                        sema,
+                        instances,
+                        *owner,
+                        value,
+                        &ty,
+                        &owner_subst,
+                        visiting,
+                    )?);
                 }
             }
             Ok(HirOperand::AggregateConst(values))
@@ -228,15 +259,15 @@ fn constant(
             elements
                 .iter()
                 .zip(types)
-                .map(|(value, ty)| constant(sema, module, value, ty, visiting))
+                .map(|(value, ty)| constant(sema, instances, module, value, ty, subst, visiting))
                 .collect::<Result<Vec<_>, _>>()
                 .map(HirOperand::AggregateConst)
         }
         Expression::Binary {
             op, left, right, ..
         } => {
-            let left = constant(sema, module, left, expected, visiting)?;
-            let right = constant(sema, module, right, expected, visiting)?;
+            let left = constant(sema, instances, module, left, expected, subst, visiting)?;
+            let right = constant(sema, instances, module, right, expected, subst, visiting)?;
             if let (HirOperand::FloatConst(left), HirOperand::FloatConst(right)) = (&left, &right) {
                 let value = match op {
                     BinaryOp::Plus => left + right,

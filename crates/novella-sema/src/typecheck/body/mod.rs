@@ -146,11 +146,18 @@ fn check_stmt_inner(sema: &mut Sema, ctx: &mut BodyCtx, stmt: &Statement) {
                             returns.borrow_mut().push((value.span(), value_ty.clone()));
                         }
                         if !sema.is_assignable(&expected, &value_ty) {
-                            sema.type_error(
-                                ctx.module,
-                                value.span(),
-                                format!("返回类型 `{value_ty}` 与函数声明的 `{expected}` 不兼容"),
-                            );
+                            let message = if matches!(expected, Ty::Associated { .. }) {
+                                format!(
+                                    "未约束的关联类型 `{expected}` 不能当作具体类型；无法返回 `{value_ty}`"
+                                )
+                            } else if matches!(value_ty, Ty::Associated { .. }) {
+                                format!(
+                                    "未约束的关联类型 `{value_ty}` 不能当作返回类型 `{expected}`"
+                                )
+                            } else {
+                                format!("返回类型 `{value_ty}` 与函数声明的 `{expected}` 不兼容")
+                            };
+                            sema.type_error(ctx.module, value.span(), message);
                         }
                     }
                 },
