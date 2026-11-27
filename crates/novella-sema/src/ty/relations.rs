@@ -17,7 +17,7 @@ pub(crate) fn ty_eq(a: &Ty, b: &Ty) -> bool {
         (Ty::Future(x), Ty::Future(y)) => ty_eq(x,y),
         (Ty::Object(x), Ty::Object(y)) => x.len() == y.len() && x.iter().all(|(n,t)| y.get(n).is_some_and(|s| ty_eq(t,s))),
         (Ty::Pointer(x), Ty::Pointer(y)) => ty_eq(x, y),
-        (Ty::Array(x), Ty::Array(y)) => ty_eq(x, y),
+        (Ty::Array(x, left), Ty::Array(y, right)) => left == right && ty_eq(x, y),
         (Ty::Tuple(x), Ty::Tuple(y)) => {
             x.len() == y.len() && x.iter().zip(y).all(|(a, b)| ty_eq(a, b))
         }
@@ -106,7 +106,7 @@ pub(crate) fn assignable(
             .iter()
             .zip(s)
             .all(|(t, s)| assignable(t, s, is_subclass, width)),
-        (Ty::Array(t), Ty::Array(s)) => assignable(t, s, is_subclass, width),
+        (Ty::Array(t, left), Ty::Array(s, right)) => left == right && ty_eq(t, s),
         (Ty::Object(t), Ty::Object(s)) => t.iter().all(|(name, ty)| {
             s.get(name)
                 .is_some_and(|source| assignable(ty, source, is_subclass, width))

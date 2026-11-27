@@ -76,8 +76,9 @@ impl Cache {
     ) -> Result<Self, Box<dyn std::error::Error>> {
         let compiler = std::env::current_exe()?;
         let llvm = novella_codegen::llvm_library_path()?;
-        // 编译器摘要也覆盖当前固定的 generic CPU、PIC、优化等级等后端选项。
-        // 所有可配置分析选项取自实际传入 sema 的配置，不在缓存内重算默认值。
+        // 编译器摘要覆盖 generic CPU、PIC 等固定后端选项；优化级别与代码模型是
+        // 可变项，随 `target` 一起进入身份摘要。所有可配置分析选项都取自实际传入
+        // sema 的配置，不在缓存内重算默认值。
         let identity = Request {
             version: VERSION,
             compiler: hash_file(&compiler)?,

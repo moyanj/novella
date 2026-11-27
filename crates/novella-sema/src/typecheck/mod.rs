@@ -176,8 +176,7 @@ pub(crate) fn check_method_body(
     block: &Block,
 ) -> Ty {
     let infer_return = method.return_type.is_none()
-        && !crate::check::CLASS_SPECIAL_METHODS
-            .contains(&crate::check::canonical_method_name(&method.name));
+        && !crate::check::CLASS_SPECIAL_METHODS.contains(&method.name.as_str());
     let global = sema.modules[module].global_scope;
     let fn_scope = sema.scopes.new_scope(Some(global), ScopeKind::Function);
     let mut ctx = BodyCtx::base(module, fn_scope);
@@ -245,9 +244,7 @@ pub(crate) fn lookup_method_def(
     let key = this_ty_key(this_ty);
     match sema.type_defs.get(&key) {
         Some(TypeDef::Struct(StructDef { methods, .. }))
-        | Some(TypeDef::Class(ClassDef { methods, .. })) => methods
-            .get(crate::check::canonical_method_name(name))
-            .cloned(),
+        | Some(TypeDef::Class(ClassDef { methods, .. })) => methods.get(name).cloned(),
         _ => None,
     }
 }

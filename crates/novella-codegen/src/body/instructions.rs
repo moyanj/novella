@@ -5,6 +5,15 @@ use super::*;
 impl<'ctx> Body<'ctx, '_> {
     pub(super) fn instruction(&mut self, instruction: &HirInstr) -> Result<bool> {
         match instruction {
+            HirInstr::Adopt { id, ty, init } => {
+                let value = self.operand(&HirOperand::Local(*init), ty)?;
+                if let Some(index) = self.owned.iter().rposition(|active| active == init) {
+                    self.owned.remove(index);
+                } else if self.is_managed(ty) {
+                    self.reference_value("novella_rt_retain", value, ty)?;
+                }
+                self.save(*id, ty, value)?;
+            }
             HirInstr::Alloc { id, ty, init } => {
                 let value = init
                     .as_ref()
@@ -12,11 +21,11 @@ impl<'ctx> Body<'ctx, '_> {
                     .transpose()?;
                 let pointer = self.allocate(*id, ty)?;
                 if let Some(value) = value {
-                    if Self::is_managed(ty) {
+                    if self.is_managed(ty) {
                         self.reference_value("novella_rt_retain", value, ty)?;
                     }
                     self.builder.build_store(pointer, value)?;
-                } else if Self::is_managed(ty) {
+                } else if self.is_managed(ty) {
                     self.builder.build_store(
                         pointer,
                         value_type(self.context, self.types, ty)?.const_zero(),
@@ -32,7 +41,7 @@ impl<'ctx> Body<'ctx, '_> {
                 let value = self.operand(&HirOperand::Local(*src), &ty)?;
                 if self.borrowed.contains(src) {
                     self.borrowed.insert(*dst);
-                } else if Self::is_managed(&ty) {
+                } else if self.is_managed(&ty) {
                     self.reference_value("novella_rt_retain", value, &ty)?;
                 }
                 self.save(*dst, &ty, value)?;
@@ -42,7 +51,7 @@ impl<'ctx> Body<'ctx, '_> {
                 let pointer = *pointer;
                 let ty = ty.clone();
                 let new_value = self.operand(value, &ty)?;
-                if Self::is_managed(&ty) {
+                if self.is_managed(&ty) {
                     self.reference_value("novella_rt_retain", new_value, &ty)?;
                     let old_value = self.builder.build_load(
                         value_type(self.context, self.types, &ty)?,
@@ -71,7 +80,7 @@ impl<'ctx> Body<'ctx, '_> {
                     .operand(address, &HirType::Pointer(Box::new(ty.clone())))?
                     .into_pointer_value();
                 let new_value = self.operand(value, ty)?;
-                if Self::is_managed(ty) {
+                if self.is_managed(ty) {
                     self.reference_value("novella_rt_retain", new_value, ty)?;
                     let old_value = self.builder.build_load(
                         value_type(self.context, self.types, ty)?,
@@ -111,7 +120,7 @@ impl<'ctx> Body<'ctx, '_> {
                     );
                     let call = self.builder.build_call(function.0, &values, "init")?;
                     if !call.try_as_basic_value().basic().is_none() {
-                        return Err(CodegenError("class __init__ 必须返回 void".into()));
+                        return Err(CodegenError("class __init 必须返回 void".into()));
                     }
                 }
             }
@@ -129,7 +138,7 @@ impl<'ctx> Body<'ctx, '_> {
                     address,
                     "deref",
                 )?;
-                if Self::is_managed(dst_ty) {
+                if self.is_managed(dst_ty) {
                     self.reference_value("novella_rt_retain", value, dst_ty)?;
                 }
                 self.save(*dst, dst_ty, value)?;
@@ -162,7 +171,7 @@ impl<'ctx> Body<'ctx, '_> {
                 dst,
             } => {
                 let value = self.cast(operand, from, to)?;
-                if Self::is_managed(to) {
+                if self.is_managed(to) {
                     self.reference_value("novella_rt_retain", value, to)?;
                 }
                 self.save(*dst, to, value)?;
@@ -177,7 +186,7 @@ impl<'ctx> Body<'ctx, '_> {
             }
             HirInstr::Return(value) => {
                 let keep = value.as_ref().and_then(|operand| match operand {
-                    HirOperand::Local(id) if Self::is_managed(&self.slot(*id).ok()?.1) => Some(*id),
+                    HirOperand::Local(id) if self.is_managed(&self.slot(*id).ok()?.1) => Some(*id),
                     _ => None,
                 });
                 let value = value
@@ -225,6 +234,7 @@ impl<'ctx> Body<'ctx, '_> {
                 target_ty,
                 index,
                 ty,
+                borrow,
                 dst,
                 ..
             } => {
@@ -238,7 +248,9 @@ impl<'ctx> Body<'ctx, '_> {
                     self.runtime_weak_value("novella_rt_weak_upgrade", value.into_pointer_value())?
                         .into()
                 } else {
-                    if Self::is_managed(ty) {
+                    if *borrow {
+                        self.borrowed.insert(*dst);
+                    } else if self.is_managed(ty) {
                         self.reference_value("novella_rt_retain", value, ty)?;
                     }
                     value
@@ -272,7 +284,7 @@ impl<'ctx> Body<'ctx, '_> {
                         "novella_rt_weak_release",
                         previous.into_pointer_value(),
                     )?;
-                } else if Self::is_managed(&field_ty) {
+                } else if self.is_managed(&field_ty) {
                     self.reference_value("novella_rt_retain", value, &field_ty)?;
                     let previous = self.builder.build_load(
                         value_type(self.context, self.types, &field_ty)?,
@@ -294,7 +306,7 @@ impl<'ctx> Body<'ctx, '_> {
                 let address = self.index_address(target, index, element_ty)?;
                 let element = value_type(self.context, self.types, element_ty)?;
                 let value = self.builder.build_load(element, address, "index_load")?;
-                if Self::is_managed(element_ty) {
+                if self.is_managed(element_ty) {
                     self.reference_value("novella_rt_retain", value, element_ty)?;
                 }
                 self.save(*dst, element_ty, value)?;
@@ -317,20 +329,11 @@ impl<'ctx> Body<'ctx, '_> {
                 element_ty,
                 dst,
             } => {
-                let object = self.array_literal(elements, element_ty)?;
-                self.save(
-                    *dst,
-                    &HirType::Array(Box::new(element_ty.clone())),
-                    object.into(),
-                )?;
-            }
-            HirInstr::ArrayLength { target, dst } => {
-                let length = self.array_length(target)?;
-                self.save(
-                    *dst,
-                    &HirType::Int(novella_hir::IntTy::Usize),
-                    length.into(),
-                )?;
+                let length = u32::try_from(elements.len())
+                    .map_err(|_| CodegenError("数组元素数量超出 u32 范围".into()))?;
+                let ty = HirType::Array(Box::new(element_ty.clone()), length);
+                let value = self.array_literal(elements, element_ty, length)?;
+                self.save(*dst, &ty, value.into())?;
             }
             HirInstr::IndexStore {
                 target,

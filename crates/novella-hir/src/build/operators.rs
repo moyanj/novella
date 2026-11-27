@@ -29,8 +29,17 @@ impl BodyBuilder<'_> {
         }
         let ty = self.expr_type_pref(span, preferred)?;
         if matches!(op, UnaryOp::PostIncrement | UnaryOp::PostDecrement) {
-            let address = self.build_address(operand, block)?;
-            let old = self.read_address(address.clone(), &ty, block);
+            let place = self
+                .overloaded_index_receiver(operand)?
+                .map(|ty| self.build_index_place(operand, ty, "__getitem", block))
+                .transpose()?;
+            let (address, old) = if let Some(place) = &place {
+                (None, self.read_index_place(place, span, block)?)
+            } else {
+                let address = self.build_address(operand, block)?;
+                let old = self.read_address(address.clone(), &ty, block);
+                (Some(address), old)
+            };
             let one = if matches!(ty, HirType::Float(_)) {
                 HirOperand::FloatConst(1.0)
             } else {
@@ -54,11 +63,15 @@ impl BodyBuilder<'_> {
                 dst,
                 dst_ty: ty.clone(),
             }));
-            block.push(HirStmt::Instr(HirInstr::StoreIndirect {
-                address,
-                value: HirOperand::Local(dst),
-                ty,
-            }));
+            if let Some(place) = place {
+                self.write_index_place(place, HirOperand::Local(dst), span, block)?;
+            } else if let Some(address) = address {
+                block.push(HirStmt::Instr(HirInstr::StoreIndirect {
+                    address,
+                    value: HirOperand::Local(dst),
+                    ty,
+                }));
+            }
             return Ok(old);
         }
         let operand_ty = if op == UnaryOp::DerefPointer {
@@ -216,7 +229,17 @@ impl BodyBuilder<'_> {
             })
             .with_site(self.module, span));
         }
-        let lhs = self.build_typed_expression(left, &value_ty, block)?;
+        let lhs = if matches!(
+            right,
+            Expression::Literal {
+                value: novella_ast::expr::Literal::Null,
+                ..
+            }
+        ) {
+            self.build_immediate_value(left, &value_ty, block)?
+        } else {
+            self.build_typed_expression(left, &value_ty, block)?
+        };
         // 指针算术保留整数位移；不能把整数强转为指针。
         let rhs_ty = if pointer_math {
             if matches!(left_ty, Some(HirType::Pointer(_)))
@@ -287,23 +310,50 @@ impl BodyBuilder<'_> {
         op: AssignOp,
         value: &Expression,
         span: Span,
+        discarded: bool,
         block: &mut HirBlock,
     ) -> Result<HirOperand, BuildError> {
         let ty = self.expr_type(target.span())?;
         // 普通赋值先完成 RHS；复合赋值先定位并读取旧值。
         let early_rhs = if op == AssignOp::Assign {
-            Some(self.build_typed_expression(value, &ty, block)?)
+            let can_borrow = discarded && self.noninterfering_assignment_target(target);
+            Some(if can_borrow {
+                self.build_immediate_value(value, &ty, block)?
+            } else {
+                self.build_typed_expression(value, &ty, block)?
+            })
         } else {
             None
         };
-        let weak_field = self.weak_assignment_field(target, block)?;
-        let address = if weak_field.is_some() {
+        let place = self
+            .overloaded_index_receiver(target)?
+            .map(|ty| {
+                self.build_index_place(
+                    target,
+                    ty,
+                    if op == AssignOp::Assign {
+                        "__setitem"
+                    } else {
+                        "__getitem"
+                    },
+                    block,
+                )
+            })
+            .transpose()?;
+        let weak_field = if place.is_some() {
             None
         } else {
-            Some(self.build_address(target, block)?)
+            self.weak_assignment_field(target, block)?
+        };
+        let address = if weak_field.is_some() || place.is_some() {
+            None
+        } else {
+            Some(self.build_address_for_use(target, op == AssignOp::Assign, block)?)
         };
         let previous = if op == AssignOp::Assign {
             None
+        } else if let Some(place) = &place {
+            Some(self.read_index_place(place, span, block)?)
         } else if let Some((receiver, target_ty, field, index)) = &weak_field {
             let dst = self.fresh_local(ty.clone());
             block.push(HirStmt::Instr(HirInstr::FieldLoad {
@@ -312,6 +362,7 @@ impl BodyBuilder<'_> {
                 field: field.clone(),
                 index: *index,
                 ty: ty.clone(),
+                borrow: false,
                 dst,
             }));
             Some(HirOperand::Local(dst))
@@ -352,7 +403,9 @@ impl BodyBuilder<'_> {
         } else {
             rhs
         };
-        if let Some((receiver, target_ty, field, index)) = weak_field {
+        if let Some(place) = place {
+            self.write_index_place(place, stored.clone(), span, block)?;
+        } else if let Some((receiver, target_ty, field, index)) = weak_field {
             block.push(HirStmt::Instr(HirInstr::FieldStore {
                 target: receiver,
                 target_ty,
@@ -426,6 +479,7 @@ impl BodyBuilder<'_> {
                 field: name.to_string(),
                 index,
                 ty: field_ty,
+                borrow: false,
                 dst,
             }));
             return Ok(Some(HirOperand::Local(dst)));
@@ -446,6 +500,7 @@ impl BodyBuilder<'_> {
             field: name.to_string(),
             index,
             ty: field_ty,
+            borrow: false,
             dst,
         }));
         Ok(Some(HirOperand::Local(dst)))

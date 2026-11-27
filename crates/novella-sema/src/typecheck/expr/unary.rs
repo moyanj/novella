@@ -85,7 +85,21 @@ pub(crate) fn check_unary(
             }
         }
         UnaryOp::PostIncrement | UnaryOp::PostDecrement => {
-            if !is_lvalue(sema, ctx, operand) {
+            use crate::typecheck::call::{check_index_signature, index_parts, is_custom_index};
+            let overload = index_parts(operand).and_then(|(receiver, _)| {
+                sema.expression_types
+                    .get(&(ctx.module, receiver.span()))
+                    .filter(|ty| is_custom_index(sema, ty))
+                    .cloned()
+            });
+            if let Some(receiver) = overload {
+                if let Some(setter) = check_index_signature(sema, ctx, &receiver, "__setitem", span)
+                {
+                    crate::typecheck::unsafe_rules::check_index_update_types(
+                        sema, ctx, &receiver, &setter, span,
+                    );
+                }
+            } else if !is_lvalue(sema, ctx, operand) {
                 sema.type_error(ctx.module, operand.span(), "自增/自减需要可写的左值");
             }
             if let Ty::Pointer(inner) = &operand_ty {

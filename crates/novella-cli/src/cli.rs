@@ -82,6 +82,9 @@ pub struct AnalysisOptionsArgs {
     /// 目标代码模型。
     #[arg(long)]
     pub code_model: Option<novella_core::target::CodeModel>,
+    /// 优化级别：0、1、2、3 或 s（即 -O0..-O3、-Os）。
+    #[arg(short = 'O', long = "opt-level", value_name = "LEVEL")]
+    pub opt_level: Option<novella_core::target::OptLevel>,
     /// 链接驱动；裸机目标必须使用 ELF 链接器。
     #[arg(long)]
     pub linker: Option<PathBuf>,

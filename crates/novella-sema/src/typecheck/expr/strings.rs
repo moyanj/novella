@@ -7,10 +7,19 @@ pub(crate) fn check_literal(sema: &mut Sema, ctx: &mut BodyCtx, value: &Literal,
         Literal::Boolean(_) => Ty::Boolean,
         Literal::String(raw) => {
             if raw.starts_with('b') {
-                if let Err(error) = novella_core::string::decode_byte_literal(raw) {
-                    sema.type_error(ctx.module, span, error.to_string());
-                }
-                return Ty::Array(Box::new(Ty::Int(crate::ty::IntKind::U8)));
+                return match novella_core::string::decode_byte_literal(raw) {
+                    Ok(bytes) => super::aggregates::array_type(
+                        sema,
+                        ctx,
+                        span,
+                        Ty::Int(crate::ty::IntKind::U8),
+                        bytes.len(),
+                    ),
+                    Err(error) => {
+                        sema.type_error(ctx.module, span, error.to_string());
+                        Ty::Error
+                    }
+                };
             }
             if raw.starts_with('f') {
                 check_fstring(sema, ctx, raw, span);

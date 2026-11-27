@@ -241,11 +241,15 @@ mod tests {
     }
 
     /// 不可发射的目标描述不得声明链接参数。
+    ///
+    /// 内置 Linux 目标的 `linker-args` 为空，因此用例需自行注入一条链接参数，
+    /// 不能依赖内置描述携带 `-lm` 之类的固定参数。
     #[test]
     fn 无发射后端时禁止链接参数() {
         let mut spec = crate::builtin::lookup("x86_64-unknown-linux-gnu")
             .unwrap()
             .unwrap();
+        spec.linker_args = vec!["-lm".into()];
         spec.emit = None;
         assert!(spec.validate().is_err());
         spec.linker_args.clear();

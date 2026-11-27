@@ -73,7 +73,7 @@ fn collect_methods(sema: &mut Sema, module: ModuleId, owner: Ty, members: Vec<Cl
         // 特殊方法的返回类型由协议固定，不能由函数体改变。
         if method.return_type.is_some()
             || method.block.is_none()
-            || super::CLASS_SPECIAL_METHODS.contains(&super::canonical_method_name(&method.name))
+            || super::CLASS_SPECIAL_METHODS.contains(&method.name.as_str())
         {
             continue;
         }
@@ -182,7 +182,7 @@ fn inference_state(ty: &Ty) -> InferenceState {
     match ty {
         Ty::Unknown => InferenceState::Unknown,
         Ty::Error => InferenceState::Error,
-        Ty::Pointer(inner) | Ty::Array(inner) | Ty::Future(inner) => inference_state(inner),
+        Ty::Pointer(inner) | Ty::Array(inner, _) | Ty::Future(inner) => inference_state(inner),
         Ty::Tuple(types) | Ty::Union(types) => merge(types),
         Ty::Applied(base, args) => inference_state(base).max(merge(args)),
         Ty::Object(fields) => fields
@@ -234,12 +234,10 @@ fn set_return(sema: &mut Sema, module: ModuleId, name: &str, task: &ReturnTask, 
                 Some(TypeDef::Class(def)) => &mut def.methods,
                 _ => return,
             };
-            methods
-                .get_mut(super::canonical_method_name(&method.name))
-                .map(|method| {
-                    method.sig.ret = ret;
-                    method.sig.clone()
-                })
+            methods.get_mut(method.name.as_str()).map(|method| {
+                method.sig.ret = ret;
+                method.sig.clone()
+            })
         }
     };
     if let Some(signature) = signature {

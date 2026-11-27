@@ -1,4 +1,4 @@
-//! 数组遍历：数组求值一次、长度每轮读取，continue 统一跳到循环 step。
+//! 定长数组遍历：数组求值一次，continue 统一跳到循环 step。
 
 use super::*;
 
@@ -10,7 +10,7 @@ impl BodyBuilder<'_> {
         block: &mut HirBlock,
     ) -> Result<(), BuildError> {
         self.with_scope(|this| {
-            let HirType::Array(element_ty) = this.expr_type(cond.right.span())? else {
+            let HirType::Array(element_ty, length) = this.expr_type(cond.right.span())? else {
                 return Err(BuildError::at(BuildErrorKind::Unimplemented {
                     node: "for-in of non-array",
                 })
@@ -25,18 +25,13 @@ impl BodyBuilder<'_> {
                 init: Some(HirOperand::IntConst(0)),
             }));
             let mut prelude = HirBlock::new();
-            let len = this.fresh_local(usize_ty.clone());
-            prelude.push(HirStmt::Instr(HirInstr::ArrayLength {
-                target: array.clone(),
-                dst: len,
-            }));
             let test = this.fresh_local(HirType::Boolean);
             prelude.push(HirStmt::Instr(HirInstr::Binary {
                 op: HirBinaryOp::Lt,
                 lhs_ty: usize_ty.clone(),
                 rhs_ty: usize_ty.clone(),
                 lhs: HirOperand::Local(index),
-                rhs: HirOperand::Local(len),
+                rhs: HirOperand::IntConst(i128::from(length)),
                 dst: test,
                 dst_ty: HirType::Boolean,
             }));

@@ -33,7 +33,13 @@ pub fn type_expr_text(ty: &TypeExpr) -> String {
             }
             text
         }
-        TypeExpr::Array { element, .. } => format!("{}[]", type_expr_text(element)),
+        TypeExpr::Array {
+            element, length, ..
+        } => format!(
+            "{}[{}]",
+            type_expr_text(element),
+            length.map(|length| length.to_string()).unwrap_or_default()
+        ),
         TypeExpr::Pointer { element, .. } => format!("{}*", type_expr_text(element)),
         TypeExpr::Tuple { elements, .. } => format!(
             "({})",

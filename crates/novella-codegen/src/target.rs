@@ -15,7 +15,7 @@ use novella_hir::{HirProgram, HirType};
 pub(crate) fn validate_type(ty: &HirType) -> Result<()> {
     match ty {
         HirType::Float(_) => Err(CodegenError("裸机目标不支持显式浮点类型".into())),
-        HirType::Pointer(inner) | HirType::Array(inner) => validate_type(inner),
+        HirType::Pointer(inner) | HirType::Array(inner, _) => validate_type(inner),
         HirType::Tuple(elements) => elements.iter().try_for_each(validate_type),
         HirType::Function(signature) => {
             validate_type(&signature.ret)?;

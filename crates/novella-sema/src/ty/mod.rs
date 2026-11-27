@@ -217,7 +217,7 @@ pub(crate) enum Ty {
     /// HIR / CLI / LSP 无需变动。
     FloatLiteral(f64),
     Pointer(Box<Ty>),
-    Array(Box<Ty>),
+    Array(Box<Ty>, u32),
     Tuple(Vec<Ty>),
     Function(Rc<FunctionSig>),
     Union(Vec<Ty>),
@@ -255,7 +255,7 @@ impl Ty {
             Ty::IntLiteral(..) => TypeView::IntLiteral,
             Ty::FloatLiteral(_) => TypeView::FloatLiteral,
             Ty::Pointer(inner) => TypeView::Pointer(Box::new(inner.view())),
-            Ty::Array(element) => TypeView::Array(Box::new(element.view())),
+            Ty::Array(element, length) => TypeView::Array(Box::new(element.view()), *length),
             Ty::Tuple(elements) => TypeView::Tuple(elements.iter().map(Ty::view).collect()),
             Ty::Union(members) => TypeView::Union(members.iter().map(Ty::view).collect()),
             Ty::Applied(base, args) => {
@@ -427,7 +427,7 @@ impl fmt::Display for Ty {
             }
             Ty::FloatLiteral(value) => write!(f, "{value:?}"),
             Ty::Pointer(t) => write!(f, "{t}*"),
-            Ty::Array(t) => write!(f, "{t}[]"),
+            Ty::Array(t, length) => write!(f, "{t}[{length}]"),
             Ty::Tuple(ts) => {
                 write!(f, "(")?;
                 for (i, t) in ts.iter().enumerate() {

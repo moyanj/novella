@@ -2,7 +2,113 @@
 
 use super::*;
 
+pub(super) struct IndexPlace {
+    pub(super) receiver: HirOperand,
+    pub(super) key: HirOperand,
+    pub(super) receiver_ty: HirType,
+}
+
 impl BodyBuilder<'_> {
+    pub(super) fn overloaded_index_receiver(
+        &self,
+        expr: &Expression,
+    ) -> Result<Option<HirType>, BuildError> {
+        match expr {
+            Expression::Paren { expr, .. } => self.overloaded_index_receiver(expr),
+            Expression::IndexAccess { target, .. } => {
+                let ty = self.expr_type(target.span())?;
+                Ok((matches!(ty, HirType::Struct(..) | HirType::Class(..))
+                    && !super::operators::same_string_class(self.sema, &ty))
+                .then_some(ty))
+            }
+            _ => Ok(None),
+        }
+    }
+
+    fn index_method(
+        &self,
+        ty: &HirType,
+        name: &str,
+        span: Span,
+    ) -> Result<FunctionSignature, BuildError> {
+        let (HirType::Class(module, owner) | HirType::Struct(module, owner)) = ty else {
+            unreachable!("已检查下标协议接收者")
+        };
+        self.class_method_signature(*module, owner, name, span)?
+            .ok_or_else(|| {
+                BuildError::at(BuildErrorKind::MissingType {
+                    what: "下标协议方法签名",
+                })
+                .with_site(self.module, span)
+            })
+    }
+
+    pub(super) fn build_index_place(
+        &mut self,
+        expr: &Expression,
+        receiver_ty: HirType,
+        method: &str,
+        block: &mut HirBlock,
+    ) -> Result<IndexPlace, BuildError> {
+        if let Expression::Paren { expr, .. } = expr {
+            return self.build_index_place(expr, receiver_ty, method, block);
+        }
+        let Expression::IndexAccess {
+            target,
+            index,
+            span,
+        } = expr
+        else {
+            unreachable!("已检查下标表达式")
+        };
+        let signature = self.index_method(&receiver_ty, method, *span)?;
+        let receiver = if matches!(receiver_ty, HirType::Struct(..)) {
+            self.aggregate_address(target, block)?
+        } else {
+            self.build_expression(target, block)?
+        };
+        let key = self.build_typed_expression(index, &signature.params[0], block)?;
+        Ok(IndexPlace {
+            receiver,
+            key,
+            receiver_ty,
+        })
+    }
+
+    pub(super) fn read_index_place(
+        &mut self,
+        place: &IndexPlace,
+        span: Span,
+        block: &mut HirBlock,
+    ) -> Result<HirOperand, BuildError> {
+        let signature = self.index_method(&place.receiver_ty, "__getitem", span)?;
+        let dst = self.fresh_local(signature.ret.clone());
+        block.push(HirStmt::Instr(HirInstr::Call {
+            callee: HirOperand::FunctionPtr(signature.id),
+            args: vec![place.receiver.clone(), place.key.clone()],
+            dst: Some(dst),
+            dst_ty: Some(signature.ret),
+        }));
+        Ok(HirOperand::Local(dst))
+    }
+
+    pub(super) fn write_index_place(
+        &self,
+        place: IndexPlace,
+        value: HirOperand,
+        span: Span,
+        block: &mut HirBlock,
+    ) -> Result<(), BuildError> {
+        let signature = self.index_method(&place.receiver_ty, "__setitem", span)?;
+        block.push(HirStmt::Instr(HirInstr::Call {
+            callee: HirOperand::FunctionPtr(signature.id),
+            args: vec![place.receiver, place.key, value],
+            dst: None,
+            dst_ty: None,
+        }));
+        Ok(())
+    }
+
     pub(super) fn build_new(
         &mut self,
         _target: &Expression,
@@ -39,7 +145,7 @@ impl BodyBuilder<'_> {
                 .with_site(self.module, span));
             }
             for (arg, expected) in args.iter().zip(&signature.params) {
-                operands.push(self.build_typed_expression(arg, expected, block)?);
+                operands.push(self.build_call_argument(arg, expected, block)?);
             }
             if args.len() < signature.params.len() {
                 let declaration = self
@@ -259,7 +365,7 @@ impl BodyBuilder<'_> {
             self.build_expression(callee, block)?
         };
         for (arg, expected) in args.iter().zip(&signature.params) {
-            operands.push(self.build_typed_expression(arg, expected, block)?);
+            operands.push(self.build_call_argument(arg, expected, block)?);
         }
         if args.len() < signature.params.len() {
             self.append_default_arguments(
@@ -286,6 +392,30 @@ impl BodyBuilder<'_> {
         Ok(dst.map_or(HirOperand::Unit, HirOperand::Local))
     }
     /// 默认实参从原始声明取表达式；调用处只替换此前参数的已求值快照。
+    pub(super) fn build_call_argument(
+        &mut self,
+        arg: &Expression,
+        expected: &HirType,
+        block: &mut HirBlock,
+    ) -> Result<HirOperand, BuildError> {
+        if let HirType::Pointer(pointee) = expected {
+            let actual = self.expr_type_pref(arg.span(), Some(expected))?;
+            if let HirType::Array(element, _) = &actual
+                && same_value_type(pointee, element)
+            {
+                let address = self.aggregate_address(arg, block)?;
+                return self.coerce(
+                    address,
+                    &HirType::Pointer(Box::new(actual)),
+                    expected,
+                    arg.span(),
+                    block,
+                );
+            }
+        }
+        self.build_typed_expression(arg, expected, block)
+    }
+
     fn append_default_arguments(
         &mut self,
         callee_span: Span,

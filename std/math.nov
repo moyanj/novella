@@ -2,6 +2,75 @@
 pub const PI: f64 = 3.141592653589793;
 pub const E: f64 = 2.718281828459045;
 
+// f64 绝对值：NaN 与 ±inf 原样返回，-0.0 返回 +0.0（IEEE 规定）。
+pub func fabs(x: f64) -> f64 {
+    if (x <= 0.0) { return -x; }
+    if (x > 0.0) { return x; }
+    return x;
+}
+
+// `|x| >= 2^63` 的阈值：此处上 f64 已无小数位，取整即原值。
+// 该值必须严格小于 2^63，否则 `x as i64` 在 2^63 本身即溢出。
+pri func beyondIntegerRange(x: f64) -> boolean {
+    let limit: f64 = 9223372036854775808.0;
+    if (x >= limit) { return true; }
+    if (x <= -limit) { return true; }
+    return false;
+}
+
+// 向零取整：区间内靠 `as i64` 截断（硬件截断指令），越界时 f64 已无小数位，原样返回。
+// 注意 `x / 1.0` 在 IEEE-754 下不取整，不能用于整数化。
+pub func trunc(x: f64) -> f64 {
+    if (beyondIntegerRange(x)) { return x; }
+    return (x as i64) as f64;
+}
+
+// 向上取整：先截断，有小数余量再加一。NaN 与 ±inf 因比较为假而原样返回。
+pub func ceil(x: f64) -> f64 {
+    if (beyondIntegerRange(x)) { return x; }
+    let whole = (x as i64) as f64;
+    if (whole < x) { return whole + 1.0; }
+    return whole;
+}
+
+// 向下取整：先截断，有小数余量再减一。
+pub func floor(x: f64) -> f64 {
+    if (beyondIntegerRange(x)) { return x; }
+    let whole = (x as i64) as f64;
+    if (whole > x) { return whole - 1.0; }
+    return whole;
+}
+
+// 四舍五入；沿用旧实现的规则——正半轴与向上取整相同，负半轴向远离零取整。
+// 即 `.5` 一律远离零（2.5 -> 3、-2.5 -> -3），不做银行家舍入。
+pub func round(x: f64) -> f64 {
+    if (beyondIntegerRange(x)) { return x; }
+    let whole = (x as i64) as f64;
+    let rest = x - whole;
+    if (x >= 0.0) {
+        if (rest >= 0.5) { return whole + 1.0; }
+        return whole;
+    }
+    if (rest <= -0.5) { return whole - 1.0; }
+    return whole;
+}
+
+// 平方根：初值取 x 的一半，Newton 迭代 y <- (y + x / y) 的一半。
+// 停止条件用相邻两次的相对变化，2^-50 的阈值大于 Newton 末段两个候选值的差，
+// 因此必然终止；NaN 与正无穷会让比较为假而立即返回。
+pub func sqrt(x: f64) -> f64 {
+    if (x <= 0.0) { return 0.0; }
+    let tolerance: f64 = 0.0000000000000008881784197001252;
+    let half: f64 = 0.5;
+    let guess = x * half;
+    let next = (guess + x / guess) * half;
+    while (fabs(next - guess) > next * tolerance) {
+        guess = next;
+        next = (guess + x / guess) * half;
+    }
+    return next;
+}
+
 // 对 i64::MIN 也成立：先平移再取负，避免有符号溢出。
 pub func abs(x: i64) -> u64 {
     if (x >= 0) { return x as u64; }
@@ -16,43 +85,4 @@ pub func min(a: i64, b: i64) -> i64 {
 pub func max(a: i64, b: i64) -> i64 {
     if (a > b) { return a; }
     return b;
-}
-
-// 对有限 f64，超过整数精度范围的值本身已经没有小数部分，因此不需要
-// 转换成整数；余数算法也避免了 f64 → i64 的范围陷阱。
-pub func floor(x: f64) -> f64 {
-    let remainder = x % 1.0;
-    let truncated = x - remainder;
-    if (x < 0.0 and remainder != 0.0) { return truncated - 1.0; }
-    return truncated;
-}
-
-pub func ceil(x: f64) -> f64 {
-    let remainder = x % 1.0;
-    if (remainder == 0.0) { return x; }
-    let truncated = x - remainder;
-    if (x > 0.0) { return truncated + 1.0; }
-    return truncated;
-}
-
-pub func round(x: f64) -> f64 {
-    if (x >= 0.0) { return floor(x + 0.5); }
-    return ceil(x - 0.5);
-}
-
-// Newton 迭代。负数没有在当前标准库中约定 NaN，因此返回 0.0。
-pub func sqrt(x: f64) -> f64 {
-    if (x < 0.0) { return 0.0; }
-    if (x == 0.0) { return 0.0; }
-
-    let guess = x > 1.0 ? x / 2.0 : 1.0;
-    while (fabs(guess - x / guess) > 0.000000000000001 * guess) {
-        guess = (guess + x / guess) / 2.0;
-    }
-    return guess;
-}
-
-pub func fabs(x: f64) -> f64 {
-    if (x < 0.0) { return -x; }
-    return x;
 }

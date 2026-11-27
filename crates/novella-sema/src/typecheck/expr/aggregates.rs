@@ -42,24 +42,17 @@ pub(crate) fn check_array_literal(
             );
         }
     }
-    Ty::Array(Box::new(inferred))
+    array_type(sema, ctx, span, inferred, elements.len())
 }
 
-/// 带元素类型提示的数组字面量检查（`check_expr_with_hint` 的 `T[]` 分支）。
-///
-/// 空数组直接定型为 `T[]`——这是让 `[]` 合法的唯一上下文；非空时每个元素都按
-/// `T` 下推，使 `[[], [1]]` 这类嵌套空数组同样能定型。元素与 `T` 不兼容时按
-/// 首个不匹配的元素报错，数组类型仍按标注给出，避免上层再报「无法推断元素类型」。
+/// 上下文只提供元素类型，长度始终取自字面量本身。
 pub(super) fn check_array_literal_with_hint(
     sema: &mut Sema,
     ctx: &mut BodyCtx,
     elements: &[Expression],
-    _span: Span,
+    span: Span,
     element_hint: &Ty,
 ) -> Ty {
-    if elements.is_empty() {
-        return Ty::Array(Box::new(element_hint.clone()));
-    }
     let mut mismatched = None;
     for element in elements {
         let ty = check_expr_with_hint(sema, ctx, element, element_hint);
@@ -74,7 +67,23 @@ pub(super) fn check_array_literal_with_hint(
             format!("数组元素类型 `{ty}` 与标注的元素类型 `{element_hint}` 不兼容"),
         );
     }
-    Ty::Array(Box::new(element_hint.clone()))
+    array_type(sema, ctx, span, element_hint.clone(), elements.len())
+}
+
+pub(super) fn array_type(
+    sema: &mut Sema,
+    ctx: &BodyCtx,
+    span: Span,
+    element: Ty,
+    len: usize,
+) -> Ty {
+    match u32::try_from(len) {
+        Ok(length) => Ty::Array(Box::new(element), length),
+        Err(_) => {
+            sema.type_error(ctx.module, span, "数组长度超出 u32 范围");
+            Ty::Error
+        }
+    }
 }
 /// 对象字面量（追加项 E）：重复键检查 + 简写 `{b}` 展开校验。
 pub(crate) fn check_object_literal(

@@ -111,7 +111,7 @@ primaryType:
 	'(' typeList? ')'		# TupleTypeCase
 	| predefinedType		# PredefinedTypeCase
 	| typeReference			# ReferenceTypeCase
-	| primaryType '[' ']'	# ArrayTypeCase
+	| primaryType '[' DecimalLiteral? ']'	# ArrayTypeCase
 	| primaryType '*'		# PointerTypeCase;
 
 typeList: typeExpression (',' typeExpression)*;

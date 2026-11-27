@@ -8,6 +8,7 @@ use novella_ast::types::TypeExpr;
 use novella_core::Span;
 
 use crate::Sema;
+use crate::symbol::SymbolKind;
 use crate::ty::{FunctionSig, Ty, TypeDef};
 
 use super::body::{BodyCtx, concrete};
@@ -23,6 +24,88 @@ pub(crate) fn check_index_access(
     span: Span,
 ) -> Ty {
     let target_ty = check_expr(sema, ctx, target);
+    check_index_on(sema, ctx, target_ty, index, span)
+}
+
+pub(crate) fn is_custom_index(sema: &Sema, ty: &Ty) -> bool {
+    matches!(ty, Ty::Class(..) | Ty::Struct(..) | Ty::Applied(..)) && !sema.is_string_type(ty)
+}
+
+pub(crate) fn index_parts(expr: &Expression) -> Option<(&Expression, &Expression)> {
+    match expr {
+        Expression::Paren { expr, .. } => index_parts(expr),
+        Expression::IndexAccess { target, index, .. } => Some((target, index)),
+        _ => None,
+    }
+}
+
+pub(crate) fn index_signature(
+    sema: &Sema,
+    target: &Ty,
+    name: &str,
+) -> Option<(super::member::MemberHit, Rc<FunctionSig>)> {
+    let key = super::member::type_key_of(target);
+    let hit = super::member::lookup_member_chain(sema, &key, name, false)?;
+    let super::member::MemberInfo::Method(method) = &hit.info else {
+        return None;
+    };
+    let subst = crate::ty::member_substitution(sema, target, &hit.owner);
+    let Ty::Function(sig) =
+        crate::ty::substitute_type_params(&Ty::Function(Rc::new(method.sig.clone())), &subst)
+    else {
+        return None;
+    };
+    Some((hit, sig))
+}
+
+pub(crate) fn check_index_signature(
+    sema: &mut Sema,
+    ctx: &BodyCtx,
+    target: &Ty,
+    name: &str,
+    span: Span,
+) -> Option<Rc<FunctionSig>> {
+    let Some((hit, sig)) = index_signature(sema, target, name) else {
+        sema.type_error(ctx.module, span, format!("类型 `{target}` 未实现 `{name}`"));
+        return None;
+    };
+    hit.check_visible(sema, ctx, name, span);
+    Some(sig)
+}
+
+pub(crate) fn check_index_operand(
+    sema: &mut Sema,
+    ctx: &mut BodyCtx,
+    index: &Expression,
+    expected: &Ty,
+) {
+    let actual = check_expr_with_hint(sema, ctx, index, expected);
+    if !sema.is_assignable(expected, &actual) {
+        sema.type_error(
+            ctx.module,
+            index.span(),
+            format!("下标需要 `{expected}`，实为 `{actual}`"),
+        );
+    }
+}
+
+pub(crate) fn check_index_on(
+    sema: &mut Sema,
+    ctx: &mut BodyCtx,
+    target_ty: Ty,
+    index: &Expression,
+    span: Span,
+) -> Ty {
+    if is_custom_index(sema, &target_ty) {
+        if let Some(sig) = check_index_signature(sema, ctx, &target_ty, "__getitem", span)
+            && let Some(param) = sig.params.get(1)
+        {
+            check_index_operand(sema, ctx, index, &param.ty);
+            return sig.ret.clone();
+        }
+        check_expr(sema, ctx, index);
+        return Ty::Error;
+    }
     let index_ty = check_expr(sema, ctx, index);
     if !index_ty.is_integer() && !index_ty.is_opaque() {
         sema.type_error(
@@ -36,7 +119,7 @@ pub(crate) fn check_index_access(
         return Ty::Int(crate::ty::IntKind::U16);
     }
     match target_ty {
-        Ty::Array(element) => *element,
+        Ty::Array(element, _) => *element,
         Ty::Pointer(inner) => {
             // S4：指针下标须 unsafe
             require_unsafe(sema, ctx, span, "指针下标访问");
@@ -264,7 +347,11 @@ fn build_substitution(
         return subst;
     }
     for (param, actual) in param_tys.iter().zip(arg_tys.iter()) {
-        if let Err(message) = crate::ty::infer_type_param(param, &concrete(actual), &mut subst) {
+        let actual = match (param, actual) {
+            (Ty::Pointer(_), Ty::Array(element, _)) => Ty::Pointer(Box::new(concrete(element))),
+            _ => concrete(actual),
+        };
+        if let Err(message) = crate::ty::infer_type_param(param, &actual, &mut subst) {
             sema.type_error(ctx.module, span, message);
         }
     }
@@ -321,7 +408,13 @@ pub(crate) fn check_call_against_sig(
         return;
     }
     for (arg, (param, arg_ty)) in args.iter().zip(params.iter().zip(arg_tys.iter())) {
-        if !sema.is_assignable(&param.ty, arg_ty) {
+        let array_decay = matches!((&param.ty, arg_ty), (Ty::Pointer(pointee), Ty::Array(element, _))
+            if crate::ty::ty_eq(pointee, element));
+        if array_decay {
+            if readonly_decay_source(sema, ctx, arg) {
+                sema.type_error(ctx.module, arg.span(), "只读数组不能退化为可写指针");
+            }
+        } else if !sema.is_assignable(&param.ty, arg_ty) {
             sema.type_error(
                 ctx.module,
                 arg.span(),
@@ -333,6 +426,28 @@ pub(crate) fn check_call_against_sig(
         }
     }
 }
+
+fn readonly_decay_source(sema: &mut Sema, ctx: &mut BodyCtx, source: &Expression) -> bool {
+    match source {
+        Expression::Paren { expr, .. } => readonly_decay_source(sema, ctx, expr),
+        Expression::Identifier { name, .. } => matches!(
+            sema.scopes
+                .lookup(ctx.scope, name)
+                .map(|symbol| &symbol.kind),
+            Some(SymbolKind::Variable { is_const: true, .. })
+        ),
+        Expression::MemberAccess { target, .. } => readonly_decay_source(sema, ctx, target),
+        Expression::IndexAccess { target, .. } => {
+            let is_array = matches!(
+                sema.expression_types.get(&(ctx.module, target.span())),
+                Some(Ty::Array(..))
+            );
+            is_array && readonly_decay_source(sema, ctx, target)
+        }
+        _ => false,
+    }
+}
+
 /// `new Class(args)`：必须是 class，按 `__init` 检查实参。
 pub(crate) fn check_new(
     sema: &mut Sema,

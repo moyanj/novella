@@ -21,3 +21,72 @@ mod registration;
 pub(crate) use registration::*;
 mod inheritance;
 pub(crate) use inheritance::*;
+
+pub(crate) fn check_value_layout_cycles(sema: &mut Sema) {
+    let mut edges = Vec::new();
+    for ((module, name), definition) in &sema.type_defs {
+        let fields = match definition {
+            crate::ty::TypeDef::Struct(definition) => &definition.fields,
+            _ => continue,
+        };
+        for field in fields.iter().filter(|field| !field.is_static) {
+            let mut targets = Vec::new();
+            collect_value_types(&field.ty, &mut targets);
+            for target in targets {
+                if matches!(
+                    sema.type_defs.get(&target),
+                    Some(crate::ty::TypeDef::Struct(_))
+                ) {
+                    edges.push((*module, name.clone(), target, field.name_span));
+                }
+            }
+        }
+    }
+    let snapshot = edges.clone();
+    for (module, owner, target, span) in edges {
+        if reaches(
+            &snapshot,
+            target,
+            (module, owner.clone()),
+            &mut HashSet::new(),
+        ) {
+            sema.type_error(
+                module,
+                span,
+                format!("struct `{owner}` 含直接或间接递归值布局"),
+            );
+        }
+    }
+}
+
+fn collect_value_types(ty: &Ty, output: &mut Vec<(ModuleId, String)>) {
+    match ty {
+        Ty::Struct(module, name) => output.push((*module, name.clone())),
+        Ty::Applied(base, _) => collect_value_types(base, output),
+        Ty::Array(element, _) => collect_value_types(element, output),
+        Ty::Tuple(elements) => {
+            for element in elements {
+                collect_value_types(element, output);
+            }
+        }
+        _ => {}
+    }
+}
+
+fn reaches(
+    edges: &[(ModuleId, String, (ModuleId, String), Span)],
+    from: (ModuleId, String),
+    target: (ModuleId, String),
+    visited: &mut HashSet<(ModuleId, String)>,
+) -> bool {
+    if from == target {
+        return true;
+    }
+    if !visited.insert(from.clone()) {
+        return false;
+    }
+    edges
+        .iter()
+        .filter(|edge| (edge.0, edge.1.clone()) == from)
+        .any(|edge| reaches(edges, edge.2.clone(), target.clone(), visited))
+}

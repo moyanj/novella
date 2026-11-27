@@ -272,19 +272,33 @@ impl Parser {
         Some(self.parse_type_suffixes(ty))
     }
 
-    /// 解析类型后缀 `[]`（数组）与 `*`（指针），可叠加（`int*[]`、`(A | B)*`）。
+    /// 解析类型后缀 `[N]`、`[]` 与 `*`，从左到右构造类型。
     ///
     /// 主类型与括号分组 / 元组共用此后缀循环（B-02）。
     fn parse_type_suffixes(&mut self, mut ty: TypeExpr) -> TypeExpr {
         loop {
             let start = ty.span().start;
-            if self.check(TokenKind::OpenBracket) && self.check_n(TokenKind::CloseBracket, 1) {
-                self.advance();
-                let Some(close) = self.advance() else {
+            if self.eat(TokenKind::OpenBracket).is_some() {
+                let length = if self.check(TokenKind::CloseBracket) {
+                    None
+                } else {
+                    let Some(token) = self.expect(TokenKind::DecimalLiteral) else {
+                        break;
+                    };
+                    match token.slice.replace('_', "").parse::<u32>() {
+                        Ok(length) => Some(length),
+                        Err(_) => {
+                            self.error_here("数组长度必须是 u32 范围内的十进制整数");
+                            break;
+                        }
+                    }
+                };
+                let Some(close) = self.expect(TokenKind::CloseBracket) else {
                     break;
                 };
                 ty = TypeExpr::Array {
                     element: Box::new(ty),
+                    length,
                     span: Span {
                         start,
                         end: close.span.end,

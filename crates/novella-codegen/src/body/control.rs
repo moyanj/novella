@@ -50,6 +50,7 @@ impl<'ctx> Body<'ctx, '_> {
         if falls {
             self.release_owned(start, None)?;
         }
+        self.owned.truncate(start);
         Ok(falls)
     }
 
@@ -67,6 +68,7 @@ impl<'ctx> Body<'ctx, '_> {
             .operand(&cond.value, &HirType::Boolean)?
             .into_int_value();
         self.release_owned(condition_start, None)?;
+        self.owned.truncate(condition_start);
         if let Some(constant) = value.get_zero_extended_constant() {
             return if constant != 0 {
                 self.scoped_block(then_block)
@@ -129,6 +131,7 @@ impl<'ctx> Body<'ctx, '_> {
                     .operand(&cond.value, &HirType::Boolean)?
                     .into_int_value();
                 self.release_owned(condition_start, None)?;
+                self.owned.truncate(condition_start);
                 match value.get_zero_extended_constant() {
                     Some(0) => {
                         self.builder.build_unconditional_branch(exit)?;
@@ -145,6 +148,7 @@ impl<'ctx> Body<'ctx, '_> {
                     }
                 }
             } else {
+                self.owned.truncate(condition_start);
                 (false, false)
             }
         } else {

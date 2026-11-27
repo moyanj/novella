@@ -87,7 +87,7 @@ impl<'ctx> Body<'ctx, '_> {
                 .ok_or_else(|| CodegenError(format!("`{id}` 的 void 调用不能保存结果")))?;
             // 返回值已经拥有引用；槽位接管它，不能重复 retain。
             self.save(dst, &signature.ret, value)?;
-        } else if Self::is_managed(&signature.ret) {
+        } else if self.is_managed(&signature.ret) {
             let value = call
                 .try_as_basic_value()
                 .basic()

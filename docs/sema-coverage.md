@@ -59,7 +59,7 @@
 | T03 | 未定型数值字面量按目标类型归化 | design §5.2.1 | `ty.rs::assignable` + `body.rs::concrete` | **已实现**（整数部分） | 按目标位宽判定；浮点范围见 S04b | **S04a 完成** |
 | T04 | `null` → 任意 `T*` / class 引用；`void*` ↔ `T*` | design §6.5 S5/S6 | `ty.rs::assignable` | 已实现 | 正/反见 unsafe 表 | — |
 | T05 | 子类 → 父类隐式；父类 → 子类需 `as` | design §5.2.1 | `lib.rs::is_subclass` + `assignable` | 已实现 | 正：`let a: Base = new Derived();` | — |
-| T06 | 元组 / 数组同形逐元素可赋 | design §5.2.1 | `ty.rs::assignable` | 已实现 | 正/反：元素类型不一致报错 | — |
+| T06 | 元组 / 等长定长数组同形逐元素可赋；无长度 `T[]` 只可作形参并解析为 `T*` | design §5.2.1、§7.7 | `ty/relations.rs`、`resolve/types.rs`、`typecheck/call.rs` | 已实现 | 元素类型或长度不兼容报错；拒绝只读数组退化为可写指针 | — |
 | T07 | 联合类型赋值（目标取任一、源需全部） | design §5.2.1 | `ty.rs::assignable` | 已实现 | 正/反按保守规则 | — |
 | T08 | 泛型实参参与类型身份（Box<i32> ≠ Box<string>） | 已确认 D05 | `Ty::Applied` / `ty::ty_eq` | 已实现 | generic-identity 拒绝互赋；generic-struct-ok 保留 i32 实参 | S11 |
 | T09 | 类型参数按声明身份判等 | 已确认 D05 | `ty::param_key` / `resolve/types.rs` | 已实现 | 函数、类型、方法、别名的 T 携带模块与声明位置；泛型覆写按位置重命名 | S11 |
@@ -109,7 +109,7 @@
 | D16S | 禁用标准库指令 | 用户补充（2026-11-21） | `module/loader.rs` / `check/decl.rs` | 已实现 | 入口独立 @no_std; 关闭整个导入闭包的标准库加载和 site 注入；普通字符串字面量降为只读 UTF-16 指针，f-string 仍需标准库 String；拒绝 std: 导入、重复/带参/依赖模块/修饰声明或块的用法 | 无参数指令 | |
 | D16T | 禁用自动入口 | 裸机计划 / design §4.2 | `module/loader.rs` / `freestanding.rs` | 已实现 | @no_main 仅入口独立一次且无参；依赖、重复、带参、修饰声明或块均拒绝 | 无参数指令 |
 | D16U | C ABI 函数导出 | 裸机计划 / design §4.2 | `freestanding.rs` / `check/decl.rs` | 已实现 | @export 唯一合法符号；拒绝泛型/async/extern/无体/非顶层函数、聚合与托管 ABI、重复及 extern 碰撞 | 标量、裸指针与函数指针 |
-| D16V | 裸机目标与无托管模式 | 裸机计划 | `core::target` / `freestanding.rs` | 已实现 | 裸机强制 no_std+no_main，拒绝浮点含嵌套及 extern；runtime=none 拒绝实际托管值/ARC/weak/数组，纯 class 声明不要求堆 | 真实 file/span 定位 |
+| D16V | 裸机目标与无托管模式 | 裸机计划 | `core::target` / `freestanding.rs` | 已实现 | 裸机强制 no_std+no_main，拒绝浮点含嵌套及 extern；runtime=none 接受无托管元素的定长数组，拒绝实际托管值/ARC/weak | 真实 file/span 定位 |
 | D17R | 多继承 | design §4.6（仅单父类） | `build_type_defs` 报错 | 已实现 | 反：两个父类报错 | — |
 | D18R | 继承环检测 | plan E12 | `resolve_class_parents` | 已实现 | 反：`A(B)`/`B(A)` 报错 | — |
 | D19R | weak 字段只保存 class 引用，初值推导后检查 | design §7.4 | `check/fields.rs::check_fields` | 已实现静态约束及原生 weak upgrade/ARC | 正：class 别名、泛型 class、struct 内弱字段；反：标量、裸指针、数组、裸类型参数 | — |
@@ -136,10 +136,10 @@
 | E16R | 标准初始化 `Point{x:1}`（字段齐全、无未知字段） | design §5.4 | `unsafe_rules.rs::check_struct_init` | 已实现 | 反：缺字段 / 多余字段报错 | — |
 | E17R | 匿名对象结构类型、宽赋窄、重复键与简写 | 已确认 D07 | `expr/aggregates.rs` / `Ty::Object` | 已实现 | object-ok 宽赋窄并读取字段通过；未定义简写只报一次名称错误 | S12b |
 | E18R | 数组字面量元素类型取首元素并统一 | design §5.2.1 | `expr.rs::check_array_literal` | 已实现 | 反：元素类型不一致报错 | S03 |
-| E19R | 空数组需上下文给出元素类型 | design §5.2.1 | `expr.rs::check_expr_with_hint` + `check_array_literal_with_hint` | **已实现** | 正：声明 / 括号 / 元组 / 嵌套数组 / 实参 / return / struct 字段 / 赋值位置的 `[]` 均由上下文定型；反：无上下文 `[]` 报错 | **S03 完成** |
+| E19R | 空数组需 `T[0]` 上下文给出元素类型 | design §5.2.1、§7.7 | `expr/hints.rs`、`expr/aggregates.rs` | **已实现** | 定长声明、实参、返回值等位置可定型；无元素类型或长度不匹配报错 | **S03 完成** |
 | E20R | 调用：实参个数、类型、默认值、extern 需 unsafe | design §4.8；§6.2 | `call.rs::check_call` + `instance_param_tys` | **已实现** | 反：少参/多参/类型不符；正：`takes([])` 由形参定型 | **S03 完成** |
 | E21R | `new`：`__init` 实参检查；无 `__init` 不得传参；抽象类实例化 | design §4.6.1；plan S10b | `call.rs::check_new` + `type_defs::is_abstract_class` | **已实现** | 反：`new Shape()` 报「是抽象类…不能 new」；正：实现完抽象方法的子类可 new | **S04a 完成（D02）** |
-| E22R | 索引：数组 / 指针（unsafe）/ 元组字面量下标 / String 只读 UTF-16 码元 | design §4.10、§6.5 | `call.rs::check_index_access` | 已实现 | 正：`pair[(+0x1)] = []` 按对应槽位定型；反：负数、动态下标和越界下标报错 | — |
+| E22R | 索引：定长数组 / 指针（unsafe）/ 元组字面量下标 / String 只读 UTF-16 码元 / 自定义读写协议 | design §4.10、§6.5 | `typecheck/call.rs`、`unsafe_rules/assignment.rs` | 已实现 | 元组拒绝动态或越界下标；自定义读写仅识别 `__getitem` / `__setitem` | — |
 | E23R | 成员访问：字段 / 方法 / 自动解引用 / struct `this` 免 unsafe | design §6.5 S6；§8.4 | `member.rs::check_member_access` + `MemberHit::check_visible` | **已实现** | 反：跨模块访问非 `pub` 字段报错；正：同模块 / 类型内部 / `pub` 可访问 | **S04a 完成（D02）** |
 | E24R | 静态成员 `Type.member` | design §4.6 | `member.rs::check_static_access` | **已实现** | 反：`a.make()` 报「静态成员…请改用类型名」；`A.f()` 正常 | **S04a 完成（D02）** |
 | E25R | match 类型合一、重复/覆盖模式与穷尽性；不可能匹配的类型模式为警告 | 已确认 D06；ROADMAP M-1 | `typecheck/matching.rs` / `flow.rs` | 已实现 | 布尔穷尽无 default 通过；缺分支与重复负常量拒绝；void 分支不强制穷尽；不可能的类型模式发出 NVL3009 警告 | S12a / M-1 |
@@ -304,7 +304,7 @@
   crates/novella-sema/src/typecheck/body.rs：Return 分支按 expected_return 下推
   crates/novella-sema/src/typecheck/call.rs：实参按形参类型下推（新增 instance_param_tys），
     new 实参按 __init 形参下推
-复现（修改前均报「空数组字面量无法推断元素类型」）：
+历史复现（以下使用旧版数组语法，不是当前 `T[N]` 写法）：
   let xs: i32[] = ([]);                   括号
   return ([], []);  在 -> (i32[], i32[])  元组
   let rows: i32[][] = [[1], []];          嵌套数组

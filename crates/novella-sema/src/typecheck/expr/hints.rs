@@ -34,7 +34,7 @@ pub(crate) fn check_expr_with_hint(
 }
 
 /// 把「表达式 span → 类型」写进类型表；与 [`check_expr`] 共用同一键空间。
-pub(super) fn record_expression_type(sema: &mut Sema, module: ModuleId, span: Span, ty: Ty) {
+pub(crate) fn record_expression_type(sema: &mut Sema, module: ModuleId, span: Span, ty: Ty) {
     sema.expression_types.insert((module, span), ty);
 }
 
@@ -54,10 +54,10 @@ pub(super) fn check_expr_with_hint_inner(
         }
         // 括号：期望类型穿透（括号不改变表达式类型，只影响优先级）
         (Expression::Paren { expr, .. }, hint) => check_expr_with_hint(sema, ctx, expr, hint),
-        // 数组：`T[]` 给元素类型；空数组直接定型，非空逐元素下推
-        (Expression::ArrayLiteral { elements, span }, Ty::Array(element)) => {
-            check_array_literal_with_hint(sema, ctx, elements, *span, element)
-        }
+        (
+            Expression::ArrayLiteral { elements, span },
+            Ty::Array(element, _) | Ty::Pointer(element),
+        ) => check_array_literal_with_hint(sema, ctx, elements, *span, element),
         // 元组：逐位下推。位数不同属结构错误，报错后按元素各自定型（不再为
         // 对接不上的位置伪造期望类型——「不用 Unknown 伪装具体类型」的反面同理）
         (Expression::Tuple { elements, span }, Ty::Tuple(element_tys)) => {

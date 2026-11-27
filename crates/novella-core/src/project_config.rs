@@ -11,7 +11,7 @@ use std::{
 
 use serde::{Deserialize, Serialize};
 
-use crate::target::{BuildTarget, CodeModel, RuntimeMode, TargetPlatform};
+use crate::target::{BuildTarget, CodeModel, OptLevel, RuntimeMode, TargetPlatform};
 
 /// 目标选择：内置 triple 名或自定义目标描述的路径。
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -77,6 +77,8 @@ pub struct BuildConfig {
     pub target: Option<TargetSelector>,
     pub runtime: Option<RuntimeMode>,
     pub code_model: Option<CodeModel>,
+    /// 后端优化级别（`-O0`..`-O3`、`-Os`）；缺省时沿用目标描述的默认级别。
+    pub opt_level: Option<OptLevel>,
     pub linker: Option<PathBuf>,
     pub entry: Option<String>,
     pub linker_script: Option<PathBuf>,

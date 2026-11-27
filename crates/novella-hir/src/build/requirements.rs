@@ -5,7 +5,8 @@ use novella_core::target::{RuntimeMode, RuntimeRequirements};
 pub(super) fn managed(sema: &SemaResult, ty: &HirType) -> bool {
     fn visit(sema: &SemaResult, ty: &HirType, seen: &mut HashSet<(ModuleId, String)>) -> bool {
         match ty {
-            HirType::Class(..) | HirType::Trait(..) | HirType::Array(_) => true,
+            HirType::Class(..) | HirType::Trait(..) => true,
+            HirType::Array(element, length) => *length != 0 && visit(sema, element, seen),
             HirType::Tuple(items) => items.iter().any(|ty| visit(sema, ty, seen)),
             HirType::Struct(module, name) => {
                 if !seen.insert((*module, name.clone())) {
@@ -32,7 +33,7 @@ pub(super) fn managed(sema: &SemaResult, ty: &HirType) -> bool {
 fn floating(ty: &HirType) -> bool {
     match ty {
         HirType::Float(_) => true,
-        HirType::Pointer(ty) | HirType::Array(ty) => floating(ty),
+        HirType::Pointer(ty) | HirType::Array(ty, _) => floating(ty),
         HirType::Tuple(items) => items.iter().any(floating),
         HirType::Function(signature) => {
             signature.params.iter().any(floating) || floating(&signature.ret)
@@ -168,13 +169,11 @@ fn block(
             }
             HirStmt::Instr(instruction) => {
                 let types: Vec<&HirType> = match instruction {
-                    HirInstr::StringLiteral { .. }
-                    | HirInstr::Array { .. }
-                    | HirInstr::New { .. }
-                    | HirInstr::ArrayLength { .. } => {
+                    HirInstr::StringLiteral { .. } | HirInstr::New { .. } => {
                         require(sema, module, required)?;
                         Vec::new()
                     }
+                    HirInstr::Array { element_ty, .. } => vec![element_ty],
                     HirInstr::LocalAddress { .. } => Vec::new(),
                     HirInstr::FieldAddress { target_ty, .. } => vec![target_ty],
                     HirInstr::IndexAddress { element_ty, .. }
@@ -183,7 +182,8 @@ fn block(
                     HirInstr::StoreIndirect { ty, .. }
                     | HirInstr::Tuple { ty, .. }
                     | HirInstr::TupleExtract { ty, .. }
-                    | HirInstr::Alloc { ty, .. } => vec![ty],
+                    | HirInstr::Alloc { ty, .. }
+                    | HirInstr::Adopt { ty, .. } => vec![ty],
                     HirInstr::Call { dst_ty, .. } => dst_ty.iter().collect(),
                     HirInstr::Unary { dst_ty, .. } => vec![dst_ty],
                     HirInstr::Binary {

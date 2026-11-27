@@ -39,11 +39,13 @@ impl TargetPlatform {
                 platform: self,
                 runtime: RuntimeMode::Managed,
                 code_model: CodeModel::Small,
+                opt_level: OptLevel::None,
             },
             Self::BareMetalX86_64 => BuildTarget {
                 platform: self,
                 runtime: RuntimeMode::None,
                 code_model: CodeModel::Kernel,
+                opt_level: OptLevel::None,
             },
         }
     }
@@ -119,6 +121,71 @@ impl FromStr for CodeModel {
     }
 }
 
+/// 代码生成优化级别；`-O0`..`-O3` 对应 LLVM 的四档，`-Os` 为「优化体积」档。
+///
+/// 级别只影响后端生成的目标代码，不改变语言语义、诊断或运行时契约。
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum OptLevel {
+    /// `-O0`：不做优化，便于调试。
+    #[default]
+    None,
+    /// `-O1`：轻量优化。
+    Less,
+    /// `-O2`：常规优化（默认值 `-O default` 对应 `-O2`）。
+    Default,
+    /// `-O3`：激进优化。
+    Aggressive,
+    /// `-Os`：以代码体积为目标的优化。
+    Size,
+}
+
+impl OptLevel {
+    /// 对照 `-O0`..`-O3` 与 `-Os` 的稳定拼写。
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::None => "0",
+            Self::Less => "1",
+            Self::Default => "2",
+            Self::Aggressive => "3",
+            Self::Size => "s",
+        }
+    }
+
+    pub const fn all() -> [Self; 5] {
+        [
+            Self::None,
+            Self::Less,
+            Self::Default,
+            Self::Aggressive,
+            Self::Size,
+        ]
+    }
+}
+
+impl FromStr for OptLevel {
+    type Err = String;
+
+    fn from_str(value: &str) -> Result<Self, Self::Err> {
+        match value {
+            "0" => Ok(Self::None),
+            "1" => Ok(Self::Less),
+            "2" => Ok(Self::Default),
+            "3" => Ok(Self::Aggressive),
+            "s" => Ok(Self::Size),
+            other => Err(format!(
+                "不支持优化级别 `{other}`；可选 0、1、2、3 或 s（即 -O0/-O1/-O2/-O3/-Os）"
+            )),
+        }
+    }
+}
+
+impl fmt::Display for OptLevel {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "-O{}", self.as_str())
+    }
+}
+
 impl fmt::Display for CodeModel {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.write_str(match self {
@@ -134,6 +201,8 @@ pub struct BuildTarget {
     pub platform: TargetPlatform,
     pub runtime: RuntimeMode,
     pub code_model: CodeModel,
+    /// 后端优化级别；由 CLI / 清单给出，无法发射原生代码的查询命令不读取它。
+    pub opt_level: OptLevel,
 }
 
 impl Default for BuildTarget {

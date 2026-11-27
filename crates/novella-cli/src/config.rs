@@ -34,6 +34,7 @@ pub(crate) fn resolve(
         target: flags.target.clone(),
         runtime: flags.runtime,
         code_model: flags.code_model,
+        opt_level: flags.opt_level,
         linker: flags.linker.clone(),
         entry: flags.entry.clone(),
         linker_script: flags.linker_script.clone(),

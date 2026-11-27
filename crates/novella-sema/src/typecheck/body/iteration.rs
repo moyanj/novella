@@ -10,7 +10,7 @@ use super::BodyCtx;
 
 pub(super) fn element_type(sema: &mut Sema, ctx: &BodyCtx, source: Ty, span: Span) -> Ty {
     let source = match source {
-        Ty::Array(element) => return *element,
+        Ty::Array(element, _) => return *element,
         ty if ty.is_opaque() => return ty,
         ty => ty,
     };

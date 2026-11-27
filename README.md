@@ -4,7 +4,7 @@
 
 **一门面向系统编程的静态类型语言：语法像 TypeScript，内存模型像 Rust，直接编译成原生机器码。**
 
-[设计文档](docs/design.md) · [快速上手](#快速上手) · [路线图](ROADMAP.md) · [语义覆盖](docs/sema-coverage.md)
+[设计文档](docs/design.md) · [快速上手](#快速上手) · [路线图](ROADMAP.md) · [语义覆盖](docs/sema-coverage.md) · [性能对比](PERFORMANCE.md)
 
 </div>
 
@@ -308,6 +308,7 @@ novella/
 | [docs/program-deep-dive.md](docs/program-deep-dive.md) | 编译器总纲：一份源码从词法到 ELF 的完整旅程 |
 | [docs/sema-coverage.md](docs/sema-coverage.md) | 语义规则覆盖矩阵：每条规则当前是已实现 / 部分 / 缺失 |
 | [docs/freestanding.md](docs/freestanding.md) | 裸机与内核目标契约 |
+| [PERFORMANCE.md](PERFORMANCE.md) | 与 C / C++ / Rust / Go / Java / Node / LuaJIT / Python 的基准对比（测量快照） |
 | [ROADMAP.md](ROADMAP.md) | 里程碑、当前基线与发布门槛 |
 
 ## 当前状态

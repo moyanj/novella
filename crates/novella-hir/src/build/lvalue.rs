@@ -5,6 +5,20 @@ use super::*;
 type WeakFieldTarget = (HirOperand, HirType, String, usize);
 
 impl BodyBuilder<'_> {
+    /// 这两种地址路径不会执行用户代码，也不会改写 RHS 的来源槽位。
+    pub(super) fn noninterfering_assignment_target(&self, expr: &Expression) -> bool {
+        match expr {
+            Expression::Paren { expr, .. } => self.noninterfering_assignment_target(expr),
+            Expression::Identifier { name, .. } => self.lookup_local(name).is_some(),
+            Expression::MemberAccess { target, .. } => match target.as_ref() {
+                Expression::Identifier { name, .. } => self.lookup_local(name).is_some(),
+                Expression::This { .. } => true,
+                _ => false,
+            },
+            _ => false,
+        }
+    }
+
     pub(super) fn check_index_target(
         &self,
         target: &Expression,
@@ -36,12 +50,14 @@ impl BodyBuilder<'_> {
         match expr {
             Expression::Identifier { .. }
             | Expression::MemberAccess { .. }
-            | Expression::IndexAccess { .. }
             | Expression::This { .. }
             | Expression::Unary {
                 op: UnaryOp::DerefPointer,
                 ..
             } => self.build_address(expr, block),
+            Expression::IndexAccess { .. } if self.overloaded_index_receiver(expr)?.is_none() => {
+                self.build_address(expr, block)
+            }
             Expression::Paren { expr, .. } => self.aggregate_address(expr, block),
             _ => {
                 let ty = self.expr_type(expr.span())?;
@@ -107,8 +123,17 @@ impl BodyBuilder<'_> {
         expr: &Expression,
         block: &mut HirBlock,
     ) -> Result<HirOperand, BuildError> {
+        self.build_address_for_use(expr, false, block)
+    }
+
+    pub(super) fn build_address_for_use(
+        &mut self,
+        expr: &Expression,
+        immediate: bool,
+        block: &mut HirBlock,
+    ) -> Result<HirOperand, BuildError> {
         match expr {
-            Expression::Paren { expr, .. } => self.build_address(expr, block),
+            Expression::Paren { expr, .. } => self.build_address_for_use(expr, immediate, block),
             Expression::Identifier { name, span } => {
                 if let Some(local) = self.lookup_local(name) {
                     if name == "self" && matches!(self.local_type(local), HirType::Pointer(_)) {
@@ -161,6 +186,8 @@ impl BodyBuilder<'_> {
                 let (index, field_ty) = self.field_slot(&target_ty, name, *span)?;
                 let base = if matches!(target_ty, HirType::Struct(..)) {
                     self.aggregate_address(target, block)?
+                } else if immediate {
+                    self.build_immediate_value(target, &target_ty, block)?
                 } else {
                     self.build_expression(target, block)?
                 };
@@ -173,7 +200,11 @@ impl BodyBuilder<'_> {
             } => {
                 self.check_index_target(target, *span)?;
                 let element_ty = self.expr_type(*span)?;
-                let value = self.build_expression(target, block)?;
+                let value = if matches!(self.expr_type(target.span())?, HirType::Array(..)) {
+                    self.aggregate_address(target, block)?
+                } else {
+                    self.build_expression(target, block)?
+                };
                 let index =
                     self.build_typed_expression(index, &HirType::Int(IntTy::Usize), block)?;
                 let dst = self.fresh_local(HirType::Pointer(Box::new(element_ty.clone())));

@@ -122,7 +122,21 @@ impl<'a> BodyBuilder<'a> {
                 block.push(HirStmt::Block(nested));
             }
             Statement::Expression(expr) => {
-                self.build_expression(expr, block)?;
+                let mut discarded = expr;
+                while let Expression::Paren { expr, .. } = discarded {
+                    discarded = expr;
+                }
+                if let Expression::Assignment {
+                    target,
+                    op,
+                    value,
+                    span,
+                } = discarded
+                {
+                    self.build_assignment(target, *op, value, *span, true, block)?;
+                } else {
+                    self.build_expression(expr, block)?;
+                }
             }
             // 异常传播和挂起需要运行时协议，不能替换为普通 return / 求值。
             Statement::Throw { span, .. } => {
@@ -213,11 +227,31 @@ impl<'a> BodyBuilder<'a> {
         let ty = HirType::from_view(view, &mut function_id_of)
             .map_err(|error| error.with_site(self.module, variable.span))?;
         // 在引入新名字前求初始化值，遮蔽时仍引用外层绑定。
+        let first_temporary = self.next_local;
         let init = variable
             .value
             .as_ref()
-            .map(|expr| self.build_typed_expression(expr, &ty, block))
+            .map(|expr| {
+                if matches!(variable.pattern, BindingPattern::Ident { .. }) {
+                    self.build_immediate_value(expr, &ty, block)
+                } else {
+                    self.build_typed_expression(expr, &ty, block)
+                }
+            })
             .transpose()?;
+        if let (BindingPattern::Ident { name, .. }, Some(HirOperand::Local(source))) =
+            (&variable.pattern, &init)
+            && source.0 >= first_temporary
+            && super::requirements::managed(self.sema, &ty)
+        {
+            let id = self.declare_var(name.clone(), ty.clone());
+            block.push(HirStmt::Instr(HirInstr::Adopt {
+                id,
+                ty,
+                init: *source,
+            }));
+            return Ok(());
+        }
         self.bind_pattern(&variable.pattern, &ty, init, block)
     }
 

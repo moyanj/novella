@@ -1,5 +1,9 @@
 //! 赋值顺序、左值与复合运算。
 use super::*;
+use crate::typecheck::call::{
+    check_index_on, check_index_operand, check_index_signature, index_parts, index_signature,
+    is_custom_index,
+};
 
 /// 赋值：左值检查（追加项 B：const 与导入符号只读）+ 兼容检查。
 pub(crate) fn check_assignment(
@@ -20,6 +24,26 @@ pub(crate) fn check_assignment(
     } else {
         None
     };
+    let checked_index = if let Some((receiver, index)) = index_parts(target) {
+        let receiver_ty = check_expr(sema, ctx, receiver);
+        if is_custom_index(sema, &receiver_ty) {
+            let ty = check_overloaded_assignment(
+                sema,
+                ctx,
+                &receiver_ty,
+                index,
+                op,
+                value,
+                early_value,
+                span,
+            );
+            record_index_place_type(sema, ctx, target, &ty);
+            return ty;
+        }
+        Some(check_index_on(sema, ctx, receiver_ty, index, target.span()))
+    } else {
+        None
+    };
     check_lvalue_assignment(sema, ctx, target);
     let slot = if op == AssignOp::Assign {
         assigned
@@ -29,7 +53,12 @@ pub(crate) fn check_assignment(
     } else {
         None
     };
-    let target_ty = check_expr(sema, ctx, target);
+    let target_ty = if let Some(ty) = checked_index {
+        record_index_place_type(sema, ctx, target, &ty);
+        ty
+    } else {
+        check_expr(sema, ctx, target)
+    };
     if let Some(slot) = slot {
         ctx.uninitialized.insert(slot);
     }
@@ -62,6 +91,79 @@ pub(crate) fn check_assignment(
         }
     }
     target_ty
+}
+
+fn record_index_place_type(sema: &mut Sema, ctx: &BodyCtx, mut expr: &Expression, ty: &Ty) {
+    loop {
+        crate::typecheck::expr::record_expression_type(sema, ctx.module, expr.span(), ty.clone());
+        let Expression::Paren { expr: inner, .. } = expr else {
+            break;
+        };
+        expr = inner;
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+fn check_overloaded_assignment(
+    sema: &mut Sema,
+    ctx: &mut BodyCtx,
+    receiver: &Ty,
+    index: &Expression,
+    op: AssignOp,
+    value: &Expression,
+    early_value: Option<Ty>,
+    span: Span,
+) -> Ty {
+    let setter = check_index_signature(sema, ctx, receiver, "__setitem", span);
+    if op == AssignOp::Assign {
+        let Some((key, write)) = setter
+            .as_ref()
+            .and_then(|sig| sig.params.get(1).zip(sig.params.get(2)))
+        else {
+            check_expr(sema, ctx, index);
+            return Ty::Error;
+        };
+        check_index_operand(sema, ctx, index, &key.ty);
+        let actual = early_value.expect("普通赋值先检查右侧");
+        if !sema.is_assignable(&write.ty, &actual) {
+            sema.type_error(
+                ctx.module,
+                value.span(),
+                format!("下标写入需要 `{}`，实为 `{actual}`", write.ty),
+            );
+        }
+        return write.ty.clone();
+    }
+    let read = check_index_on(sema, ctx, receiver.clone(), index, span);
+    if let Some(setter) = setter {
+        check_index_update_types(sema, ctx, receiver, &setter, span);
+    }
+    let rhs = check_expr_with_hint(sema, ctx, value, &read);
+    check_arithmetic_compound(sema, ctx, op, &read, &rhs, span);
+    read
+}
+
+pub(crate) fn check_index_update_types(
+    sema: &mut Sema,
+    ctx: &BodyCtx,
+    receiver: &Ty,
+    setter: &crate::ty::FunctionSig,
+    span: Span,
+) {
+    if let Some((_, getter)) = index_signature(sema, receiver, "__getitem")
+        && let (Some(read_key), Some(write_key), Some(write)) = (
+            getter.params.get(1),
+            setter.params.get(1),
+            setter.params.get(2),
+        )
+        && (!ty_eq(&read_key.ty, &write_key.ty) || !ty_eq(&getter.ret, &write.ty))
+    {
+        sema.type_error(
+            ctx.module,
+            span,
+            "下标复合赋值或自增/自减要求读写方法的下标类型和值类型一致",
+        );
+    }
 }
 
 /// 只读查询左值的声明类型，供 RHS 的空数组等表达式取得上下文。
@@ -105,10 +207,15 @@ fn lvalue_hint(sema: &Sema, ctx: &BodyCtx, expr: &Expression) -> Option<Ty> {
             Some(crate::ty::substitute_type_params(&ty, &subst))
         }
         Expression::IndexAccess { target, index, .. } => match lvalue_hint(sema, ctx, target)? {
-            Ty::Array(inner) | Ty::Pointer(inner) => Some(*inner),
+            Ty::Array(inner, _) | Ty::Pointer(inner) => Some(*inner),
             Ty::Tuple(elements) => {
                 crate::typecheck::call::tuple_element_hint(&elements, index).cloned()
             }
+            ty if is_custom_index(sema, &ty) => index_signature(sema, &ty, "__setitem")?
+                .1
+                .params
+                .get(2)
+                .map(|param| param.ty.clone()),
             _ => None,
         },
         Expression::Unary {
@@ -231,7 +338,10 @@ pub(crate) fn is_lvalue(sema: &mut Sema, ctx: &mut BodyCtx, expr: &Expression) -
                 .get(&(ctx.module, target.span()))
                 .cloned()
                 .or_else(|| lvalue_hint(sema, ctx, target));
-            if ty.as_ref().is_some_and(|ty| sema.is_string_type(ty)) {
+            if ty
+                .as_ref()
+                .is_some_and(|ty| sema.is_string_type(ty) || is_custom_index(sema, ty))
+            {
                 return false;
             }
             is_lvalue(sema, ctx, target)

@@ -29,7 +29,7 @@ std/                                        ← 标准库根（同时是 crate �
 ├── string.nov                              ← 核心类型（非内建）
 ├── io.nov   math.nov  convert.nov  sync.nov
 ├── collections/
-│   ├── list.nov   map.nov   iterator.nov
+│   ├── vector.nov   map.nov   iterator.nov
 └── lib/
     ├── x86_64-unknown-linux-gnu/
     │   ├── libnovella_rt.a
@@ -129,7 +129,7 @@ std:string ← math / convert ← io   |   collections ← 用户代码
 | 类别 | 规约 | 示例 |
 | --- | --- | --- |
 | 模块 | 小写单词，单数名词 | `std:io`、`std:string`、`std:collections/list` |
-| 类型 | 大驼峰 | `String`、`List`、`ConvertResult` |
+| 类型 | 大驼峰 | `String`、`Vector`、`ConvertResult` |
 | 函数 / 方法 | 小写驼峰 | `println`、`push`、`withCapacity` |
 | 常量 | `const` + 大写下划线 | `MAX_I64`、`CHAR_WIDTH` |
 | 系统层符号 | `novella_rt_` 前缀 + 小写下划线；**不出现**在任何公开 API 里 | `novella_rt_string_concat` |
@@ -211,8 +211,16 @@ pub func fabs(x: f64) -> f64;
 ```
 
 - 只有 `f64` 版本；`abs(i64) -> u64`（`i64::MIN` 取绝对值溢出，返回无符号值让调用方面对）。
-- 纯函数，`requires_rt = false`。但 §10 Q10 的 `math.h` 绑定是否上移为 `const` 之外
-  的函数体，需在实现时定。
+- 纯函数，`requires_rt = false`，**不依赖 libm**：取整走 `x as i64`（硬件截断指令）再
+  转回 `f64`，`sqrt` 为 Newton 迭代，其余只用 `+`、`-`、`*`、`/`、比较与字面量。
+  早期版本用 `x % 1.0` 取整，会发射 `llvm.frem` 并在链接期退化为 libm 的 `fmod`；现已改写。
+- **不能**用 `x / 1.0` 做整数化——IEEE-754 除法不取整（`2.7 / 1.0 == 2.7`），浮点余数
+  `%` 又会引入 `frem`，两者都不是可用的取整路径。
+- `x as i64` 对超出 `i64` 范围的值是**未定义行为**（x86 上 `cvttsd2si` 触发 SIGILL），
+  因此每个取整函数都先用 `beyondIntegerRange(x)` 判断 `|x| >= 2^63`：这个区间外的 `f64`
+  本身已无小数位，直接返回 `x` 即正确。新增同类取整函数时**必须先做该判断再转换**。
+- `round` 的 `.5` 一律远离零（`2.5 -> 3`、`-2.5 -> -3`），沿用旧实现而非银行家舍入。
+- 因此内置 Linux 目标的 `linker-args` 为空（不再链接 `-lm`），数学函数不引入任何外部符号。
 
 ### 5.3 `std:io`
 
@@ -278,14 +286,16 @@ pub func toString(x: boolean) -> String;
 
 ### 5.5 `std:collections`
 
+以下为草案，`Vector<T>` 尚未实现。它是由 ARC 管理的可增长容器，与内联定长数组 `T[N]` 不同。
+
 ```novella
-// std/collections/list.nov
-pub class List<T> {
-    pub static func empty() -> List<T>;
-    pub static func withCapacity(capacity: usize) -> List<T>;
+// std/collections/vector.nov
+pub class Vector<T> {
+    pub static func empty() -> Vector<T>;
+    pub static func withCapacity(capacity: usize) -> Vector<T>;
     pub func length() -> usize;
-    pub func get(index: usize) -> T;        // 越界行为 Q3
-    pub func set(index: usize, value: T) -> void;
+    pub func __getitem(self, index: usize) -> T;        // 越界行为 Q3
+    pub func __setitem(self, index: usize, value: T) -> void;
     pub func push(value: T) -> void;
     pub func pop() -> T;
     pub func insert(index: usize, value: T) -> void;
@@ -294,10 +304,10 @@ pub class List<T> {
 }
 ```
 
-- 底层存储是 `u8*` + 元素大小（在 `List<T>` 内部 `unsafe`），不暴露给调用方。
+- 底层缓冲区由 `Vector<T>` 内部管理，不暴露给调用方。
 - 容器可按 [语言设计的迭代协议](design.md#for--in-迭代协议)提供 `iter()`，由迭代器实现 `hasNext() -> boolean` 和 `next() -> T`。前端已检查该协议，标准库 `Iterator<T>` 声明和非数组循环降级仍在后续阶段。
 - `Map<K, V>` 依赖哈希与相等协议（Q4），泛型容器的运行依赖单态化（G6）。
-- `List` 依赖 HIR 的泛型方法单态化，S4 前置条件见 §9。
+- `Vector` 依赖 HIR 的泛型方法单态化，S4 前置条件见 §9。
 
 ### 5.6 `std:sync`（不实现）
 
@@ -309,10 +319,10 @@ pub class List<T> {
 | --- | --- | --- |
 | G1 | `const` 只能修饰顶层 / class 成员，不能修饰方法 | `std:math` 常量 |
 | G2 | 顶层 `pub const` 解析为 `Item::Statement`；sema 已能检查，但 **HIR 对顶层语句一律拒绝** | `PI` / `E` / `CONVERT_OK` 全部不可用 |
-| G3 | 无函数重载 | `toString` 多版本、`List` 构造（已改静态工厂） |
+| G3 | 无函数重载 | `toString` 多版本、`Vector` 构造（使用静态工厂） |
 | G4 | `void` 返回类型写法未实测 | 所有 void 函数 |
 | G5 | Sema 已支持 trait 约束，哈希与相等协议待定 | `Map<K: Hashable>` |
-| G6 | Sema 已支持调用实参推导，HIR 单态化待实现 | `List<T>` / `Iterator<T>` |
+| G6 | Sema 已支持调用实参推导，HIR 单态化待实现 | `Vector<T>` / `Iterator<T>` |
 | G7 | `String` 无特殊方法；`s.length()` 只能写成 `length(s)` | `std:string` 全部为自由函数 |
 | G8 | **`string` 关键字去留**：内建 `Ty::String` 删除后，`string` 是保留关键字还是可作普通标识符 | 迁移期所有 `.nov` 源码、`__str` 签名、`Ty::String` 的 15 处引用 |
 
@@ -372,7 +382,7 @@ S0 是硬前置：**先有"直接链接"这条路，标准库才谈得上实现*
 | --- | --- | --- | --- |
 | Q1 | `String` 的长度/下标按码点还是字节？ | `std:string` 全下标语义 | 字节 + 提供 `charCount` |
 | Q2 | 泛型 `T?` 可空类型是否引入？ | `Map.get` | 暂不引入。迭代结束由 `hasNext()` 表达 |
-| Q3 | 越界/缺失/解析失败的具体哨兵取值 | `List`、`Map`、`convert` | `<=0` / `""` / `ConvertResult` |
+| Q3 | 越界/缺失/解析失败的具体哨兵取值 | `Vector`、`Map`、`convert` | `<=0` / `""` / `ConvertResult` |
 | Q4 | `Map` 键哈希/相等协议如何进 `__` 封闭清单 | `Map<K, V>` | 不实现 Map |
 | Q5 | 系统层 I/O 契约（阻塞、错误映射） | `std:io` 文件函数 | 只做 stdout/stderr |
 | Q6 | 函数重载是否引入 | `toString` 命名 | 改名 `toStringInt` 等 |

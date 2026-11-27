@@ -48,7 +48,7 @@ func main() -> int {
 f-string 的插值按源码顺序各求值一次，接受 String、整数、boolean、f32/f64，以及提供
 `__str(self) -> String` 的 class/struct。裸整数插值按 i64/u64 定型，裸浮点插值按 f64 定型；
 f16 和其他无转换契约的值明确报错。文本里的 `{{` / `}}` 表示字面花括号。
-字节串 `b"..."` 降级为 `u8[]`，不依赖 String。可运行示例见
+字节串 `b"..."` 降级为内联定长数组 `u8[N]`，不依赖 String 或 ARC。可运行示例见
 `examples/string-literal.nov`、`examples/string-ops.nov` 和 `examples/string-format.nov`。
 
 通用对象 runtime 提供分配、原子引用计数、weak 控制块和析构回调，见
@@ -61,3 +61,5 @@ f16 和其他无转换契约的值明确报错。文本里的 `{{` / `}}` 表示
 入口写 `@no_std;` 可关闭整个导入闭包的标准库加载、默认环境及标准库链接。
 此时普通/raw/f-string 字面量和 `std:` 导入会报错，字节串仍可原生编译。
 该指令不改变平台启动代码和 C 链接环境，也不限制用户自行声明 `extern`。
+
+可增长的 ARC 容器 `Vector<T>` 仍在规划中，当前标准库没有提供它；内建 `T[N]` 不管理数组本体的引用计数。

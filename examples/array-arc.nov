@@ -12,7 +12,7 @@ class Node {
 
 struct Holder { pub item: Node; }
 
-func identity(items: Node[]) -> Node[] { return items; }
+func identity(items: Node[2]) -> Node[2] { return items; }
 
 // 输出 ABCEDGFJHI，退出码 0；每个 class 对象恰好析构一次。
 // byte string、数组边界内读写及递归 ARC；任一值不符立即中止。
@@ -31,7 +31,7 @@ func main() -> int {
     for (item in empty) { unsafe { abort(); } }
 
     {
-        // 传参与返回保留数组所有权；索引读取保留旧元素，覆盖释放数组持有的引用。
+        // 数组按值传参和返回；索引读取保留旧元素，覆盖释放该槽位的引用。
         let nodes = identity([new Node(65), new Node(66)]);
         let saved = nodes[0];
         nodes[0] = new Node(67);
@@ -42,7 +42,7 @@ func main() -> int {
         if (saved.value != 65) { unsafe { abort(); } }
     }
     {
-        // 内层数组被替换后，独立别名仍保持原有元素存活。
+        // 内层数组被替换后，按值复制的数组仍保持原有元素存活。
         let nested = [[new Node(68)], [new Node(69)]];
         let alias = nested[0];
         nested[0] = [new Node(70)];

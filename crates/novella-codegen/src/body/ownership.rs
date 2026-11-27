@@ -5,11 +5,8 @@ use std::collections::hash_map::DefaultHasher;
 use std::hash::{Hash, Hasher};
 
 impl<'ctx> Body<'ctx, '_> {
-    pub(super) fn is_managed(ty: &HirType) -> bool {
-        matches!(
-            ty,
-            HirType::Class(..) | HirType::Array(_) | HirType::Struct(..) | HirType::Tuple(_)
-        )
+    pub(super) fn is_managed(&self, ty: &HirType) -> bool {
+        crate::ownership::has_owned_members(self.types, ty)
     }
 
     pub(super) fn save_parameter(
@@ -19,7 +16,7 @@ impl<'ctx> Body<'ctx, '_> {
         value: BasicValueEnum<'ctx>,
     ) -> Result<()> {
         self.save(id, ty, value)?;
-        if Self::is_managed(ty) {
+        if self.is_managed(ty) {
             self.reference_value("novella_rt_retain", value, ty)?;
         }
         Ok(())
@@ -42,14 +39,9 @@ impl<'ctx> Body<'ctx, '_> {
 
     pub(super) fn release_temps(&mut self, ids: &[LocalId]) -> Result<()> {
         for id in ids.iter().rev().copied() {
-            // 恒定条件可能使定义所在分支不被发射；借用快照不拥有引用。
-            if self
-                .slots
-                .get(&id)
-                .is_some_and(|(_, ty)| Self::is_managed(ty))
-                && !self.borrowed.contains(&id)
-            {
+            if let Some(index) = self.owned.iter().rposition(|active| *active == id) {
                 self.release_slot(id)?;
+                self.owned.remove(index);
             }
         }
         Ok(())
@@ -195,17 +187,7 @@ impl<'ctx> Body<'ctx, '_> {
         name: &str,
         object: PointerValue<'ctx>,
     ) -> Result<()> {
-        let pointer_type = self.context.ptr_type(inkwell::AddressSpace::default());
-        let signature = self
-            .context
-            .void_type()
-            .fn_type(&[pointer_type.into()], false);
-        let function = self
-            .module
-            .get_function(name)
-            .unwrap_or_else(|| self.module.add_function(name, signature, None));
-        self.builder.build_call(function, &[object.into()], "")?;
-        Ok(())
+        crate::ownership::reference_call(self.context, self.module, &self.builder, name, object)
     }
 
     pub(super) fn runtime_weak_value(

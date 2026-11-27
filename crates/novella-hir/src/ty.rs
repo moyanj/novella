@@ -29,8 +29,8 @@ pub enum HirType {
     Float(FloatTy),
     /// 指针 `T*`（被指类型保留，供 codegen 决定布局 / 对齐）
     Pointer(Box<HirType>),
-    /// 数组 `T[]`（长度在值层，不在类型层——与 `Ty::Array` 一致）
-    Array(Box<HirType>),
+    /// 内联定长数组 `T[N]`。
+    Array(Box<HirType>, u32),
     /// 元组
     Tuple(Vec<HirType>),
     /// 函数值：稳定键 + 完整签名
@@ -226,16 +226,15 @@ impl HirType {
                 function_id,
                 None,
             )?))),
-            TypeView::Array(element) => {
+            TypeView::Array(element, length) => {
                 let element_hint = match preferred {
-                    Some(HirType::Array(ty)) => Some(ty.as_ref()),
+                    Some(HirType::Array(ty, _) | HirType::Pointer(ty)) => Some(ty.as_ref()),
                     _ => None,
                 };
-                Ok(HirType::Array(Box::new(Self::from_view_with(
-                    element,
-                    function_id,
-                    element_hint,
-                )?)))
+                Ok(HirType::Array(
+                    Box::new(Self::from_view_with(element, function_id, element_hint)?),
+                    *length,
+                ))
             }
             TypeView::Tuple(elements) => elements
                 .iter()

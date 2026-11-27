@@ -17,7 +17,7 @@
 - 类型读取 sema 的 `expression_types`、`annotation_types`、`declaration_types`，键均为 `(ModuleId, Span)`。分别提供表达式、已解析注解、变量最终绑定类型与顶层函数签名。HIR 不重新解析类型名或用初始化表达式冒充声明类型。
 - Unknown / Error、联合、泛型以及无上下文的未定型类型明确拒绝；字面量可由声明、返回值、实参等上下文定型，数组与元组递归传递期望类型。
 - 用户确认：`p ?? backup` 非空时返回指针 `p`，为空才执行并返回 `backup`；不隐式解引用，读取内容另写 `*`。sema 已同步保留指针结果并检查备用值类型。
-- codegen 后续消费 HIR，不直连 AST。后端选型为 inkwell；此前记录的 LLVM 为 21.1.8，接入前重新核验。String 为拥有 UTF-16 缓冲区的 class；数组为 runtime 管理的长度与连续元素载荷。
+- codegen 只消费 HIR，不直连 AST。String 为拥有 UTF-16 缓冲区的 class；定长数组类型携带长度，LLVM 布局为 `[N x T]`，没有运行时头部或分配。
 
 ## 2. P1 已完成
 
@@ -28,7 +28,7 @@
 | 短路 | and/or、三元、`??` 用分支及明确分配的结果槽位，备用分支仅按条件执行 |
 | 身份比较 | 标量、指针、class 的 `===` / `!==` 映射 Eq / Ne；聚合与 string 身份比较明确拒绝 |
 | 左值与副作用 | 普通赋值先 RHS、后定位 LHS；复合赋值定位一次、在 RHS 前读取旧值；自增自减返回旧值；局部读取生成快照，避免后续实参修改先前读值 |
-| 元组、数组、解构 | Tuple / Array / TupleExtract；递归嵌套解构，初始化只求一次；数组长度与索引访问有独立指令 |
+| 元组、数组、解构 | Tuple / Array / TupleExtract；递归嵌套解构，初始化只求一次；内建数组索引用 IndexAddress 及间接读写，自定义下标降级为方法调用 |
 | 循环 | while / C-for / 数组 for-in 统一为 Loop；条件 prelude 每轮执行；step 是 Loop 的字段，正常尾部和 continue 都执行，break / return 跳过 |
 | with | 接收者只求一次；绑定位于块作用域内，支持注解与递归元组解构；不添加资源进入/退出钩子 |
 | 调用 | 函数、静态方法、函数值及 struct 直接实例调用；显式传接收者；默认实参在定义模块环境按序展开，能引用此前参数快照；sema 调用检查排除隐式 self |
@@ -125,7 +125,7 @@ TypeView::Error 与 Unknown 分离，std 不再产生 External。
 
 - new 支持字段默认初值和构造默认实参；直接实例调用借用接收者。
 - HirStmt::ReleaseTemps 标记完整表达式结束；结构化块及循环跳转清理拥有值，C-for init 独立成块。
-- class/数组使用强计数，struct/tuple 复制递归维护拥有成员。weak 保存控制块；FieldLoad upgrade，FieldStore 先创建新 handle 再释放旧 handle，禁止 weak 取址。
+- class 使用强计数，定长数组、struct 和 tuple 复制递归维护拥有成员。weak 保存控制块；FieldLoad upgrade，FieldStore 先创建新 handle 再释放旧 handle，禁止 weak 取址。完整表达式和词法作用域退出时从活动所有权集合移除已释放的槽位；独占初始化结果可用 `Adopt` 移交给具名槽。
 - 析构顺序为用户析构、本类字段逆序、父类包装；析构 self 不得逃逸，也不得调用自身实例方法以防间接复活。
 - f-string 消费 sema 保存的已检查插值 AST，不重新解析。普通/raw 为 UTF-16 String，byte 为 u8[]；String 索引只读返回 u16，内容运算调用 std 方法。
 - 原生验证及限制见 [String/ARC 交接](ai-handover-string-arc.md)；早期验证数字与拒绝清单是历史记录，以本次修订为准。

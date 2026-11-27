@@ -192,7 +192,7 @@ func main() -> int {
 ```
 
 该模式下没有默认的 `String` / `string`；普通和 raw 字符串字面量降为只读 UTF-16 静态指针，f-string 仍需要标准库而报错；
-字节字面量 `b"..."` 仍按 `u8[]` 做语义检查。`@no_std` 仅禁用 Novella 标准库，
+字节字面量 `b"..."` 仍按 `u8[N]` 做语义检查（`N` 为解码后字节数）。`@no_std` 仅禁用 Novella 标准库，
 不改变目标平台的启动代码、C 链接驱动或显式用户 `extern` 声明。
 
 #### 裸机入口与导出
@@ -337,14 +337,12 @@ AST：`ClassItem { directives, name, type_parameters, members, parent, scope }`�
 
 #### 4.6.1 类的特殊方法（已确认）
 
-**命名以双下划线 `__` 开头即可（结尾 `__` 不强制）**，如 `__init`、
-`__destroy`、`__str` 等（写 `__init__` 风格亦可，语义一致）；由编译器在
-特定时机由编译器自动调用；用户也可以显式调用，仍须通过可见性、接收者和签名检查。
+**特殊方法只用双下划线 `__` 前缀，不支持 `__init__` 等带双下划线尾缀的写法。**
+编译器在特定时机自动调用这些方法；用户也可以显式调用，仍须通过可见性、接收者和签名检查。
 
 - 词法零改动：`__xxx` 本就匹配 `Identifier`（`_` 可为首字符）；`__` 前缀的
   识别在语义阶段按名字判定；
-- 作用范围：**仅 class**（及 trait 声明的方法签名）；**struct 不支持特殊
-  方法**——struct 方法名不得带 `__` 前缀（§4.7）；
+- 下列对象生命周期协议用于 class；class、struct 也可实现下标协议（见 §4.10）；
 - 已登记清单（sema 第一期）：`__init`（构造，`new` 的实参按其签名检查；
   无 `__init` 的 class `new` 不得传实参）、`__destroy`（析构）、`__str`
   （字符串化）、`__enter` / `__exit`（`with` 协议）；清单之外的 `__`
@@ -371,7 +369,7 @@ AST：`StructItem { directives, name, type_parameters, heritage, members: Vec<Cl
 - **无构造器**：用字段初始化构造 `TypeName{ x: 1, y: 2 }`（§5.4）；
 - **方法可选**：允许方法，方法内 `this` 为**编译器注入的可信指针**，字段访问
   无需 unsafe（§8.4）；
-- **无特殊方法**：struct 不识别 `__` 前缀方法（保留命名空间仅限 class）；
+- **自定义下标**：struct 可实现 `__getitem` / `__setitem`（§4.10）；
 - **`==` / `!=` 不适用于 struct 值**（§8.5），指针比较不受影响；
 - **布局**：按字段声明顺序 + 自然对齐（C/FFI 兼容），无虚表、无隐藏字段。
 
@@ -484,6 +482,14 @@ statement: variableStatement | returnStatement | breakStatement | continueStatem
 元组用零基整数字面量索引，支持括号和一元正负号。动态索引与越界索引报错。
 索引表达式的类型为对应槽位的类型。可写元组的槽位可以赋值。
 
+class 和 struct 可独立实现下标读、写协议：
+
+- `func __getitem(self, index: I) -> T` 对应 `value[index]`。
+- `func __setitem(self, index: I, value: T) -> void` 对应 `value[index] = rhs`。
+- 两者均为实例方法，不得带方法泛型或默认参数，调用遵守可见性。复合赋值和后缀 `++` / `--`
+  要求两个方法的下标类型和读写值类型分别相同；接收者和下标均只求值一次。
+  普通赋值先求右值，复合赋值先定位并读旧值、再求右值和写回。
+
 > **`as` 的优先级**（已确认：低绑式）：位于「加减」之后、「移位」之前——
 > 低于算术、高于关系比较，与 TS 观感一致：
 > `p + 1 as u32` ⇒ `(p + 1) as u32`；`p as usize + 1` ⇒ `(p as usize) + 1`；
@@ -527,7 +533,7 @@ statement: variableStatement | returnStatement | breakStatement | continueStatem
 |------|------|------|
 | `Predefined` | `int` / `float` / `boolean` / `string` / `void` / `u8..u64` / `i8..i64` / `f16..f64` / `usize` / `isize` / `null` | 类型名在词法层是普通 `Identifier`，由语义按名字归类 |
 | `Reference` | `Foo` / `Foo<T>` / `mod.Foo` | 类型引用（class / struct / 别名）；`qualifier` 承载命名空间限定段（经导入的模块别名解析，多级限定 `a.b.T` 本期不支持） |
-| `Array` | `T[]` | 数组类型 |
+| `Array` | `T[N]`，形参也可写 `T[]` | 定长数组；无长度形参等价于 `T*` |
 | `Tuple` | `(T1, T2)` | 元组类型（≥2 元素；`()` / `(T,)` 非法；括号分组 `(T)` 即 `T` 本身） |
 | `Function` | `<T>(a: int) -> int` / `func (a) -> T` | 两种写法合并；类型位箭头**唯一为 `->`**，类型位写 `=>` 报错（`=>` 专属 lambda） |
 | `Union` | `A \| B \| C` | 扁平存储，集合语义 |
@@ -561,7 +567,7 @@ statement: variableStatement | returnStatement | breakStatement | continueStatem
 - `void*` ↔ 任意 `T*` 双向隐式（S8）；
 - **子类引用 → 父类引用**隐式（单继承链）；父类 → 子类必须显式 `as`
   （unsafe）；
-- 元组 / 数组同形后逐元素递归适用以上规则；联合类型：目标是联合时
+- 元组 / 数组同形后逐元素递归适用以上规则（数组长度必须相同）；联合类型：目标是联合时
   源可赋任一成员即可，源是联合时全部成员可赋目标才可赋（保守）；
 - 类型参数 `T` 与错误恢复类型按各自规则处理；std 符号必须来自真实声明，不能按不透明外部符号放行
   （不再追加诊断）。
@@ -766,9 +772,9 @@ sema、HIR、codegen 与 runtime 已接通 weak 字段；显式 ABI 示例见
 
 ```novella
 class Tree {
-    children: Tree[];            // 强（数组元素 retain）
+    children: Tree[2];           // 强（数组元素 retain）
     weak parent: Tree;           // 弱：打破父子环
-    func __init() { this.children = []; }
+    func __init() { this.children = [null, null]; }
 }
 ```
 
@@ -806,10 +812,11 @@ with openFile("data.txt") as f: File {
 
 ### 7.7 数组与容器
 
-- `T[]`（class 元素）= 引用数组：元素 retain/release，数组本身由语言管理；
-- `T[]`（struct / 标量元素）= 连续内存（已定）；
-- `std` 容器（List / Map）基于以上语义实现；包级 API 草案见
-  [`stdlib-design.md`](stdlib-design.md)（状态：待评审，未实现）。
+- `T[N]` 是定长值类型：`N` 为 `u32` 范围内的十进制非负整数字面量，元素内联连续存储；
+  数组本身不分配堆内存、不计数。赋值、返回和定长形参按值复制；强引用和 weak 元素成员仍维护各自所有权。
+- 数组字面量长度由元素个数决定，`[]` 需要 `T[0]` 上下文定型。定长数组索引越界触发陷阱。
+- `T[]` 只用于形参，等价于 `T*`；向匹配的指针形参传入数组时传递首元素存储地址，不复制数组或传递长度。只读数组不能隐式退化为可写指针。裸指针索引需要 `unsafe`，由调用方保证范围和生命周期（临时数组不能在表达式结束后继续使用）。
+- `std` 计划提供 ARC 管理的可增长容器 `Vector<T>`；这不是内建数组，当前未实现。见 [`stdlib-design.md`](stdlib-design.md)。
 
 ### 7.8 待确认决策点
 
@@ -830,18 +837,18 @@ with openFile("data.txt") as f: File {
 | 分配 | 堆 / 计数管理 | 栈 / 手动（配合指针） |
 | 构造 | `new Foo(...)` | `Foo{ x: 1 }` |
 | 继承 | 有（单父类，按多继承预留） | 无 |
-| 特殊方法 | 有（`__` 前缀） | 无 |
+| 特殊方法 | 有（`__` 前缀） | 支持下标协议 |
 | 内存角色 | 日常对象 | 底层数据载体、FFI、寄存器/驱动 |
 
 ### 8.2 值语义
 
 `let b = a;`（a、b 均为 struct）即逐字段/逐位拷贝；函数参数、返回值同样按值。
-struct 数组 `T[]` 为连续内存。
+struct 数组 `T[N]` 为连续内存。
 
 ### 8.3 class 引用字段 = 指针拷贝
 
-struct 内允许 class 引用字段，拷贝时**按位复制句柄**（不深拷贝、不自动增减
-引用计数）；引用计数由使用方负责——与裸指针的手动管理哲学一致。
+struct 的 class 字段是拥有引用。拷贝时复制句柄并保留引用，不深拷贝对象；
+覆盖或销毁时释放旧引用。嵌套 struct、元组和定长数组递归维护这些成员，裸指针不计数。
 
 ### 8.4 struct 方法与可信 `this`
 
@@ -1065,7 +1072,7 @@ func main() {
   模式拒绝。void match 允许部分覆盖。
 - match 按顺序检查模式。命中分支的入口只继承已经求值的模式产生的赋值。
   嵌套在其他表达式中的 match 块也可通过 `return`、`throw` 或循环跳转提前退出。
-- b 字符串为 u8[]，只允许单字节字符和字节转义；f-string 使用 {expr}、
+- b 字符串为 `u8[N]`，只允许单字节字符和字节转义；f-string 使用 {expr}、
   {{/}}，不支持格式说明符。f16 为 IEEE binary16，按最近偶数舍入
   舍入的有限范围检查；usize/isize 使用显式 32/64 位分析配置，缺省为宿主。
 

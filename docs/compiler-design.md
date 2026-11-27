@@ -248,7 +248,7 @@ Error（已报错）独立投影为 `TypeView::Error`；std 必须加载声明�
 - build_hir 遇到词法、语法、语义或加载错误立即拒绝，不跳过坏模块。
   Unknown / Error、未定型类型、联合、泛型及未支持语义返回 BuildError。
 - Binary 携带两侧输入类型和结果类型；TypeTest 携带输入/目标类型。
-  地址、间接写入、元组构造/提取、数组构造/长度均有明确指令。
+  地址、间接写入、元组构造/提取与定长数组构造均有明确指令；数组长度携带在类型中。
 - 条件用 HirCond { prelude, value }，循环每轮执行 prelude。
   Loop.step 在正常尾部和 continue 后执行，break / return 跳过。
 - 普通赋值先 RHS 后定位 LHS；复合赋值定位一次后先读旧值再求 RHS；局部读取保存快照。
@@ -261,7 +261,7 @@ Error（已报错）独立投影为 `TypeView::Error`；std 必须加载声明�
 P1 已覆盖数组 for-in、元组/数组与递归解构、短路、默认实参、struct 实例调用、
 match 顺序、无捕获 lambda 和复杂左值。P2 已完成扩展冒烟与 workspace 质量检查。
 异常、异步、new、class 动态派发、闭包捕获、非 cfg 指令、静态/弱字段、trait 成员、
-动态对象等后续期语义明确拒绝。string/数组布局和运行时 ABI 尚待后端阶段确定。
+动态对象等后续期语义明确拒绝。String 由运行时管理，定长数组以内联值布局发射。
 具体降级契约、拒绝边界及验证证据见 [hir-handover.md](hir-handover.md)。
 
 ## 8. 代码生成（novella-codegen）
@@ -279,7 +279,7 @@ small/kernel 模型、无红区与无浮点/SIMD 环境；具体契约见 [裸�
 - 整数加减乘按位宽回绕；除零、有符号最小值除以 `-1`（含取余）或移位量越界时陷阱，避免发射可执行的 LLVM 未定义操作。
 - hosted `main` 返回 `int` 作为进程状态，`void` 通过入口包装返回 `0`；`@no_main` 禁止入口包装，
   `@export("symbol")` 以 C ABI 导出函数，其余 Novella 符号在目标文件内部可见。
-- 已支持 f16/f32/f64 基本运算、数值提升、指针算术、struct/tuple/数组、动态 UTF-16 String、class ARC 与 weak。数组保存长度和连续元素，索引越界陷阱；struct/tuple 复制递归维护拥有成员。
+- 已支持 f16/f32/f64 基本运算、数值提升、指针算术、struct/tuple/数组、动态 UTF-16 String、class ARC 与 weak。定长数组只内联存储元素，长度是类型信息；索引越界触发陷阱。struct、tuple 和数组复制递归维护拥有成员。
 - 无托管全局支持零初始化、标量/指针/struct 常量初值与取址；不执行动态初始化。
 - float→int 转换、动态派发及聚合 FFI ABI 等未支持路径仍明确报错；异常展开、异步与捕获闭包尚未实现。
 

@@ -162,7 +162,7 @@ pub(crate) fn concrete(ty: &Ty) -> Ty {
         }
         Ty::FloatLiteral(_) => Ty::Float(crate::ty::FloatKind::F32),
         Ty::Tuple(elements) => Ty::Tuple(elements.iter().map(concrete).collect()),
-        Ty::Array(element) => Ty::Array(Box::new(concrete(element))),
+        Ty::Array(element, length) => Ty::Array(Box::new(concrete(element)), *length),
         other => other.clone(),
     }
 }

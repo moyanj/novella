@@ -25,6 +25,10 @@ pub fn resolve_build_config(
         .code_model
         .or(manifest.code_model)
         .unwrap_or(target.code_model);
+    target.opt_level = overrides
+        .opt_level
+        .or(manifest.opt_level)
+        .unwrap_or(target.opt_level);
     target.validate()?;
     if let Some(models) = &spec.code_models
         && !models.contains(&target.code_model)

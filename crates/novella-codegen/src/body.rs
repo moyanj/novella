@@ -112,14 +112,14 @@ impl<'ctx> Body<'ctx, '_> {
             allocator.position_at_end(self.entry);
         }
         let pointer = allocator.build_alloca(value_type(self.context, self.types, ty)?, "slot")?;
-        if Self::is_managed(ty) {
+        if self.is_managed(ty) {
             allocator.build_store(
                 pointer,
                 value_type(self.context, self.types, ty)?.const_zero(),
             )?;
         }
         self.slots.insert(id, (pointer, ty.clone()));
-        if Self::is_managed(ty) && !self.borrowed.contains(&id) {
+        if self.is_managed(ty) && !self.borrowed.contains(&id) {
             self.owned.push(id);
         }
         Ok(pointer)
@@ -181,7 +181,7 @@ impl<'ctx> Body<'ctx, '_> {
                 .bool_type()
                 .const_int(u64::from(*value), false)
                 .into()),
-            (HirOperand::Null, HirType::Pointer(_) | HirType::Class(..) | HirType::Array(_)) => {
+            (HirOperand::Null, HirType::Pointer(_) | HirType::Class(..)) => {
                 Ok(value_type(self.context, self.types, ty)?
                     .into_pointer_type()
                     .const_null()

@@ -147,6 +147,7 @@ pub fn analyze_with_options(
         check::fields::check_fields(&mut sema);
         check::globals::check_all(&mut sema);
         check::returns::check_all(&mut sema);
+        check::check_value_layout_cycles(&mut sema);
         if loader.is_cancelled() {
             return false;
         }

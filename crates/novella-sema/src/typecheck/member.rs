@@ -367,7 +367,6 @@ pub(crate) fn lookup_member_chain(
     name: &str,
     _static_only: bool,
 ) -> Option<MemberHit> {
-    let name = crate::check::canonical_method_name(name);
     let mut current = key.clone();
     let mut visited = HashSet::new();
     loop {

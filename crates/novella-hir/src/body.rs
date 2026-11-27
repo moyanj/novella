@@ -196,13 +196,17 @@ pub enum HirInstr {
         ty: HirType,
         dst: LocalId,
     },
-    /// 数组长度（usize）。
-    ArrayLength { target: HirOperand, dst: LocalId },
     /// 局部变量申请（函数入口或首次可见处），`init` 可选。
     Alloc {
         id: LocalId,
         ty: HirType,
         init: Option<HirOperand>,
+    },
+    /// 完整表达式中的独占结果移入具名槽位；若结果只是借用，则建立新所有权。
+    Adopt {
+        id: LocalId,
+        ty: HirType,
+        init: LocalId,
     },
     /// 写入局部变量（`alloca` 已由 `Alloc` 建立）
     Store { id: LocalId, value: HirOperand },
@@ -260,6 +264,8 @@ pub enum HirInstr {
         index: usize,
         /// 字段类型（= 结果类型）
         ty: HirType,
+        /// 强字段只借到紧邻的读取或拥有槽位写入；weak 仍须升级。
+        borrow: bool,
         dst: LocalId,
     },
     /// 写字段值：`target.field = value`

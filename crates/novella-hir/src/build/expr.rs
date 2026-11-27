@@ -28,6 +28,62 @@ impl<'a> BodyBuilder<'a> {
         self.coerce(value, &actual, expected, expr.span(), block)
     }
 
+    /// 消费方保证在下一次用户代码执行或所有者改写之前使用此值。
+    pub(super) fn build_immediate_value(
+        &mut self,
+        expr: &Expression,
+        expected: &HirType,
+        block: &mut HirBlock,
+    ) -> Result<HirOperand, BuildError> {
+        match expr {
+            Expression::Paren { expr, .. } => {
+                return self.build_immediate_value(expr, expected, block);
+            }
+            Expression::Identifier { name, .. } => {
+                if let Some(id) = self.lookup_local(name)
+                    && self.local_type(id) == *expected
+                {
+                    return Ok(HirOperand::Local(id));
+                }
+            }
+            Expression::MemberAccess { target, name, span }
+                if !matches!(expected, HirType::Function(_))
+                    && super::globals::address(self.sema, self.module, *span).is_none()
+                    && self
+                        .expr_type(*span)
+                        .is_ok_and(|actual| actual == *expected) =>
+            {
+                return self.emit_field_read(target, name, *span, true, block);
+            }
+            _ => {}
+        }
+        self.build_typed_expression(expr, expected, block)
+    }
+
+    fn emit_field_read(
+        &mut self,
+        target: &Expression,
+        name: &str,
+        span: Span,
+        borrow: bool,
+        block: &mut HirBlock,
+    ) -> Result<HirOperand, BuildError> {
+        let target_ty = self.expr_type(target.span())?;
+        let value = self.build_immediate_value(target, &target_ty, block)?;
+        let (index, ty) = self.field_slot(&target_ty, name, span)?;
+        let dst = self.fresh_local(ty.clone());
+        block.push(HirStmt::Instr(HirInstr::FieldLoad {
+            target: value,
+            target_ty,
+            field: name.to_owned(),
+            index,
+            ty,
+            borrow,
+            dst,
+        }));
+        Ok(HirOperand::Local(dst))
+    }
+
     fn build_expression_inner(
         &mut self,
         expr: &Expression,
@@ -93,7 +149,7 @@ impl<'a> BodyBuilder<'a> {
                 op,
                 value,
                 span,
-            } => self.build_assignment(target, *op, value, *span, block),
+            } => self.build_assignment(target, *op, value, *span, false, block),
             Expression::Call {
                 callee,
                 args,
@@ -176,19 +232,7 @@ impl<'a> BodyBuilder<'a> {
                     }
                     return Ok(HirOperand::FunctionPtr(signature.id.clone()));
                 }
-                let value = self.build_expression(target, block)?;
-                let target_ty = self.expr_type(target.span())?;
-                let (index, ty) = self.field_slot(&target_ty, name, *span)?;
-                let dst = self.fresh_local(ty.clone());
-                block.push(HirStmt::Instr(HirInstr::FieldLoad {
-                    target: value,
-                    target_ty,
-                    field: name.clone(),
-                    index,
-                    ty,
-                    dst,
-                }));
-                Ok(HirOperand::Local(dst))
+                self.emit_field_read(target, name, *span, false, block)
             }
             Expression::IndexAccess {
                 target,
@@ -196,6 +240,10 @@ impl<'a> BodyBuilder<'a> {
                 span,
             } => {
                 let target_ty = self.expr_type(target.span())?;
+                if let Some(receiver_ty) = self.overloaded_index_receiver(expr)? {
+                    let place = self.build_index_place(expr, receiver_ty, "__getitem", block)?;
+                    return self.read_index_place(&place, *span, block);
+                }
                 if operators::same_string_class(self.sema, &target_ty) {
                     let receiver = self.build_expression(target, block)?;
                     let index =
@@ -209,7 +257,11 @@ impl<'a> BodyBuilder<'a> {
                     );
                 }
                 self.check_index_target(target, *span)?;
-                let value = self.build_expression(target, block)?;
+                let value = if matches!(target_ty, HirType::Array(..)) {
+                    self.aggregate_address(target, block)?
+                } else {
+                    self.build_expression(target, block)?
+                };
                 // 元素类型 = 表达式本身的类型；目标类型用于 codegen 选 GEP 的步长
                 let element_ty = self.expr_type_pref(*span, None)?;
                 let index_value =
@@ -261,14 +313,15 @@ impl<'a> BodyBuilder<'a> {
                 Ok(HirOperand::Local(dst))
             }
             Expression::ArrayLiteral { elements, span } => {
-                let HirType::Array(element_ty) = self.expr_type_pref(*span, preferred)? else {
+                let HirType::Array(element_ty, length) = self.expr_type_pref(*span, preferred)?
+                else {
                     unreachable!("数组表达式的类型是 Array")
                 };
                 let values = elements
                     .iter()
                     .map(|expr| self.build_typed_expression(expr, &element_ty, block))
                     .collect::<Result<Vec<_>, _>>()?;
-                let dst = self.fresh_local(HirType::Array(element_ty.clone()));
+                let dst = self.fresh_local(HirType::Array(element_ty.clone(), length));
                 block.push(HirStmt::Instr(HirInstr::Array {
                     elements: values,
                     element_ty: *element_ty,

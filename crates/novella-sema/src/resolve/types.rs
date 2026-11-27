@@ -23,6 +23,31 @@ impl Sema {
         resolved
     }
 
+    /// 只有形参的最外层无长度数组后缀退化为指针。
+    pub(crate) fn resolve_parameter_type(
+        &mut self,
+        module: ModuleId,
+        scope: ScopeId,
+        ty: &TypeExpr,
+        type_env: &HashMap<String, Ty>,
+    ) -> Ty {
+        if let TypeExpr::Array {
+            element,
+            length: None,
+            span,
+        } = ty
+        {
+            let resolved = Ty::Pointer(Box::new(
+                self.resolve_type(module, scope, element, type_env),
+            ));
+            self.annotation_types
+                .insert((module, *span), resolved.clone());
+            resolved
+        } else {
+            self.resolve_type(module, scope, ty, type_env)
+        }
+    }
+
     /// 统一在包装层登记注解类型，避免下游重复名称解析。
     fn resolve_type_inner(
         &mut self,
@@ -47,9 +72,18 @@ impl Sema {
                 *span,
                 type_env,
             ),
-            TypeExpr::Array { element, .. } => Ty::Array(Box::new(
-                self.resolve_type(module, scope, element, type_env),
-            )),
+            TypeExpr::Array {
+                element,
+                length: Some(length),
+                ..
+            } => Ty::Array(
+                Box::new(self.resolve_type(module, scope, element, type_env)),
+                *length,
+            ),
+            TypeExpr::Array { span, .. } => {
+                self.type_error(module, *span, "`T[]` 只能用作形参类型；定长数组请写 `T[N]`");
+                Ty::Error
+            }
             TypeExpr::Pointer { element, .. } => Ty::Pointer(Box::new(
                 self.resolve_type(module, scope, element, type_env),
             )),
@@ -349,7 +383,7 @@ impl Sema {
             .map(|p| ParamSig {
                 name: p.name.clone(),
                 ty: match &p.ty {
-                    Some(ty) => self.resolve_type(module, scope, ty, &env),
+                    Some(ty) => self.resolve_parameter_type(module, scope, ty, &env),
                     // 参数类型推导属后续期：未标注按 Unknown，调用点跳过该参检查
                     None => Ty::Unknown,
                 },

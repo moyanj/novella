@@ -76,7 +76,9 @@ pub(crate) fn substitute_type_params(ty: &Ty, subst: &std::collections::HashMap<
                 .map(|(n, t)| (n.clone(), substitute_type_params(t, subst)))
                 .collect(),
         ),
-        Ty::Array(element) => Ty::Array(Box::new(substitute_type_params(element, subst))),
+        Ty::Array(element, length) => {
+            Ty::Array(Box::new(substitute_type_params(element, subst)), *length)
+        }
         Ty::Pointer(element) => Ty::Pointer(Box::new(substitute_type_params(element, subst))),
         Ty::Tuple(elements) => Ty::Tuple(
             elements
@@ -162,8 +164,10 @@ pub(crate) fn infer_type_param(
                 }
             }
         }
-        Ty::Array(element) => match actual {
-            Ty::Array(actual_element) => infer_type_param(element, actual_element, subst),
+        Ty::Array(element, length) => match actual {
+            Ty::Array(actual_element, actual_length) if length == actual_length => {
+                infer_type_param(element, actual_element, subst)
+            }
             _ => Ok(()),
         },
         Ty::Pointer(element) => match actual {

@@ -50,7 +50,7 @@ pub(super) fn type_label(ty: &HirType) -> &'static str {
         HirType::Int(_) => "int",
         HirType::Float(_) => "float",
         HirType::Pointer(_) => "pointer",
-        HirType::Array(_) => "array",
+        HirType::Array(..) => "array",
         HirType::Tuple(_) => "tuple",
         HirType::Function(_) => "function",
         HirType::Struct(..) => "struct",
@@ -187,9 +187,10 @@ pub(super) fn same_value_type(a: &HirType, b: &HirType) -> bool {
         (HirType::Tuple(a), HirType::Tuple(b)) => {
             a.len() == b.len() && a.iter().zip(b).all(|(a, b)| same_value_type(a, b))
         }
-        (HirType::Array(a), HirType::Array(b)) | (HirType::Pointer(a), HirType::Pointer(b)) => {
+        (HirType::Array(a, left), HirType::Array(b, right)) if left == right => {
             same_value_type(a, b)
         }
+        (HirType::Pointer(a), HirType::Pointer(b)) => same_value_type(a, b),
         _ => a == b,
     }
 }

@@ -2007,13 +2007,14 @@ int main() {
 module
     .verify()
     .map_err(|error| CodegenError(error.to_string()))?;
-machine
+// 语言级优化：只在级别允许时跑模块级 pass pipeline，`-O0` 保持逐个指令的忠实映射。
+optimize_module(&module, &machine, program.target.opt_level)?;
+let buffer = machine
     .write_to_memory_buffer(&module, FileType::Object)
-    .map(|buffer| buffer.as_slice().to_vec())
-    .map_err(|error| CodegenError(error.to_string()))
+    .map_err(|error| CodegenError(error.to_string()))?;
 ```
 
-（`crates/novella-codegen/src/lib.rs:181-188`）
+（`crates/novella-codegen/src/lib.rs:491-498`）
 
 ### 16.1 module.verify()
 
@@ -2055,6 +2056,19 @@ machine.write_to_memory_buffer(&module, FileType::Object)
 - `.text` 段、符号表、重定位信息等标准 ELF 结构。
 
 CLI 用 `clang --target=x86_64-unknown-linux-gnu object -o a.out` 链接成可执行程序（第 21 章）。
+
+### 16.5 优化管道（优化级别）
+
+`verify()` 之后、`write_to_memory_buffer` 之前，`emit_artifact` 按
+`program.target.opt_level` 跑一遍模块级 pass 管道（`optimize_module`）：
+
+- `-O0` 直接跳过，HIR 到机器码保持逐指令忠实映射，便于调试；
+- `-O1` / `-O2` / `-O3` 分别执行 `default<O1>` / `default<O2>` / `default<O3>`；
+- `-Os` 执行 `default<O2>`，并关闭循环展开、循环向量化、SLP 向量化与循环交错。
+
+管道失败一律上抛 `CodegenError("优化管道 … 执行失败")`，不静默降级；优化不改变语言语义
+与运行时依赖契约。级别的来源、优先级、各档具体 pass 清单与复现命令见
+[目标与自定义目标](./target.md#优化级别)。
 
 ---
 

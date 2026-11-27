@@ -13,7 +13,8 @@ use crate::{
 pub(crate) fn managed(sema: &Sema, ty: &Ty) -> bool {
     fn visit(sema: &Sema, ty: &Ty, seen: &mut HashSet<(ModuleId, String)>) -> bool {
         match ty {
-            Ty::Class(..) | Ty::Trait(..) | Ty::Array(_) | Ty::Future(_) => true,
+            Ty::Class(..) | Ty::Trait(..) | Ty::Future(_) => true,
+            Ty::Array(element, length) => *length != 0 && visit(sema, element, seen),
             Ty::Tuple(items) | Ty::Union(items) => items.iter().any(|ty| visit(sema, ty, seen)),
             Ty::Object(items) => items.values().any(|ty| visit(sema, ty, seen)),
             Ty::Applied(base, _) => {
@@ -42,7 +43,7 @@ pub(crate) fn managed(sema: &Sema, ty: &Ty) -> bool {
 fn floating(sema: &Sema, ty: &Ty, seen: &mut HashSet<(ModuleId, String)>) -> bool {
     match ty {
         Ty::Float(_) | Ty::FloatLiteral(_) => true,
-        Ty::Pointer(inner) | Ty::Array(inner) | Ty::Future(inner) => floating(sema, inner, seen),
+        Ty::Pointer(inner) | Ty::Array(inner, _) | Ty::Future(inner) => floating(sema, inner, seen),
         Ty::Tuple(items) | Ty::Union(items) => items.iter().any(|ty| floating(sema, ty, seen)),
         Ty::Object(items) => items.values().any(|ty| floating(sema, ty, seen)),
         Ty::Applied(base, args) => {
@@ -72,7 +73,7 @@ fn c_abi(ty: &Ty, returns: bool) -> bool {
         Ty::Boolean | Ty::Int(_) | Ty::Float(_) => true,
         Ty::Pointer(inner) => !matches!(
             inner.as_ref(),
-            Ty::Class(..) | Ty::Trait(..) | Ty::Array(_) | Ty::Future(_)
+            Ty::Class(..) | Ty::Trait(..) | Ty::Future(_)
         ),
         Ty::Function(sig) => {
             !sig.is_async
@@ -241,7 +242,7 @@ pub(crate) fn validate(sema: &mut Sema) {
                     violations.insert((
                         *module,
                         *span,
-                        "无运行时模式不支持托管引用、ARC、weak、数组或字节字面量操作",
+                        "无运行时模式不支持托管引用、ARC 或 weak 操作",
                     ));
                 }
             }

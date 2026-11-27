@@ -10,6 +10,6 @@
   "requires-no-std": false,
   "emit": "x86_64-linux",
   "linker-flavor": "clang",
-  "linker-args": ["-lm"],
+  "linker-args": [],
   "is-like-linux": true
 }

@@ -49,7 +49,7 @@ fn type_dependencies(ty: &Ty, targets: &mut HashSet<ModuleId>) {
                 targets.insert(*module);
             }
         }
-        Ty::Pointer(inner) | Ty::Array(inner) | Ty::Future(inner) => {
+        Ty::Pointer(inner) | Ty::Array(inner, _) | Ty::Future(inner) => {
             type_dependencies(inner, targets);
         }
         Ty::Tuple(members) | Ty::Union(members) => {

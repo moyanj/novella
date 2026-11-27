@@ -174,7 +174,7 @@ pub enum TypeView {
     FloatLiteral,
     Null,
     Pointer(Box<TypeView>),
-    Array(Box<TypeView>),
+    Array(Box<TypeView>, u32),
     Tuple(Vec<TypeView>),
     Union(Vec<TypeView>),
     /// 函数签名投影（见 [`FunctionView`]）

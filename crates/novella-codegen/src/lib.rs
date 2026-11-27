@@ -16,13 +16,14 @@ pub const TARGET_TRIPLE: &str = "x86_64-unknown-linux-gnu";
 use std::collections::{HashMap, HashSet};
 
 use inkwell::context::Context;
-use inkwell::module::Linkage;
+use inkwell::module::{Linkage, Module};
+use inkwell::passes::PassBuilderOptions;
 use inkwell::targets::{
-    CodeModel, FileType, InitializationConfig, RelocMode, Target, TargetTriple,
+    CodeModel, FileType, InitializationConfig, RelocMode, Target, TargetMachine, TargetTriple,
 };
 use inkwell::types::{BasicMetadataTypeEnum, BasicType, BasicTypeEnum, FunctionType, StructType};
 use inkwell::{AddressSpace, OptimizationLevel};
-use novella_core::target::{CodeModel as TargetCodeModel, RuntimeRequirements};
+use novella_core::target::{CodeModel as TargetCodeModel, OptLevel, RuntimeRequirements};
 use novella_hir::{
     FunctionSignature, HirFunction, HirFunctionId, HirItem, HirProgram, HirType, HirTypeDef, IntTy,
 };
@@ -224,9 +225,10 @@ fn value_type<'ctx>(
                 false,
             )
             .into()),
-        HirType::Array(_) | HirType::Pointer(_) => {
-            Ok(context.ptr_type(AddressSpace::default()).into())
-        }
+        HirType::Array(element, length) => Ok(value_type(context, types, element)?
+            .array_type(*length)
+            .into()),
+        HirType::Pointer(_) => Ok(context.ptr_type(AddressSpace::default()).into()),
         // class 在 ABI 中始终以指向 runtime 对象载荷的 opaque pointer 表示。
         HirType::Class(_, _) => Ok(context.ptr_type(AddressSpace::default()).into()),
         HirType::Function(signature) => {
@@ -269,6 +271,46 @@ pub struct ObjectArtifact {
     pub requirements: RuntimeRequirements,
 }
 
+/// Novella 优化级别 → LLVM `OptimizationLevel`；`-Os` 没有独立档位，按 `-O2` 取机器级优化，
+/// 体积目标由 `PassManagerBuilder::set_size_level` 表达。
+fn optimization_level(level: novella_core::target::OptLevel) -> OptimizationLevel {
+    match level {
+        novella_core::target::OptLevel::None => OptimizationLevel::None,
+        novella_core::target::OptLevel::Less => OptimizationLevel::Less,
+        novella_core::target::OptLevel::Default | novella_core::target::OptLevel::Size => {
+            OptimizationLevel::Default
+        }
+        novella_core::target::OptLevel::Aggressive => OptimizationLevel::Aggressive,
+    }
+}
+
+/// 按优化级别运行模块级 pass pipeline。
+///
+/// 走 LLVM 的新 pass manager：`run_passes` 接收与 `opt` 的 `-passes=` 相同语法的管道名，
+/// `default<Ox>` 表示该级别下的完整默认管道。`-Os` 用 `default<O2>` 再关闭以空间换时间的
+/// 变换（循环展开、循环/片段向量化、循环交错），从而在保持常规优化的同时压体积。
+/// `-O0` 不调用本函数，目标机器也只做无优化发射。
+fn optimize_module(module: &Module, machine: &TargetMachine, level: OptLevel) -> Result<()> {
+    let (pipeline, plain) = match level {
+        OptLevel::None => return Ok(()),
+        OptLevel::Less => ("default<O1>", true),
+        OptLevel::Default => ("default<O2>", true),
+        OptLevel::Aggressive => ("default<O3>", true),
+        OptLevel::Size => ("default<O2>", false),
+    };
+    let options = PassBuilderOptions::create();
+    if !plain {
+        options.set_loop_unrolling(false);
+        options.set_loop_vectorization(false);
+        options.set_loop_slp_vectorization(false);
+        options.set_loop_interleaving(false);
+    }
+    module
+        .run_passes(pipeline, machine, options)
+        .map_err(|error| CodegenError(format!("优化管道 {pipeline} 执行失败：{error}")))?;
+    Ok(())
+}
+
 /// 兼容仅消费目标文件字节的既有调用方。
 pub fn emit_object(program: &HirProgram) -> Result<Vec<u8>> {
     emit_artifact(program).map(|artifact| artifact.bytes)
@@ -305,7 +347,7 @@ pub fn emit_artifact(program: &HirProgram) -> Result<ObjectArtifact> {
             &triple,
             &program.spec.cpu,
             &features,
-            OptimizationLevel::None,
+            optimization_level(program.target.opt_level),
             match program.spec.reloc_mode {
                 novella_core::target::RelocMode::Pic => RelocMode::PIC,
                 novella_core::target::RelocMode::Static => RelocMode::Static,
@@ -450,6 +492,8 @@ pub fn emit_artifact(program: &HirProgram) -> Result<ObjectArtifact> {
     module
         .verify()
         .map_err(|error| CodegenError(error.to_string()))?;
+    // 语言级优化：只在级别允许时跑模块级 pass pipeline，`-O0` 保持逐个指令的忠实映射。
+    optimize_module(&module, &machine, program.target.opt_level)?;
     let buffer = machine
         .write_to_memory_buffer(&module, FileType::Object)
         .map_err(|error| CodegenError(error.to_string()))?;

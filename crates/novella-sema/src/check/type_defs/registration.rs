@@ -61,10 +61,7 @@ pub(crate) fn build_type_defs(sema: &mut Sema, module: ModuleId) {
                                 &env,
                                 &owner,
                             );
-                            methods.insert(
-                                crate::check::canonical_method_name(&method.name).to_owned(),
-                                sig,
-                            );
+                            methods.insert(method.name.clone(), sig);
                         }
                     }
                 }
@@ -97,17 +94,14 @@ pub(crate) fn build_type_defs(sema: &mut Sema, module: ModuleId) {
                                 sema,
                                 module,
                                 &mut member_names,
-                                crate::check::canonical_method_name(&method.name),
+                                method.name.as_str(),
                                 method.span,
                             );
                             check_special_method_name(sema, module, method, true);
                             let owner = Ty::Class(module, class.name.clone());
                             let sig =
                                 build_method_sig(sema, module, global_scope, method, &env, &owner);
-                            methods.insert(
-                                crate::check::canonical_method_name(&method.name).to_owned(),
-                                sig,
-                            );
+                            methods.insert(method.name.clone(), sig);
                         }
                     }
                 }
@@ -150,17 +144,14 @@ pub(crate) fn build_type_defs(sema: &mut Sema, module: ModuleId) {
                                 sema,
                                 module,
                                 &mut member_names,
-                                crate::check::canonical_method_name(&method.name),
+                                method.name.as_str(),
                                 method.span,
                             );
                             check_special_method_name(sema, module, method, false);
                             let owner = Ty::Struct(module, struct_item.name.clone());
                             let sig =
                                 build_method_sig(sema, module, global_scope, method, &env, &owner);
-                            methods.insert(
-                                crate::check::canonical_method_name(&method.name).to_owned(),
-                                sig,
-                            );
+                            methods.insert(method.name.clone(), sig);
                         }
                     }
                 }
@@ -220,7 +211,7 @@ fn check_special_method_name(
         return;
     }
     if is_class {
-        if !CLASS_SPECIAL_METHODS.contains(&crate::check::canonical_method_name(&method.name)) {
+        if !CLASS_SPECIAL_METHODS.contains(&method.name.as_str()) {
             sema.decl_error(
                 module,
                 method.span,
@@ -231,7 +222,7 @@ fn check_special_method_name(
                 ),
             );
         }
-    } else {
+    } else if !matches!(method.name.as_str(), "__getitem" | "__setitem") {
         sema.decl_error(
             module,
             method.span,
@@ -309,7 +300,7 @@ fn build_method_sig(
         .map(|(index, p)| crate::ty::ParamSig {
             name: p.name.clone(),
             ty: match &p.ty {
-                Some(ty) => sema.resolve_type(module, scope, ty, &env),
+                Some(ty) => sema.resolve_parameter_type(module, scope, ty, &env),
                 // 实例方法的首个 self 由属主确定，必须在语义阶段完成定型，
                 // 使成员访问及下游 expression_types 共用同一类型来源。
                 None if index == 0 && p.name == "self" && !method.modifiers.is_static => {
@@ -323,8 +314,7 @@ fn build_method_sig(
     let ret = match &method.return_type {
         Some(ty) => sema.resolve_type(module, scope, ty, &env),
         None if method.block.is_some()
-            && !crate::check::CLASS_SPECIAL_METHODS
-                .contains(&crate::check::canonical_method_name(&method.name)) =>
+            && !crate::check::CLASS_SPECIAL_METHODS.contains(&method.name.as_str()) =>
         {
             Ty::Unknown
         }
@@ -358,7 +348,27 @@ fn build_method_sig(
             sema.decl_error(module, param.span, "self 的类型标注必须是方法所属类型");
         }
     }
-    let special_ret = match crate::check::canonical_method_name(&method.name) {
+    let method_name = method.name.as_str();
+    if matches!(method_name, "__getitem" | "__setitem") {
+        let read = method_name == "__getitem";
+        let count = if read { 2 } else { 3 };
+        if method.modifiers.is_static
+            || !method.type_parameters.is_empty()
+            || params.len() != count
+            || params.first().is_none_or(|param| param.name != "self")
+            || params
+                .iter()
+                .any(|param| param.has_default || matches!(param.ty, Ty::Unknown | Ty::Void))
+            || (read == matches!(ret, Ty::Void))
+        {
+            sema.decl_error(module, method.span, if read {
+                "下标读方法必须是 `func __getitem(self, index: I) -> T`，且不能是 static、泛型或含默认值"
+            } else {
+                "下标写方法必须是 `func __setitem(self, index: I, value: T) -> void`，且不能是 static、泛型或含默认值"
+            });
+        }
+    }
+    let special_ret = match method_name {
         "__init" | "__destroy" | "__enter" | "__exit" => Some(Ty::Void),
         "__str" => Some(sema.string_type().unwrap_or(Ty::Error)),
         _ => None,
@@ -378,7 +388,7 @@ fn build_method_sig(
             sema.decl_error(module, method.span, "特殊方法不能是 static");
         }
         let count = params.iter().filter(|p| p.name != "self").count();
-        if crate::check::canonical_method_name(&method.name) != "__init" && count != 0 {
+        if method.name.as_str() != "__init" && count != 0 {
             sema.decl_error(module, method.span, "该特殊方法不能接受显式实参");
         }
     }

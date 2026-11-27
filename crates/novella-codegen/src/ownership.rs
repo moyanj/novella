@@ -4,7 +4,7 @@ use inkwell::{
     builder::Builder,
     context::Context,
     module::{Linkage, Module},
-    values::BasicValueEnum,
+    values::{BasicValueEnum, PointerValue},
 };
 use novella_hir::{HirProgram, HirType, HirTypeDef};
 
@@ -18,7 +18,7 @@ pub(crate) fn destructor_name(ty: &HirType) -> Result<String> {
 }
 
 /// 结构体及元组按值复制时，递归保留/释放其拥有成员；weak 成员操作控制块。
-/// class 和数组本身只操作对象计数，最后一个所有者的 runtime 回调负责内部字段。
+/// 定长数组自身没有对象计数；只递归维护元素内部的拥有引用。
 pub(crate) fn reference_op<'ctx>(
     context: &'ctx Context,
     module: &Module<'ctx>,
@@ -29,14 +29,24 @@ pub(crate) fn reference_op<'ctx>(
     ty: &HirType,
 ) -> Result<()> {
     match ty {
-        HirType::Class(..) | HirType::Array(_) => {
-            let signature = context
-                .void_type()
-                .fn_type(&[value.get_type().into()], false);
-            let function = module
-                .get_function(operation)
-                .unwrap_or_else(|| module.add_function(operation, signature, None));
-            builder.build_call(function, &[value.into()], "")?;
+        HirType::Class(..) => {
+            reference_call(
+                context,
+                module,
+                builder,
+                operation,
+                value.into_pointer_value(),
+            )?;
+        }
+        HirType::Array(element, length) if has_owned_members(types, element) => {
+            for index in (0..*length).rev() {
+                let member = builder.build_extract_value(
+                    value.into_array_value(),
+                    index,
+                    "owned_element",
+                )?;
+                reference_op(context, module, types, builder, operation, member, element)?;
+            }
         }
         HirType::Struct(source, name) => {
             let fields = types
@@ -73,6 +83,27 @@ pub(crate) fn reference_op<'ctx>(
     Ok(())
 }
 
+pub(crate) fn has_owned_members(types: &Types<'_>, ty: &HirType) -> bool {
+    match ty {
+        HirType::Class(..) => true,
+        HirType::Array(element, length) => *length != 0 && has_owned_members(types, element),
+        HirType::Tuple(elements) => elements
+            .iter()
+            .any(|element| has_owned_members(types, element)),
+        HirType::Struct(module, name) => {
+            types
+                .fields
+                .get(&(*module, name.clone()))
+                .is_some_and(|fields| {
+                    fields
+                        .iter()
+                        .any(|field| field.is_weak || has_owned_members(types, &field.ty))
+                })
+        }
+        _ => false,
+    }
+}
+
 fn name_for_weak(name: &str) -> &str {
     if name == "novella_rt_retain" {
         "novella_rt_weak_retain"
@@ -88,14 +119,51 @@ fn weak_reference_op<'ctx>(
     operation: &str,
     value: BasicValueEnum<'ctx>,
 ) -> Result<()> {
-    let signature = context.void_type().fn_type(
-        &[context.ptr_type(inkwell::AddressSpace::default()).into()],
-        false,
-    );
+    reference_call(
+        context,
+        module,
+        builder,
+        operation,
+        value.into_pointer_value(),
+    )
+}
+
+/// 空句柄不进入运行时；保留与释放都保持在各自的求值位置。
+pub(crate) fn reference_call<'ctx>(
+    context: &'ctx Context,
+    module: &Module<'ctx>,
+    builder: &Builder<'ctx>,
+    operation: &str,
+    value: PointerValue<'ctx>,
+) -> Result<()> {
+    let nonnull = builder.build_is_not_null(value, "arc.nonnull")?;
+    if nonnull.get_zero_extended_constant() == Some(0) {
+        return Ok(());
+    }
+    let continuation = if nonnull.get_zero_extended_constant().is_none() {
+        let function = builder
+            .get_insert_block()
+            .and_then(|block| block.get_parent())
+            .ok_or_else(|| CodegenError("引用操作缺少 LLVM 插入块".into()))?;
+        let call = context.append_basic_block(function, "arc.call");
+        let next = context.append_basic_block(function, "arc.next");
+        builder.build_conditional_branch(nonnull, call, next)?;
+        builder.position_at_end(call);
+        Some(next)
+    } else {
+        None
+    };
+    let signature = context
+        .void_type()
+        .fn_type(&[value.get_type().into()], false);
     let function = module
         .get_function(operation)
         .unwrap_or_else(|| module.add_function(operation, signature, None));
     builder.build_call(function, &[value.into()], "")?;
+    if let Some(next) = continuation {
+        builder.build_unconditional_branch(next)?;
+        builder.position_at_end(next);
+    }
     Ok(())
 }
 

@@ -184,7 +184,7 @@ fn find_implementation(
         let Some(TypeDef::Class(def)) = sema.type_defs.get(&k) else {
             return None;
         };
-        if let Some(method) = def.methods.get(crate::check::canonical_method_name(name)) {
+        if let Some(method) = def.methods.get(name) {
             if method.is_abstract || method.is_static != want_static {
                 return None;
             }
@@ -280,7 +280,7 @@ fn check_overrides(sema: &mut Sema) {
             }
         }
         for method in methods {
-            if crate::check::canonical_method_name(&method.name) == "__init" {
+            if method.name.as_str() == "__init" {
                 continue;
             }
             if matches!(

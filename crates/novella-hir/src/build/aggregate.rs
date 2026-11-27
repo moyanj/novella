@@ -289,7 +289,8 @@ impl<'a> BodyBuilder<'a> {
                         .with_site(self.module, span)
                     })?;
                     let element_ty = HirType::Int(IntTy::U8);
-                    let dst = self.fresh_local(HirType::Array(Box::new(element_ty.clone())));
+                    let ty = self.expr_type(span)?;
+                    let dst = self.fresh_local(ty);
                     block.push(HirStmt::Instr(HirInstr::Array {
                         elements: bytes
                             .into_iter()

@@ -167,10 +167,12 @@ pub enum TypeExpr {
         /// 源码区间
         span: Span,
     },
-    /// 数组类型：`T[]`
+    /// 数组类型 `T[N]`，或仅用于形参的 `T[]`。
     Array {
         /// 元素类型
         element: Box<TypeExpr>,
+        /// 定长数组的元素个数；省略时在形参位置退化为指针。
+        length: Option<u32>,
         /// 源码区间
         span: Span,
     },
@@ -214,7 +216,7 @@ mod tests {
     #[test]
     fn spellings_cover_enum() {
         let spellings = PredefinedType::ALL.map(PredefinedType::spelling);
-        assert_eq!(spellings.len(), 19);
+        assert_eq!(spellings.len(), 18);
         let mut unique = spellings.to_vec();
         unique.sort_unstable();
         unique.dedup();
