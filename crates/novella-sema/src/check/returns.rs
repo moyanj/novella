@@ -77,6 +77,7 @@ fn collect_methods(sema: &mut Sema, module: ModuleId, owner: Ty, members: Vec<Cl
         if method.return_type.is_some()
             || method.block.is_none()
             || super::CLASS_SPECIAL_METHODS.contains(&method.name.as_str())
+            || crate::typecheck::magic::method_shape(&method.name).is_some()
         {
             continue;
         }

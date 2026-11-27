@@ -289,6 +289,7 @@ pub fn analyze_with_options(
         string_type,
         fstrings: sema.fstrings,
         declarations: Default::default(),
+        operator_calls: sema.operator_calls,
         call_instances: sema.call_instances,
         dyn_conversions: sema.dyn_conversions,
         trait_implementations,

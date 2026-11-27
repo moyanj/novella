@@ -133,6 +133,18 @@ pub class String {
         unsafe { return this.data[index]; }
     }
 
+    pub func __getitem(self, index: usize) -> u16 {
+        return this.codeUnitAt(index);
+    }
+
+    pub func __eq(self, other: String) -> boolean {
+        return this.equals(other);
+    }
+
+    pub func __add(self, other: String) -> String {
+        return this.concat(other);
+    }
+
     pub func charCount(self) -> usize {
         let count: usize = 0;
         let index: usize = 0;

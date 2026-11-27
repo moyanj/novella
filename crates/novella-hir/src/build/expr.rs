@@ -231,21 +231,8 @@ impl<'a> BodyBuilder<'a> {
                 span,
             } => {
                 let target_ty = self.expr_type(target.span())?;
-                if let Some(receiver_ty) = self.overloaded_index_receiver(expr)? {
-                    let place = self.build_index_place(expr, receiver_ty, "__getitem", block)?;
-                    return self.read_index_place(&place, *span, block);
-                }
-                if operators::same_string_class(self.sema, &target_ty) {
-                    let receiver = self.build_expression(target, block)?;
-                    let index =
-                        self.build_typed_expression(index, &HirType::Int(IntTy::Usize), block)?;
-                    return self.string_method_call(
-                        &target_ty,
-                        "codeUnitAt",
-                        vec![receiver, index],
-                        *span,
-                        block,
-                    );
+                if matches!(target_ty, HirType::Class(..) | HirType::Struct(..)) {
+                    return self.build_protocol_index(target, index, &target_ty, *span, block);
                 }
                 self.check_index_target(target, *span)?;
                 let value = if matches!(target_ty, HirType::Array(..)) {

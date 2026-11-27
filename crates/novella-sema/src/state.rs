@@ -53,6 +53,7 @@ pub(crate) struct Sema {
     pub references: HashMap<(ModuleId, Span), Definition>,
     /// 表达式 → 语义类型（键为 `(模块, 表达式 span)`），供 codegen 推导布局
     pub expression_types: HashMap<(ModuleId, Span), ty::Ty>,
+    pub operator_calls: HashMap<(ModuleId, Span), crate::OperatorCall>,
     pub call_instances: HashMap<(ModuleId, Span), crate::CallInstance>,
     pub dyn_conversions: HashMap<(ModuleId, Span), crate::DynConversion>,
     pub annotation_types: HashMap<(ModuleId, Span), ty::Ty>,
@@ -151,6 +152,7 @@ impl Sema {
             global_diagnostics: Vec::new(),
             references: HashMap::new(),
             expression_types: HashMap::new(),
+            operator_calls: HashMap::new(),
             call_instances: HashMap::new(),
             dyn_conversions: HashMap::new(),
             annotation_types: HashMap::new(),

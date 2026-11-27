@@ -2,12 +2,6 @@
 
 use super::*;
 
-pub(super) struct IndexPlace {
-    pub(super) receiver: HirOperand,
-    pub(super) key: HirOperand,
-    pub(super) receiver_ty: HirType,
-}
-
 mod target;
 use target::CallTarget;
 
@@ -20,96 +14,84 @@ impl BodyBuilder<'_> {
             Expression::Paren { expr, .. } => self.overloaded_index_receiver(expr),
             Expression::IndexAccess { target, .. } => {
                 let ty = self.expr_type(target.span())?;
-                Ok((matches!(ty, HirType::Struct(..) | HirType::Class(..))
-                    && !super::operators::same_string_class(self.sema, &ty))
-                .then_some(ty))
+                Ok(matches!(ty, HirType::Struct(..) | HirType::Class(..)).then_some(ty))
             }
             _ => Ok(None),
         }
     }
 
-    fn index_method(
+    pub(super) fn protocol_signature(
         &self,
         ty: &HirType,
         name: &str,
         span: Span,
     ) -> Result<FunctionSignature, BuildError> {
         let (HirType::Class(module, owner) | HirType::Struct(module, owner)) = ty else {
-            unreachable!("已检查下标协议接收者")
+            unreachable!("已检查魔法方法接收者")
         };
         self.class_method_signature(*module, owner, name, span)?
             .ok_or_else(|| {
                 BuildError::at(BuildErrorKind::MissingType {
-                    what: "下标协议方法签名",
+                    what: "魔法方法签名",
                 })
                 .with_site(self.module, span)
             })
     }
 
-    pub(super) fn build_index_place(
+    pub(super) fn build_protocol_index(
         &mut self,
-        expr: &Expression,
-        receiver_ty: HirType,
-        method: &str,
-        block: &mut HirBlock,
-    ) -> Result<IndexPlace, BuildError> {
-        if let Expression::Paren { expr, .. } = expr {
-            return self.build_index_place(expr, receiver_ty, method, block);
-        }
-        let Expression::IndexAccess {
-            target,
-            index,
-            span,
-        } = expr
-        else {
-            unreachable!("已检查下标表达式")
-        };
-        let signature = self.index_method(&receiver_ty, method, *span)?;
-        let receiver = if matches!(receiver_ty, HirType::Struct(..)) {
-            self.aggregate_address(target, block)?
-        } else {
-            self.build_expression(target, block)?
-        };
-        let key = self.build_typed_expression(index, &signature.params[0], block)?;
-        Ok(IndexPlace {
-            receiver,
-            key,
-            receiver_ty,
-        })
-    }
-
-    pub(super) fn read_index_place(
-        &mut self,
-        place: &IndexPlace,
+        target: &Expression,
+        index: &Expression,
+        receiver_ty: &HirType,
         span: Span,
         block: &mut HirBlock,
     ) -> Result<HirOperand, BuildError> {
-        let signature = self.index_method(&place.receiver_ty, "__getitem", span)?;
+        let signature = self.protocol_signature(receiver_ty, "__getitem", span)?;
+        let place = self.build_protocol_index_place(
+            target,
+            index,
+            receiver_ty.clone(),
+            &signature.params[0],
+            span,
+            block,
+        )?;
+        Ok(self.emit_protocol_call(signature, vec![place.receiver, place.key], false, block))
+    }
+
+    pub(super) fn emit_protocol_call(
+        &mut self,
+        signature: FunctionSignature,
+        args: Vec<HirOperand>,
+        invert: bool,
+        block: &mut HirBlock,
+    ) -> HirOperand {
+        if signature.ret == HirType::Void {
+            block.push(HirStmt::Instr(HirInstr::Call {
+                callee: HirOperand::FunctionPtr(signature.id),
+                args,
+                dst: None,
+                dst_ty: None,
+            }));
+            return HirOperand::Unit;
+        }
         let dst = self.fresh_local(signature.ret.clone());
         block.push(HirStmt::Instr(HirInstr::Call {
             callee: HirOperand::FunctionPtr(signature.id),
-            args: vec![place.receiver.clone(), place.key.clone()],
+            args,
             dst: Some(dst),
             dst_ty: Some(signature.ret),
         }));
-        Ok(HirOperand::Local(dst))
-    }
-
-    pub(super) fn write_index_place(
-        &self,
-        place: IndexPlace,
-        value: HirOperand,
-        span: Span,
-        block: &mut HirBlock,
-    ) -> Result<(), BuildError> {
-        let signature = self.index_method(&place.receiver_ty, "__setitem", span)?;
-        block.push(HirStmt::Instr(HirInstr::Call {
-            callee: HirOperand::FunctionPtr(signature.id),
-            args: vec![place.receiver, place.key, value],
-            dst: None,
-            dst_ty: None,
+        if !invert {
+            return HirOperand::Local(dst);
+        }
+        let result = self.fresh_local(HirType::Boolean);
+        block.push(HirStmt::Instr(HirInstr::Unary {
+            op: HirUnaryOp::Not,
+            operand: HirOperand::Local(dst),
+            dst: result,
+            dst_ty: HirType::Boolean,
         }));
-        Ok(())
+        HirOperand::Local(result)
     }
 
     pub(super) fn build_new(

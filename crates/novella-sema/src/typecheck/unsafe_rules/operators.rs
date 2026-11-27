@@ -1,5 +1,6 @@
 //! 二元运算、类型合一、显式转换与 unsafe。
 use super::*;
+use crate::typecheck::magic;
 
 /// S10：指针类操作需要 `unsafe {}`。
 pub(crate) fn require_unsafe(sema: &mut Sema, ctx: &BodyCtx, span: Span, what: &str) {
@@ -60,6 +61,13 @@ pub(crate) fn check_binary_with_hint(
         return check_binary_operands(sema, ctx, op, left, right, span, lhs, rhs);
     }
     let lhs = check_expr(sema, ctx, left);
+    // 与 null 字面量的比较继续检测引用是否为空，不调用可能解引用接收者的方法。
+    let equality = matches!(op, BinaryOp::Equals | BinaryOp::NotEquals);
+    let dispatch = !(equality && (matches!(lhs, Ty::Null) || magic::is_null_literal(right)));
+    if dispatch && let Some(selected) = magic::binary(sema, op, &lhs, false) {
+        let rhs = selected.check_argument(sema, ctx, right);
+        return selected.finish(sema, ctx, span, Some((&rhs, right.span())));
+    }
     // `??` 的备用值：优先按左操作数类型，其次按调用方期望类型（左为纯 `null` 时）
     // 借用期：`lhs` 在下方矩阵里仍要用，故克隆成 `Option<Ty>` 而不是借用
     let right_hint: Option<Ty> = match op {
@@ -79,6 +87,25 @@ pub(crate) fn check_binary_with_hint(
     };
     if op == BinaryOp::NullCoalesce && !matches!(lhs, Ty::Null) {
         ctx.uninitialized.extend(before);
+    }
+    if dispatch && !(equality && matches!(rhs, Ty::Null)) {
+        let selected = magic::binary(sema, op, &rhs, true).or_else(|| {
+            (op == BinaryOp::NotEquals)
+                .then(|| {
+                    magic::inverted_equality(sema, &lhs, false)
+                        .or_else(|| magic::inverted_equality(sema, &rhs, true))
+                })
+                .flatten()
+        });
+        if let Some(selected) = selected {
+            return if selected.is_reversed() {
+                let lhs = selected.checked_argument(sema, ctx, left.span(), lhs);
+                selected.finish(sema, ctx, span, Some((&lhs, left.span())))
+            } else {
+                let rhs = selected.checked_argument(sema, ctx, right.span(), rhs);
+                selected.finish(sema, ctx, span, Some((&rhs, right.span())))
+            };
+        }
     }
     check_binary_operands(sema, ctx, op, left, right, span, lhs, rhs)
 }
@@ -180,13 +207,13 @@ pub(super) fn check_binary_operands(
         | BinaryOp::NotEquals
         | BinaryOp::IdentityEquals
         | BinaryOp::IdentityNotEquals => {
-            // §8.5：struct 不允许 ==
+            // struct 没有内建值相等，也没有引用身份。
             for (side, ty) in [("左", &lhs), ("右", &rhs)] {
-                if matches!(ty, Ty::Struct(..)) {
+                if matches!(crate::traits::nominal_base(ty), Ty::Struct(..)) {
                     sema.type_error(
                         ctx.module,
                         span,
-                        format!("struct 类型不支持 `==`/`!=` 比较（{side}操作数为 `{ty}`）"),
+                        format!("struct 类型 `{ty}` 没有该比较运算的定义（{side}操作数）"),
                     );
                 }
             }
@@ -212,13 +239,7 @@ pub(super) fn check_binary_operands(
             }
             Ty::Boolean
         }
-        BinaryOp::Plus => {
-            if sema.is_string_type(&lhs) && sema.is_string_type(&rhs) {
-                return lhs;
-            }
-            check_arithmetic(sema, ctx, op, &lhs, &rhs, span)
-        }
-        BinaryOp::Minus | BinaryOp::Multiply | BinaryOp::Divide => {
+        BinaryOp::Plus | BinaryOp::Minus | BinaryOp::Multiply | BinaryOp::Divide => {
             check_arithmetic(sema, ctx, op, &lhs, &rhs, span)
         }
         BinaryOp::Modulus => match unify_numeric(&lhs, &rhs) {

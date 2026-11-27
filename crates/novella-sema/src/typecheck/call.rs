@@ -9,7 +9,7 @@ use novella_core::Span;
 
 use crate::Sema;
 use crate::symbol::SymbolKind;
-use crate::ty::{FunctionSig, Ty, TypeDef};
+use crate::ty::{FunctionSig, Ty, TypeDef, ty_eq};
 
 use super::body::{BodyCtx, concrete};
 use super::expr::{IdentTarget, check_expr, check_expr_with_hint, classify_identifier};
@@ -27,8 +27,12 @@ pub(crate) fn check_index_access(
     check_index_on(sema, ctx, target_ty, index, span)
 }
 
-pub(crate) fn is_custom_index(sema: &Sema, ty: &Ty) -> bool {
-    matches!(ty, Ty::Class(..) | Ty::Struct(..) | Ty::Applied(..)) && !sema.is_string_type(ty)
+pub(super) fn has_protocol_receiver(ty: &Ty) -> bool {
+    match ty {
+        Ty::Applied(base, _) => has_protocol_receiver(base),
+        Ty::Class(..) | Ty::Struct(..) => true,
+        _ => false,
+    }
 }
 
 pub(crate) fn index_parts(expr: &Expression) -> Option<(&Expression, &Expression)> {
@@ -39,16 +43,22 @@ pub(crate) fn index_parts(expr: &Expression) -> Option<(&Expression, &Expression
     }
 }
 
-pub(crate) fn index_signature(
+pub(super) fn protocol_method(
     sema: &Sema,
     target: &Ty,
     name: &str,
 ) -> Option<(super::member::MemberHit, Rc<FunctionSig>)> {
+    if !has_protocol_receiver(target) {
+        return None;
+    }
     let key = super::member::type_key_of(target);
     let hit = super::member::lookup_member_chain(sema, &key, name, false)?;
     let super::member::MemberInfo::Method(method) = &hit.info else {
         return None;
     };
+    if method.is_static || !method.sig.is_method {
+        return None;
+    }
     let subst = crate::ty::member_substitution(sema, target, &hit.owner);
     let Ty::Function(sig) =
         crate::ty::substitute_type_params(&Ty::Function(Rc::new(method.sig.clone())), &subst)
@@ -58,35 +68,110 @@ pub(crate) fn index_signature(
     Some((hit, sig))
 }
 
-pub(crate) fn check_index_signature(
-    sema: &mut Sema,
-    ctx: &BodyCtx,
-    target: &Ty,
-    name: &str,
-    span: Span,
-) -> Option<Rc<FunctionSig>> {
-    let Some((hit, sig)) = index_signature(sema, target, name) else {
-        sema.type_error(ctx.module, span, format!("类型 `{target}` 未实现 `{name}`"));
-        return None;
-    };
-    hit.check_visible(sema, ctx, name, span);
-    Some(sig)
-}
-
-pub(crate) fn check_index_operand(
+/// String 历来接受任意整数下标；普通用户协议按声明的形参类型传参。
+fn check_protocol_index_argument(
     sema: &mut Sema,
     ctx: &mut BodyCtx,
+    target_ty: &Ty,
+    param: &crate::ty::ParamSig,
     index: &Expression,
-    expected: &Ty,
 ) {
-    let actual = check_expr_with_hint(sema, ctx, index, expected);
-    if !sema.is_assignable(expected, &actual) {
+    let string = sema.is_string_type(target_ty);
+    let actual = if string {
+        check_expr(sema, ctx, index)
+    } else {
+        check_expr_with_hint(sema, ctx, index, &param.ty)
+    };
+    let ok = if string {
+        actual.is_integer() || actual.is_opaque()
+    } else {
+        sema.is_assignable(&param.ty, &actual)
+    };
+    if !ok {
+        let expected = if string {
+            "整数".to_owned()
+        } else {
+            param.ty.to_string()
+        };
         sema.type_error(
             ctx.module,
             index.span(),
             format!("下标需要 `{expected}`，实为 `{actual}`"),
         );
     }
+}
+
+fn index_setter(
+    sema: &mut Sema,
+    ctx: &BodyCtx,
+    receiver: &Ty,
+    span: Span,
+) -> Option<Rc<FunctionSig>> {
+    let name = super::magic::SET_ITEM;
+    let Some((hit, sig)) = protocol_method(sema, receiver, name) else {
+        sema.type_error(
+            ctx.module,
+            span,
+            format!("类型 `{receiver}` 未实现 `{name}`，下标不能写入"),
+        );
+        return None;
+    };
+    hit.check_visible(sema, ctx, name, span);
+    Some(sig)
+}
+
+/// 普通下标赋值只需 setter；右侧已检查，不得在定位下标后再次检查。
+pub(super) fn check_index_set_on(
+    sema: &mut Sema,
+    ctx: &mut BodyCtx,
+    receiver: &Ty,
+    index: &Expression,
+    value_span: Span,
+    actual: &Ty,
+    span: Span,
+) -> Ty {
+    let setter = index_setter(sema, ctx, receiver, span);
+    let Some((key, value)) = setter
+        .as_ref()
+        .and_then(|sig| sig.params.get(1).zip(sig.params.get(2)))
+    else {
+        check_expr(sema, ctx, index);
+        return Ty::Error;
+    };
+    check_protocol_index_argument(sema, ctx, receiver, key, index);
+    if !sema.is_assignable(&value.ty, actual)
+        && !sema.record_dyn_conversion(ctx.module, value_span, &value.ty, actual)
+    {
+        sema.type_error(
+            ctx.module,
+            value_span,
+            format!("下标写入需要 `{}`，实为 `{actual}`", value.ty),
+        );
+    }
+    ctx.record_possible_exception();
+    value.ty.clone()
+}
+
+/// 读改写复用已经定型的键和值槽位；不重新检查基座或键表达式。
+pub(super) fn check_index_update(sema: &mut Sema, ctx: &BodyCtx, receiver: &Ty, span: Span) {
+    let Some(setter) = index_setter(sema, ctx, receiver, span) else {
+        return;
+    };
+    if let Some((_, getter)) = protocol_method(sema, receiver, super::magic::GET_ITEM)
+        && let (Some(read_key), Some(write_key), Some(write)) = (
+            getter.params.get(1),
+            setter.params.get(1),
+            setter.params.get(2),
+        )
+        && (!ty_eq(&read_key.ty, &write_key.ty) || !ty_eq(&getter.ret, &write.ty))
+    {
+        sema.type_error(
+            ctx.module,
+            span,
+            "下标复合赋值或自增/自减要求读写方法的下标类型和值类型一致",
+        );
+    }
+    ctx.record_possible_exception();
 }
 
 pub(crate) fn check_index_on(
@@ -96,14 +181,23 @@ pub(crate) fn check_index_on(
     index: &Expression,
     span: Span,
 ) -> Ty {
-    if is_custom_index(sema, &target_ty) {
-        if let Some(sig) = check_index_signature(sema, ctx, &target_ty, "__getitem", span)
+    if has_protocol_receiver(&target_ty) {
+        let name = super::magic::GET_ITEM;
+        let found = protocol_method(sema, &target_ty, name);
+        if let Some((hit, sig)) = found
             && let Some(param) = sig.params.get(1)
         {
-            check_index_operand(sema, ctx, index, &param.ty);
+            hit.check_visible(sema, ctx, name, span);
+            check_protocol_index_argument(sema, ctx, &target_ty, param, index);
+            ctx.record_possible_exception();
             return sig.ret.clone();
         }
         check_expr(sema, ctx, index);
+        sema.type_error(
+            ctx.module,
+            span,
+            format!("类型 `{target_ty}` 未实现 `{name}`"),
+        );
         return Ty::Error;
     }
     let index_ty = check_expr(sema, ctx, index);
@@ -114,9 +208,6 @@ pub(crate) fn check_index_on(
             format!("索引必须是整数，实为 `{index_ty}`"),
         );
         return Ty::Error;
-    }
-    if sema.is_string_type(&target_ty) {
-        return Ty::Int(crate::ty::IntKind::U16);
     }
     match target_ty {
         Ty::Array(element, _) => *element,

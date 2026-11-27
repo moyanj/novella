@@ -142,7 +142,8 @@
 | E19R | 空数组需 `T[0]` 上下文给出元素类型 | design §5.2.1、§7.7 | `expr/hints.rs`、`expr/aggregates.rs` | **已实现** | 定长声明、实参、返回值等位置可定型；无元素类型或长度不匹配报错 | **S03 完成** |
 | E20R | 调用：实参个数、类型、默认值、extern 需 unsafe | design §4.8；§6.2 | `call.rs::check_call` + `instance_param_tys` | **已实现** | 反：少参/多参/类型不符；正：`takes([])` 由形参定型 | **S03 完成** |
 | E21R | `new`：`__init` 实参检查；无 `__init` 不得传参；抽象类实例化 | design §4.6.1；plan S10b | `call.rs::check_new` + `type_defs::is_abstract_class` | **已实现** | 反：`new Shape()` 报「是抽象类…不能 new」；正：实现完抽象方法的子类可 new | **S04a 完成（D02）** |
-| E22R | 索引：定长数组 / 指针（unsafe）/ 元组字面量下标 / String 只读 UTF-16 码元 / 自定义读写协议 | design §4.10、§6.5 | `typecheck/call.rs`、`unsafe_rules/assignment.rs` | 已实现 | 元组拒绝动态或越界下标；自定义读写仅识别 `__getitem` / `__setitem` | — |
+| E22R | 索引：定长数组 / 指针（unsafe）/ 元组字面量下标 / `__getitem` 读取协议 / `__setitem` 写入协议 | design §4.10、§6.5 | `typecheck/call.rs`、`unsafe_rules/assignment.rs` | 已实现 | 元组拒绝动态或越界下标；自定义下标写入要求 `__setitem`，复合赋值与后缀更新还要求匹配的 `__getitem`；String 下标只读，返回 UTF-16 码元 | — |
+| E22aR | class / struct 魔法方法运算符派发 | design §4.10 | `typecheck/magic.rs`、`unsafe_rules/operators.rs`、`unsafe_rules/assignment.rs` | 已实现 | 正向、反向、一元、比较取反、复合与后缀写回；内建短路与身份比较不变 | — |
 | E23R | 成员访问：字段 / 方法 / 自动解引用 / struct `this` 免 unsafe | design §6.5 S6；§8.4 | `member.rs::check_member_access` + `MemberHit::check_visible` | **已实现** | 反：跨模块访问非 `pub` 字段报错；正：同模块 / 类型内部 / `pub` 可访问 | **S04a 完成（D02）** |
 | E24R | 静态成员 `Type.member` | design §4.6 | `member.rs::check_static_access` | **已实现** | 反：`a.make()` 报「静态成员…请改用类型名」；`A.f()` 正常 | **S04a 完成（D02）** |
 | E25R | match 类型合一、重复/覆盖模式与穷尽性；不可能匹配的类型模式为警告 | 已确认 D06；ROADMAP M-1 | `typecheck/matching.rs` / `flow.rs` | 已实现 | 布尔穷尽无 default 通过；缺分支与重复负常量拒绝；void 分支不强制穷尽；不可能的类型模式发出 NVL3009 警告 | S12a / M-1 |

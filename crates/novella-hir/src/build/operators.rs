@@ -29,17 +29,17 @@ impl BodyBuilder<'_> {
         }
         let ty = self.expr_type_pref(span, preferred)?;
         if matches!(op, UnaryOp::PostIncrement | UnaryOp::PostDecrement) {
-            let place = self
-                .overloaded_index_receiver(operand)?
-                .map(|ty| self.build_index_place(operand, ty, "__getitem", block))
-                .transpose()?;
-            let (address, old) = if let Some(place) = &place {
-                (None, self.read_index_place(place, span, block)?)
-            } else {
-                let address = self.build_address(operand, block)?;
-                let old = self.read_address(address.clone(), &ty, block);
-                (Some(address), old)
-            };
+            let place = self.update_place(operand, false, block)?;
+            let old = place.read(self, &ty, block)?;
+            if let Some(call) = self.sema.operator_calls.get(&(self.module, span)).copied() {
+                let signature = self.protocol_signature(&ty, call.method, span)?;
+                let from = signature.ret.clone();
+                let receiver = self.protocol_receiver_value(old.clone(), &ty, block);
+                let updated = self.emit_protocol_call(signature, vec![receiver], false, block);
+                let value = self.coerce(updated, &from, &ty, span, block)?;
+                place.write(self, value, ty, block)?;
+                return Ok(old);
+            }
             let one = if matches!(ty, HirType::Float(_)) {
                 HirOperand::FloatConst(1.0)
             } else {
@@ -63,16 +63,15 @@ impl BodyBuilder<'_> {
                 dst,
                 dst_ty: ty.clone(),
             }));
-            if let Some(place) = place {
-                self.write_index_place(place, HirOperand::Local(dst), span, block)?;
-            } else if let Some(address) = address {
-                block.push(HirStmt::Instr(HirInstr::StoreIndirect {
-                    address,
-                    value: HirOperand::Local(dst),
-                    ty,
-                }));
-            }
+            place.write(self, HirOperand::Local(dst), ty, block)?;
             return Ok(old);
+        }
+        if let Some(call) = self.sema.operator_calls.get(&(self.module, span)).copied() {
+            let receiver_ty = self.expr_type(operand.span())?;
+            let signature = self.protocol_signature(&receiver_ty, call.method, span)?;
+            let value = self.build_expression(operand, block)?;
+            let receiver = self.protocol_receiver_value(value, &receiver_ty, block);
+            return Ok(self.emit_protocol_call(signature, vec![receiver], false, block));
         }
         let operand_ty = if op == UnaryOp::DerefPointer {
             self.expr_type(operand.span())?
@@ -113,6 +112,31 @@ impl BodyBuilder<'_> {
         if op == BinaryOp::NullCoalesce {
             return self.build_coalesce(left, right, span, preferred, block);
         }
+        if let Some(call) = self.sema.operator_calls.get(&(self.module, span)).copied() {
+            let receiver_expr = if call.reversed { right } else { left };
+            let receiver_ty = self.expr_type(receiver_expr.span())?;
+            let signature = self.protocol_signature(&receiver_ty, call.method, span)?;
+            // 反向派发只交换传参，不交换源码左右操作数的求值顺序。
+            let (receiver, argument) = if call.reversed {
+                let argument = self.build_call_argument(left, &signature.params[0], block)?;
+                let value = self.build_expression(right, block)?;
+                (
+                    self.protocol_receiver_value(value, &receiver_ty, block),
+                    argument,
+                )
+            } else {
+                let value = self.build_expression(left, block)?;
+                let receiver = self.protocol_receiver_value(value, &receiver_ty, block);
+                let argument = self.build_call_argument(right, &signature.params[0], block)?;
+                (receiver, argument)
+            };
+            return Ok(self.emit_protocol_call(
+                signature,
+                vec![receiver, argument],
+                call.invert,
+                block,
+            ));
+        }
         let left_type = self.expr_type(left.span()).ok();
         let right_type = self.expr_type(right.span()).ok();
         let common = [left_type.as_ref(), right_type.as_ref()]
@@ -144,52 +168,6 @@ impl BodyBuilder<'_> {
                 dst_ty: result_ty,
             }));
             return Ok(HirOperand::Local(dst));
-        }
-        if let (Some(left_type), Some(right_type)) = (&left_type, &right_type)
-            && same_string_class(self.sema, left_type)
-            && left_type == right_type
-        {
-            let method_name = match op {
-                BinaryOp::Plus => Some("concat"),
-                BinaryOp::Equals | BinaryOp::NotEquals => Some("equals"),
-                _ => None,
-            };
-            if let Some(method_name) = method_name {
-                let signature = self
-                    .class_method_signature(
-                        class_identity(left_type).unwrap().0,
-                        "String",
-                        method_name,
-                        span,
-                    )?
-                    .ok_or_else(|| {
-                        BuildError::at(BuildErrorKind::MissingType {
-                            what: "std:String 运算方法",
-                        })
-                        .with_site(self.module, span)
-                    })?;
-                let receiver = self.build_typed_expression(left, left_type, block)?;
-                let argument = self.build_typed_expression(right, right_type, block)?;
-                let result_ty = self.expr_type_pref(span, preferred)?;
-                let dst = self.fresh_local(signature.ret.clone());
-                block.push(HirStmt::Instr(HirInstr::Call {
-                    callee: HirOperand::FunctionPtr(signature.id),
-                    args: vec![receiver, argument],
-                    dst: Some(dst),
-                    dst_ty: Some(signature.ret),
-                }));
-                if op == BinaryOp::NotEquals {
-                    let inverted = self.fresh_local(result_ty);
-                    block.push(HirStmt::Instr(HirInstr::Unary {
-                        op: HirUnaryOp::Not,
-                        operand: HirOperand::Local(dst),
-                        dst: inverted,
-                        dst_ty: HirType::Boolean,
-                    }));
-                    return Ok(HirOperand::Local(inverted));
-                }
-                return Ok(HirOperand::Local(dst));
-            }
         }
         let mut hir_op = binary_op_of(op).ok_or_else(|| {
             BuildError::at(BuildErrorKind::Unimplemented {
@@ -325,63 +303,44 @@ impl BodyBuilder<'_> {
         } else {
             None
         };
-        let place = self
-            .overloaded_index_receiver(target)?
-            .map(|ty| {
-                self.build_index_place(
-                    target,
-                    ty,
-                    if op == AssignOp::Assign {
-                        "__setitem"
-                    } else {
-                        "__getitem"
-                    },
-                    block,
-                )
-            })
+        let place = self.update_place(target, op == AssignOp::Assign, block)?;
+        let previous = (op != AssignOp::Assign)
+            .then(|| place.read(self, &ty, block))
             .transpose()?;
-        let weak_field = if place.is_some() {
-            None
-        } else {
-            self.weak_assignment_field(target, block)?
-        };
-        let address = if weak_field.is_some() || place.is_some() {
-            None
-        } else {
-            Some(self.build_address_for_use(target, op == AssignOp::Assign, block)?)
-        };
-        let previous = if op == AssignOp::Assign {
-            None
-        } else if let Some(place) = &place {
-            Some(self.read_index_place(place, span, block)?)
-        } else if let Some((receiver, target_ty, field, index)) = &weak_field {
-            let dst = self.fresh_local(ty.clone());
-            block.push(HirStmt::Instr(HirInstr::FieldLoad {
-                target: receiver.clone(),
-                target_ty: target_ty.clone(),
-                field: field.clone(),
-                index: *index,
-                ty: ty.clone(),
-                borrow: false,
-                dst,
-            }));
-            Some(HirOperand::Local(dst))
-        } else {
-            Some(self.read_address(address.clone().expect("普通左值有地址"), &ty, block))
-        };
-        let rhs_ty = if op != AssignOp::Assign && matches!(ty, HirType::Pointer(_)) {
-            self.expr_type_pref(value.span(), Some(&HirType::Int(IntTy::Isize)))?
-        } else {
-            ty.clone()
-        };
-        let rhs = match early_rhs {
-            Some(rhs) => rhs,
-            None => self.build_typed_expression(value, &rhs_ty, block)?,
-        };
-        let stored = if let Some(lhs) = previous {
-            if op == AssignOp::PlusAssign && same_string_class(self.sema, &ty) {
-                self.string_method_call(&ty, "concat", vec![lhs, rhs], span, block)?
+        let stored = if let Some(rhs) = early_rhs {
+            rhs
+        } else if let Some(lhs) = previous {
+            if let Some(call) = self.sema.operator_calls.get(&(self.module, span)).copied() {
+                let receiver_ty = if call.reversed {
+                    self.expr_type(value.span())?
+                } else {
+                    ty.clone()
+                };
+                let signature = self.protocol_signature(&receiver_ty, call.method, span)?;
+                let (receiver, argument) = if call.reversed {
+                    let argument =
+                        self.coerce(lhs, &ty, &signature.params[0], target.span(), block)?;
+                    let value = self.build_expression(value, block)?;
+                    (
+                        self.protocol_receiver_value(value, &receiver_ty, block),
+                        argument,
+                    )
+                } else {
+                    let receiver = self.protocol_receiver_value(lhs, &receiver_ty, block);
+                    let argument = self.build_call_argument(value, &signature.params[0], block)?;
+                    (receiver, argument)
+                };
+                let from = signature.ret.clone();
+                let result =
+                    self.emit_protocol_call(signature, vec![receiver, argument], false, block);
+                self.coerce(result, &from, &ty, span, block)?
             } else {
+                let rhs_ty = if matches!(ty, HirType::Pointer(_)) {
+                    self.expr_type_pref(value.span(), Some(&HirType::Int(IntTy::Isize)))?
+                } else {
+                    ty.clone()
+                };
+                let rhs = self.build_typed_expression(value, &rhs_ty, block)?;
                 let hir_op = compound_op_of(op).ok_or_else(|| {
                     BuildError::at(BuildErrorKind::Unimplemented {
                         node: assign_node_name(op),
@@ -401,27 +360,30 @@ impl BodyBuilder<'_> {
                 HirOperand::Local(dst)
             }
         } else {
-            rhs
+            unreachable!("复合赋值必须先读取旧值")
         };
-        if let Some(place) = place {
-            self.write_index_place(place, stored.clone(), span, block)?;
-        } else if let Some((receiver, target_ty, field, index)) = weak_field {
-            block.push(HirStmt::Instr(HirInstr::FieldStore {
-                target: receiver,
-                target_ty,
-                field,
-                index,
-                value: stored.clone(),
-                is_weak: true,
-            }));
-        } else {
-            block.push(HirStmt::Instr(HirInstr::StoreIndirect {
-                address: address.expect("普通左值有地址"),
-                value: stored.clone(),
-                ty,
-            }));
-        }
+        place.write(self, stored.clone(), ty, block)?;
         Ok(stored)
+    }
+
+    /// 运算符按值读取 struct；其方法 ABI 需要指针，因此给快照单独建槽。
+    /// 这也隔离后缀方法对 self 的修改，保住表达式要返回的旧值。
+    fn protocol_receiver_value(
+        &mut self,
+        value: HirOperand,
+        ty: &HirType,
+        block: &mut HirBlock,
+    ) -> HirOperand {
+        if !matches!(ty, HirType::Struct(..)) {
+            return value;
+        }
+        let id = self.fresh_local(ty.clone());
+        block.push(HirStmt::Instr(HirInstr::Alloc {
+            id,
+            ty: ty.clone(),
+            init: Some(value),
+        }));
+        self.local_address(id, block)
     }
 
     /// 具名类型的字段槽位：`(下标, 字段类型)`。
@@ -504,13 +466,6 @@ impl BodyBuilder<'_> {
             dst,
         }));
         Ok(Some(HirOperand::Local(dst)))
-    }
-}
-
-fn class_identity(ty: &HirType) -> Option<(novella_sema::ModuleId, &str)> {
-    match ty {
-        HirType::Class(module, name) => Some((*module, name)),
-        _ => None,
     }
 }
 

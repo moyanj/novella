@@ -183,7 +183,9 @@ fn check_special_method_name(
     method: &MethodMember,
     is_class: bool,
 ) {
-    if !method.name.starts_with("__") {
+    if !method.name.starts_with("__")
+        || crate::typecheck::magic::method_shape(&method.name).is_some()
+    {
         return;
     }
     if is_class {
@@ -198,7 +200,7 @@ fn check_special_method_name(
                 ),
             );
         }
-    } else if !matches!(method.name.as_str(), "__getitem" | "__setitem") {
+    } else {
         sema.decl_error(
             module,
             method.span,
@@ -294,7 +296,8 @@ fn build_method_sig(
     let ret = match &method.return_type {
         Some(ty) => sema.resolve_type(module, scope, ty, &env),
         None if method.block.is_some()
-            && !crate::check::CLASS_SPECIAL_METHODS.contains(&method.name.as_str()) =>
+            && !crate::check::CLASS_SPECIAL_METHODS.contains(&method.name.as_str())
+            && crate::typecheck::magic::method_shape(&method.name).is_none() =>
         {
             Ty::Unknown
         }
@@ -331,23 +334,33 @@ fn build_method_sig(
         }
     }
     let method_name = method.name.as_str();
-    if matches!(method_name, "__getitem" | "__setitem") {
-        let read = method_name == "__getitem";
-        let count = if read { 2 } else { 3 };
+    if let Some((arity, boolean)) = crate::typecheck::magic::method_shape(method_name) {
+        let (valid_return, returns) = if method_name == crate::typecheck::magic::SET_ITEM {
+            (matches!(ret, Ty::Void | Ty::Error), "必须返回 `void`")
+        } else if boolean {
+            (
+                matches!(ret, Ty::Boolean | Ty::Error),
+                "必须显式返回 `boolean`",
+            )
+        } else {
+            (
+                !matches!(ret, Ty::Void | Ty::Unknown),
+                "必须显式声明非 `void` 返回类型",
+            )
+        };
         if method.modifiers.is_static
+            || method.block.is_none()
             || !method.type_parameters.is_empty()
-            || params.len() != count
+            || params.len() != arity + 1
             || params.first().is_none_or(|param| param.name != "self")
             || params
                 .iter()
                 .any(|param| param.has_default || matches!(param.ty, Ty::Unknown | Ty::Void))
-            || (read == matches!(ret, Ty::Void))
+            || !valid_return
         {
-            sema.decl_error(module, method.span, if read {
-                "下标读方法必须是 `func __getitem(self, index: I) -> T`，且不能是 static、泛型或含默认值"
-            } else {
-                "下标写方法必须是 `func __setitem(self, index: I, value: T) -> void`，且不能是 static、泛型或含默认值"
-            });
+            sema.decl_error(module, method.span, format!(
+                "魔法方法 `{method_name}` 必须是有方法体的非泛型实例方法，声明 `self` 和 {arity} 个无默认值的显式形参，且{returns}"
+            ));
         }
     }
     let special_ret = match method_name {

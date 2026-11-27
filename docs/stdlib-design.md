@@ -44,8 +44,8 @@ std/                                        ← 标准库根（同时是 crate �
 | 模块 = 文件，`std:io` → `std/io.nov` | `design.md` §4.3 | 一个标准库模块就是一个 `.nov` 文件 |
 | `type` 别名不可跨模块导入 | `design.md` §4.4 | 跨模块共享的 API 一律用 class / struct 表达 |
 | 裸指针、指针算术、解引用只在 `unsafe` 内 | `design.md` §6 | 标准库内部要用 `unsafe` 包装，**用户侧不见 `unsafe`、不见 `T*`** |
-| struct 无继承、`==` 非法、无特殊方法 | `design.md` §8 | struct 只做值载体 |
-| 特殊方法仅 class 有（`__init`/`__destroy`/`__str`/`__enter`/`__exit`） | `design.md` §4.6.1 | 容器、资源类型是 class |
+| struct 无继承，可用魔法方法定义 `==` 等运算符 | `design.md` §4.10、§8 | struct 按值传递 |
+| 生命周期特殊方法仅 class 有（`__init`/`__destroy`/`__str`/`__enter`/`__exit`） | `design.md` §4.6.1 | 容器、资源类型是 class |
 | `std:` 不得使用不透明外部符号当**类型** | `docs/sema-coverage.md` M09 / `design.md` §4.3 | `std` 的**类型**必须由 `.nov` 声明并参与完整类型检查；只有**函数/全局**可以是 `extern`，且必须给出 `.nov` 声明 |
 | 不得凭空编造 API | `design.md` §4.3 | 本文之外的签名一律视为不存在 |
 | **标准库不含异常模块** | 异常目前是占位实现 | 标准库不依赖 `throw` / `catch`（§7） |
@@ -168,7 +168,7 @@ extern func novella_rt_string_byte_at(s: String, index: usize) -> u8;
   `(data, len)` 常量对后调用 `novella_rt_string_from_bytes`；是否改用编译期常量对
   （`Constant::StructValue` 直接构值，免一次调用）列 Q9。
 - **按值拷贝**：struct 赋值 / 传参复制的是 `data` 指针 + `len`，**不复制缓冲区**。
-  这意味着 `a = b` 后两者别名同一块内存；`__destroy` 不可用（struct 无特殊方法），
+  这意味着 `a = b` 后两者别名同一块内存；`__destroy` 不可用（struct 无生命周期特殊方法），
   `pri` 字段只有当标准库内部代码能访问。内存所有权与释放策略是 **Q8**，未定之前
   `std:string` 只能用于"字面量与临时值"场景。
 - **`==` 与 `+`**：`design.md` §8.5 规定 struct 不支持 `==`。`String` 需要开列名例外：
@@ -298,7 +298,7 @@ pub class Vector<T> {
     pub static func withCapacity(capacity: usize) -> Vector<T>;
     pub func length() -> usize;
     pub func __getitem(self, index: usize) -> T;        // 越界行为 Q3
-    pub func __setitem(self, index: usize, value: T) -> void;
+    pub func __setitem(self, index: usize, value: T);
     pub func push(value: T) -> void;
     pub func pop() -> T;
     pub func insert(index: usize, value: T) -> void;

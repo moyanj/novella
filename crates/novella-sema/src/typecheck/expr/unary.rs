@@ -1,5 +1,6 @@
 //! 一元运算、指针和局部槽位取址。
 use super::*;
+use crate::typecheck::{call, magic};
 
 pub(crate) fn check_unary(
     sema: &mut Sema,
@@ -26,6 +27,30 @@ pub(crate) fn check_unary(
     let operand_ty = check_expr(sema, ctx, operand);
     if let Some(slot) = address_slot {
         ctx.uninitialized.insert(slot);
+    }
+    let postfix = matches!(op, UnaryOp::PostIncrement | UnaryOp::PostDecrement);
+    let index_receiver = postfix
+        .then(|| {
+            let (receiver, _) = call::index_parts(operand)?;
+            sema.expression_types
+                .get(&(ctx.module, receiver.span()))
+                .filter(|ty| call::has_protocol_receiver(ty))
+                .cloned()
+        })
+        .flatten();
+    if postfix && index_receiver.is_none() {
+        crate::typecheck::unsafe_rules::check_lvalue_assignment(sema, ctx, operand);
+    }
+    if let Some(selected) = magic::unary(sema, op, &operand_ty) {
+        let result = selected.finish(sema, ctx, span, None);
+        if postfix {
+            magic::check_writeback(sema, ctx, span, &operand_ty, &result);
+            if let Some(receiver) = &index_receiver {
+                call::check_index_update(sema, ctx, receiver, span);
+            }
+            return operand_ty;
+        }
+        return result;
     }
     match op {
         // `-128` / `+5` 这类「字面量取符号」要保留未定型态：字面量的实际位宽由
@@ -85,22 +110,8 @@ pub(crate) fn check_unary(
             }
         }
         UnaryOp::PostIncrement | UnaryOp::PostDecrement => {
-            use crate::typecheck::call::{check_index_signature, index_parts, is_custom_index};
-            let overload = index_parts(operand).and_then(|(receiver, _)| {
-                sema.expression_types
-                    .get(&(ctx.module, receiver.span()))
-                    .filter(|ty| is_custom_index(sema, ty))
-                    .cloned()
-            });
-            if let Some(receiver) = overload {
-                if let Some(setter) = check_index_signature(sema, ctx, &receiver, "__setitem", span)
-                {
-                    crate::typecheck::unsafe_rules::check_index_update_types(
-                        sema, ctx, &receiver, &setter, span,
-                    );
-                }
-            } else if !is_lvalue(sema, ctx, operand) {
-                sema.type_error(ctx.module, operand.span(), "自增/自减需要可写的左值");
+            if let Some(receiver) = &index_receiver {
+                call::check_index_update(sema, ctx, receiver, span);
             }
             if let Ty::Pointer(inner) = &operand_ty {
                 require_unsafe(sema, ctx, span, "指针自增/自减");

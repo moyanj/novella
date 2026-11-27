@@ -1,9 +1,10 @@
 //! 赋值顺序、左值与复合运算。
 use super::*;
 use crate::typecheck::call::{
-    check_index_on, check_index_operand, check_index_signature, index_parts, index_signature,
-    is_custom_index,
+    check_index_on, check_index_set_on, check_index_update, has_protocol_receiver, index_parts,
+    protocol_method,
 };
+use crate::typecheck::magic;
 
 /// 赋值：左值检查（追加项 B：const 与导入符号只读）+ 兼容检查。
 pub(crate) fn check_assignment(
@@ -24,27 +25,25 @@ pub(crate) fn check_assignment(
     } else {
         None
     };
+    let mut protocol_receiver = None;
     let checked_index = if let Some((receiver, index)) = index_parts(target) {
         let receiver_ty = check_expr(sema, ctx, receiver);
-        if is_custom_index(sema, &receiver_ty) {
-            let ty = check_overloaded_assignment(
-                sema,
-                ctx,
-                &receiver_ty,
-                index,
-                op,
-                value,
-                early_value,
-                span,
-            );
-            record_index_place_type(sema, ctx, target, &ty);
-            return ty;
+        if has_protocol_receiver(&receiver_ty) {
+            if let Some(actual) = &early_value {
+                let ty =
+                    check_index_set_on(sema, ctx, &receiver_ty, index, value.span(), actual, span);
+                record_index_place_type(sema, ctx, target, &ty);
+                return ty;
+            }
+            protocol_receiver = Some(receiver_ty.clone());
         }
         Some(check_index_on(sema, ctx, receiver_ty, index, target.span()))
     } else {
         None
     };
-    check_lvalue_assignment(sema, ctx, target);
+    if protocol_receiver.is_none() {
+        check_lvalue_assignment(sema, ctx, target);
+    }
     let slot = if op == AssignOp::Assign {
         assigned
             .as_ref()
@@ -62,8 +61,19 @@ pub(crate) fn check_assignment(
     if let Some(slot) = slot {
         ctx.uninitialized.insert(slot);
     }
-    let mut value_ty =
-        early_value.unwrap_or_else(|| check_expr_with_hint(sema, ctx, value, &target_ty));
+    let mut selected = magic::compound(op).and_then(|(binary, method)| {
+        magic::compound_method(sema, &target_ty, method)
+            .or_else(|| magic::binary(sema, binary, &target_ty, false))
+    });
+    let mut value_ty = early_value.unwrap_or_else(|| match &selected {
+        Some(method) => method.check_argument(sema, ctx, value),
+        None => check_expr_with_hint(sema, ctx, value, &target_ty),
+    });
+    if selected.is_none()
+        && let Some((binary, _)) = magic::compound(op)
+    {
+        selected = magic::binary(sema, binary, &value_ty, true);
+    }
     if op == AssignOp::Assign
         && !crate::ty::ty_eq(&target_ty, &value_ty)
         && sema.record_dyn_conversion(ctx.module, value.span(), &target_ty, &value_ty)
@@ -86,13 +96,19 @@ pub(crate) fn check_assignment(
         }
         _ => {
             // 复合赋值 ≡ target = target <op> value，结果须能赋回
-            let result_ty = check_arithmetic_compound(sema, ctx, op, &target_ty, &value_ty, span);
-            if !result_ty.is_opaque() && !sema.is_assignable(&target_ty, &result_ty) {
-                sema.type_error(
-                    ctx.module,
-                    span,
-                    format!("复合赋值结果 `{result_ty}` 不能赋回 `{target_ty}`"),
-                );
+            let result_ty = if let Some(method) = selected {
+                let argument = if method.is_reversed() {
+                    (&target_ty, target.span())
+                } else {
+                    (&value_ty, value.span())
+                };
+                method.finish(sema, ctx, span, Some(argument))
+            } else {
+                check_arithmetic_compound(sema, ctx, op, &target_ty, &value_ty, span)
+            };
+            magic::check_writeback(sema, ctx, span, &target_ty, &result_ty);
+            if let Some(receiver) = &protocol_receiver {
+                check_index_update(sema, ctx, receiver, span);
             }
         }
     }
@@ -106,69 +122,6 @@ fn record_index_place_type(sema: &mut Sema, ctx: &BodyCtx, mut expr: &Expression
             break;
         };
         expr = inner;
-    }
-}
-
-#[allow(clippy::too_many_arguments)]
-fn check_overloaded_assignment(
-    sema: &mut Sema,
-    ctx: &mut BodyCtx,
-    receiver: &Ty,
-    index: &Expression,
-    op: AssignOp,
-    value: &Expression,
-    early_value: Option<Ty>,
-    span: Span,
-) -> Ty {
-    let setter = check_index_signature(sema, ctx, receiver, "__setitem", span);
-    if op == AssignOp::Assign {
-        let Some((key, write)) = setter
-            .as_ref()
-            .and_then(|sig| sig.params.get(1).zip(sig.params.get(2)))
-        else {
-            check_expr(sema, ctx, index);
-            return Ty::Error;
-        };
-        check_index_operand(sema, ctx, index, &key.ty);
-        let actual = early_value.expect("普通赋值先检查右侧");
-        if !sema.is_assignable(&write.ty, &actual) {
-            sema.type_error(
-                ctx.module,
-                value.span(),
-                format!("下标写入需要 `{}`，实为 `{actual}`", write.ty),
-            );
-        }
-        return write.ty.clone();
-    }
-    let read = check_index_on(sema, ctx, receiver.clone(), index, span);
-    if let Some(setter) = setter {
-        check_index_update_types(sema, ctx, receiver, &setter, span);
-    }
-    let rhs = check_expr_with_hint(sema, ctx, value, &read);
-    check_arithmetic_compound(sema, ctx, op, &read, &rhs, span);
-    read
-}
-
-pub(crate) fn check_index_update_types(
-    sema: &mut Sema,
-    ctx: &BodyCtx,
-    receiver: &Ty,
-    setter: &crate::ty::FunctionSig,
-    span: Span,
-) {
-    if let Some((_, getter)) = index_signature(sema, receiver, "__getitem")
-        && let (Some(read_key), Some(write_key), Some(write)) = (
-            getter.params.get(1),
-            setter.params.get(1),
-            setter.params.get(2),
-        )
-        && (!ty_eq(&read_key.ty, &write_key.ty) || !ty_eq(&getter.ret, &write.ty))
-    {
-        sema.type_error(
-            ctx.module,
-            span,
-            "下标复合赋值或自增/自减要求读写方法的下标类型和值类型一致",
-        );
     }
 }
 
@@ -217,12 +170,11 @@ fn lvalue_hint(sema: &Sema, ctx: &BodyCtx, expr: &Expression) -> Option<Ty> {
             Ty::Tuple(elements) => {
                 crate::typecheck::call::tuple_element_hint(&elements, index).cloned()
             }
-            ty if is_custom_index(sema, &ty) => index_signature(sema, &ty, "__setitem")?
+            ty => protocol_method(sema, &ty, magic::SET_ITEM)?
                 .1
                 .params
                 .get(2)
                 .map(|param| param.ty.clone()),
-            _ => None,
         },
         Expression::Unary {
             op: UnaryOp::DerefPointer,
@@ -264,12 +216,7 @@ pub(crate) fn check_arithmetic_compound(
         return Ty::Unknown;
     }
     match op {
-        AssignOp::PlusAssign => {
-            if sema.is_string_type(lhs) && sema.is_string_type(rhs) {
-                return lhs.clone();
-            }
-            check_arithmetic(sema, ctx, BinaryOp::Plus, lhs, rhs, span)
-        }
+        AssignOp::PlusAssign => check_arithmetic(sema, ctx, BinaryOp::Plus, lhs, rhs, span),
         AssignOp::MinusAssign => check_arithmetic(sema, ctx, BinaryOp::Minus, lhs, rhs, span),
         AssignOp::MultiplyAssign => check_arithmetic(sema, ctx, BinaryOp::Multiply, lhs, rhs, span),
         AssignOp::DivideAssign => check_arithmetic(sema, ctx, BinaryOp::Divide, lhs, rhs, span),
@@ -344,10 +291,8 @@ pub(crate) fn is_lvalue(sema: &mut Sema, ctx: &mut BodyCtx, expr: &Expression) -
                 .get(&(ctx.module, target.span()))
                 .cloned()
                 .or_else(|| lvalue_hint(sema, ctx, target));
-            if ty
-                .as_ref()
-                .is_some_and(|ty| sema.is_string_type(ty) || is_custom_index(sema, ty))
-            {
+            // 过程式下标没有地址；只有专门的读写路径能调用 setter。
+            if ty.as_ref().is_some_and(has_protocol_receiver) {
                 return false;
             }
             is_lvalue(sema, ctx, target)
@@ -363,7 +308,10 @@ pub(crate) fn is_lvalue(sema: &mut Sema, ctx: &mut BodyCtx, expr: &Expression) -
     }
 }
 /// 赋值目标的左值检查并给出诊断。
-pub(crate) fn check_lvalue_assignment(sema: &mut Sema, ctx: &mut BodyCtx, target: &Expression) {
+pub(crate) fn check_lvalue_assignment(sema: &mut Sema, ctx: &mut BodyCtx, mut target: &Expression) {
+    while let Expression::Paren { expr, .. } = target {
+        target = expr;
+    }
     // 先给出针对性诊断
     if let Expression::Identifier { name, span } = target {
         match sema.scopes.lookup(ctx.scope, name) {

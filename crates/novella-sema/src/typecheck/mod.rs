@@ -16,6 +16,7 @@ mod call;
 mod expr;
 mod flow;
 mod lambda;
+pub(crate) mod magic;
 mod matching;
 pub(crate) mod member;
 mod unsafe_rules;
@@ -189,7 +190,8 @@ pub(crate) fn check_method_body(
     block: &Block,
 ) -> Ty {
     let infer_return = method.return_type.is_none()
-        && !crate::check::CLASS_SPECIAL_METHODS.contains(&method.name.as_str());
+        && !crate::check::CLASS_SPECIAL_METHODS.contains(&method.name.as_str())
+        && magic::method_shape(&method.name).is_none();
     let global = sema.modules[module].global_scope;
     let fn_scope = sema.scopes.new_scope(Some(global), ScopeKind::Function);
     let mut ctx = BodyCtx::base(module, fn_scope);

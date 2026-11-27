@@ -1004,12 +1004,12 @@ Lambda           → check_lambda
 ### 8.7 二元运算、cast 与 unsafe 闸口（operators.rs）
 
 - `require_unsafe`（:5-13）：**唯一闸口**——`!ctx.in_unsafe` → `sema.unsafe_error("{what}是不安全操作，需要 `unsafe {{ }}` 块")`（NVL3004）。
-- `check_binary_with_hint`（:30-84）：对 `&&/||`（Boolean hint + constant_bool 短路）、`??`（rhs hint = lhs 或调用方 hint）下推。
-- `check_binary_operands`（:88-257）矩阵：
+- `check_binary_with_hint` 先处理 `&&/||`、`??` 的短路上下文，再由 `typecheck/magic.rs` 查找 class / struct 的正向、反向方法；记录调用选择供 HIR 使用。String 的拼接和内容相等也走这个入口。
+- `check_binary_operands` 是内建运算矩阵：
   - opaque 早期返回（比较/逻辑 → Boolean，算术 → Unknown）；
   - `&&/||` Boolean；`??` 左须 `is_nullable`，返回 lhs 不隐式解引用；
-  - `==/!=` 等：struct 禁比"struct 类型不支持 `==`/`!=` 比较"；
-  - 关系：数值或 String；`+`：字符串拼接或算术；`%`：同类型整数或浮点数；
+  - `==/!=` 等支持同型标量和引用比较；struct 没有内建相等或身份比较；
+  - 关系为数值比较；`+` 为算术；`%` 为同类型整数或浮点数；
   - 位运算：同宽整数"整数操作数位宽不一致"；移位返回 `concrete(lhs)`；
 - `check_arithmetic`（:259-328）：`void*` → "void* 不支持指针算术" Error；指针 ± 整数需 unsafe、整数 + 指针、指针 - 指针 → isize；`unify_numeric`（:330-344）不隐式数值转换；
 - `comparable`（:346-354）/ `unify_types`（:356-376）；

@@ -20,12 +20,5 @@ pub(crate) use type_defs::{
 };
 
 /// class 特殊方法清单（design.md §4.6.1：以 `__` 开头的特殊方法由 sema 登记）。
-pub(crate) const CLASS_SPECIAL_METHODS: &[&str] = &[
-    "__init",
-    "__destroy",
-    "__str",
-    "__enter",
-    "__exit",
-    "__getitem",
-    "__setitem",
-];
+pub(crate) const CLASS_SPECIAL_METHODS: &[&str] =
+    &["__init", "__destroy", "__str", "__enter", "__exit"];

@@ -4,7 +4,156 @@ use super::*;
 
 type WeakFieldTarget = (HirOperand, HirType, String, usize);
 
+/// 下标读改写共用同一个接收者和下标实参。
+pub(super) struct IndexPlaceTarget {
+    pub(super) receiver: HirOperand,
+    pub(super) receiver_ty: HirType,
+    pub(super) key: HirOperand,
+    span: Span,
+}
+
+/// 定位结果来自一次求值；weak 字段必须走字段指令，不能按裸载荷地址读写。
+pub(super) enum UpdatePlace {
+    Address(HirOperand),
+    WeakField(WeakFieldTarget),
+    Index(IndexPlaceTarget),
+}
+
+impl UpdatePlace {
+    pub(super) fn read(
+        &self,
+        builder: &mut BodyBuilder<'_>,
+        ty: &HirType,
+        block: &mut HirBlock,
+    ) -> Result<HirOperand, BuildError> {
+        Ok(match self {
+            Self::Address(address) => builder.read_address(address.clone(), ty, block),
+            Self::WeakField((target, target_ty, field, index)) => {
+                let dst = builder.fresh_local(ty.clone());
+                block.push(HirStmt::Instr(HirInstr::FieldLoad {
+                    target: target.clone(),
+                    target_ty: target_ty.clone(),
+                    field: field.clone(),
+                    index: *index,
+                    ty: ty.clone(),
+                    borrow: false,
+                    dst,
+                }));
+                HirOperand::Local(dst)
+            }
+            Self::Index(target) => {
+                let signature =
+                    builder.protocol_signature(&target.receiver_ty, "__getitem", target.span)?;
+                builder.emit_protocol_call(
+                    signature,
+                    vec![target.receiver.clone(), target.key.clone()],
+                    false,
+                    block,
+                )
+            }
+        })
+    }
+
+    pub(super) fn write(
+        self,
+        builder: &mut BodyBuilder<'_>,
+        value: HirOperand,
+        ty: HirType,
+        block: &mut HirBlock,
+    ) -> Result<(), BuildError> {
+        block.push(HirStmt::Instr(match self {
+            // 地址落点的类型由左值本身决定，写入与运算符无关。
+            Self::Address(address) => HirInstr::StoreIndirect { address, value, ty },
+            Self::WeakField((target, target_ty, field, index)) => HirInstr::FieldStore {
+                target,
+                target_ty,
+                field,
+                index,
+                value,
+                is_weak: true,
+            },
+            Self::Index(target) => {
+                // 写入是过程式协议，没有返回值。
+                let signature =
+                    builder.protocol_signature(&target.receiver_ty, "__setitem", target.span)?;
+                builder.emit_protocol_call(
+                    signature,
+                    vec![target.receiver, target.key, value],
+                    false,
+                    block,
+                );
+                return Ok(());
+            }
+        }));
+        Ok(())
+    }
+}
+
 impl BodyBuilder<'_> {
+    pub(super) fn update_place(
+        &mut self,
+        target: &Expression,
+        borrow: bool,
+        block: &mut HirBlock,
+    ) -> Result<UpdatePlace, BuildError> {
+        if let Some(receiver_ty) = self.overloaded_index_receiver(target)? {
+            let mut expr = target;
+            while let Expression::Paren { expr: inner, .. } = expr {
+                expr = inner;
+            }
+            let Expression::IndexAccess {
+                target: receiver,
+                index,
+                span,
+            } = expr
+            else {
+                unreachable!("已检查下标表达式")
+            };
+            let method = if borrow { "__setitem" } else { "__getitem" };
+            let signature = self.protocol_signature(&receiver_ty, method, *span)?;
+            return self
+                .build_protocol_index_place(
+                    receiver,
+                    index,
+                    receiver_ty,
+                    &signature.params[0],
+                    *span,
+                    block,
+                )
+                .map(UpdatePlace::Index);
+        }
+        match self.weak_assignment_field(target, block)? {
+            Some(field) => Ok(UpdatePlace::WeakField(field)),
+            None => self
+                .build_address_for_use(target, borrow, block)
+                .map(UpdatePlace::Address),
+        }
+    }
+
+    /// 基座与键各求值一次；struct 方法接收原槽位地址，以便 setter 修改它。
+    pub(super) fn build_protocol_index_place(
+        &mut self,
+        receiver: &Expression,
+        index: &Expression,
+        receiver_ty: HirType,
+        key_ty: &HirType,
+        span: Span,
+        block: &mut HirBlock,
+    ) -> Result<IndexPlaceTarget, BuildError> {
+        let receiver = if matches!(receiver_ty, HirType::Struct(..)) {
+            self.aggregate_address(receiver, block)?
+        } else {
+            self.build_expression(receiver, block)?
+        };
+        let key = self.build_call_argument(index, key_ty, block)?;
+        Ok(IndexPlaceTarget {
+            receiver,
+            receiver_ty,
+            key,
+            span,
+        })
+    }
+
     /// 这两种地址路径不会执行用户代码，也不会改写 RHS 的来源槽位。
     pub(super) fn noninterfering_assignment_target(&self, expr: &Expression) -> bool {
         match expr {
@@ -34,7 +183,7 @@ impl BodyBuilder<'_> {
     }
 
     /// 把局部变成存储地址，供字段链、取地址与赋值共用。
-    fn local_address(&mut self, local: LocalId, block: &mut HirBlock) -> HirOperand {
+    pub(super) fn local_address(&mut self, local: LocalId, block: &mut HirBlock) -> HirOperand {
         let ty = self.local_type(local);
         let dst = self.fresh_local(HirType::Pointer(Box::new(ty.clone())));
         block.push(HirStmt::Instr(HirInstr::LocalAddress { local, ty, dst }));
@@ -74,7 +223,7 @@ impl BodyBuilder<'_> {
     }
 
     /// weak 字段没有可暴露的 payload 指针槽位；赋值必须保留字段元数据。
-    pub(super) fn weak_assignment_field(
+    fn weak_assignment_field(
         &mut self,
         expr: &Expression,
         block: &mut HirBlock,

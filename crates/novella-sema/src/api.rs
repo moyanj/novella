@@ -259,6 +259,14 @@ pub enum FStringPart {
     Expression(novella_ast::expr::Expression),
 }
 
+/// 语义阶段选定的运算符方法。HIR 复用选择，不在单态化后重新派发。
+#[derive(Debug, Clone, Copy)]
+pub struct OperatorCall {
+    pub method: &'static str,
+    pub reversed: bool,
+    pub invert: bool,
+}
+
 /// 语义分析结果。
 ///
 /// 各字段都是**只读视图**：语义阶段内部状态（作用域树、符号表、类型注册表、
@@ -295,6 +303,8 @@ pub struct SemaResult {
     pub modules: ModuleOutput,
     /// 表达式级语义类型（键为 `(模块, span)`）
     pub expression_types: ExpressionTypes,
+    /// 已解析的隐式运算符调用，按表达式位置查询。
+    pub operator_calls: HashMap<(ModuleId, Span), OperatorCall>,
     /// 调用点的定型签名及泛型实例替换表，含尚待外层单态化的类型。
     pub call_instances: HashMap<(ModuleId, Span), crate::CallInstance>,
     /// 隐式或显式转换到拥有型动态 trait 的位置。
