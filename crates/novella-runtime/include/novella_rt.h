@@ -58,7 +58,8 @@ void* novella_rt_weak_upgrade(novella_rt_weak* weak);
 
 /* raw 分配保留分配失败返回空的行为；所有对象和控制块统一经过此入口。
  * 第一次 malloc 或非空 free 永久固定分配器，之后 setter 会 panic。
- * setter 与首次使用通过原子锁串行化；两个回调必须同时非空，且必须线程安全。
+ * setter 与首次使用通过原子锁串行化，并在锁内解析出最终入口；此后的每次
+ * malloc/free 只做一次 acquire 读取，不再取锁。两个回调必须同时非空，且必须线程安全。
  * 回调在锁外执行，可以重入 runtime；运行期不能替换，保证 free 始终配对同一分配器。
  * 未调用 setter 时使用平台 hooks。free(NULL) 无操作，也不会固定分配器。 */
 void* novella_rt_malloc(size_t size);

@@ -10,6 +10,12 @@ static bool allocator_fixed;
 static void* (*configured_alloc)(size_t);
 static void (*configured_free)(void*);
 
+/* 首次使用后在锁内解析一次最终入口，之后每次分配只做一次 acquire 读取。
+ * 两个入口在同一临界区内成对发布：看到 resolved_alloc 非空即意味着 resolved_free
+ * 也已发布（见 resolve_allocator 的说明）。 */
+static _Atomic(void* (*)(size_t)) resolved_alloc;
+static _Atomic(void (*)(void*)) resolved_free;
+
 /* weak 持有独立控制块；最后强引用释放载荷后，控制块仍允许安全判活。 */
 struct novella_rt_weak {
     _Atomic size_t strong;
@@ -58,6 +64,28 @@ static void increment(_Atomic size_t* count, unsigned code) {
         memory_order_relaxed));
 }
 
+/* 载荷清零：按字宽写，而不是逐字节 store。结构同 musl memset 的
+ * 「先对齐、再按字宽写主体、最后补尾」，只是对象已由 novella_rt_alloc 保证
+ * 至少 8 字节对齐，对齐循环通常零次。
+ * rt.c 以 -fno-builtin 构建，循环不会被折叠成 memset 调用；memory.c 的 memset
+ * 属于独立归档，managed 归档不能依赖它。 */
+static void zero_payload(void* object, size_t size) {
+    unsigned char* bytes = object;
+    while (size != 0 && ((uintptr_t)bytes & (sizeof(size_t) - 1)) != 0) {
+        *bytes++ = 0;
+        --size;
+    }
+    size_t* words = (size_t*)bytes;
+    size_t count = size / sizeof(size_t);
+    for (size_t index = 0; index < count; ++index) {
+        words[index] = 0;
+    }
+    bytes = (unsigned char*)(words + count);
+    for (size_t index = 0; index < size % sizeof(size_t); ++index) {
+        bytes[index] = 0;
+    }
+}
+
 void* novella_rt_alloc(size_t size,
                        size_t alignment,
                        novella_rt_destructor destroy) {
@@ -92,11 +120,7 @@ void* novella_rt_alloc(size_t size,
     control->destroy = destroy;
     atomic_init(&control->strong, 1);
     atomic_init(&control->weak, 1);
-    /* volatile 字节写禁止循环被识别成 libc memset。 */
-    volatile unsigned char* bytes = object;
-    for (size_t index = 0; index < payload_size; ++index) {
-        bytes[index] = 0;
-    }
+    zero_payload(object, payload_size);
     return object;
 }
 
@@ -180,27 +204,47 @@ void novella_rt_release(void* object) {
     novella_rt_weak_release(control);
 }
 
-void* novella_rt_malloc(size_t size) {
+/* 幂等地解析最终入口：配置过的 setter 优先，否则回落到平台 hooks。
+ * 两个指针在同一临界区内成对发布，空指针是「尚未解析」的唯一标记；进入临界区后
+ * 「resolved_alloc 非空」必然蕴含「resolved_free 也非空」，因此首轮之后就无需再加锁。 */
+static void resolve_allocator(void) {
     lock_allocator();
     allocator_fixed = true;
-    void* (*allocate)(size_t) = configured_alloc;
+    if (atomic_load_explicit(&resolved_alloc, memory_order_relaxed) == NULL) {
+        atomic_store_explicit(
+            &resolved_alloc,
+            configured_alloc != NULL ? configured_alloc : novella_platform_alloc,
+            memory_order_release);
+        atomic_store_explicit(
+            &resolved_free,
+            configured_free != NULL ? configured_free : novella_platform_free,
+            memory_order_release);
+    }
     unlock_allocator();
-    return allocate != NULL ? allocate(size) : novella_platform_alloc(size);
+}
+
+void* novella_rt_malloc(size_t size) {
+    void* (*allocate)(size_t) =
+        atomic_load_explicit(&resolved_alloc, memory_order_acquire);
+    if (allocate == NULL) {
+        resolve_allocator();
+        allocate = atomic_load_explicit(&resolved_alloc, memory_order_acquire);
+    }
+    /* 回调在锁外执行，因此可以在实现内部再次进入本文件。 */
+    return allocate(size);
 }
 
 void novella_rt_free(void* ptr) {
     if (ptr == NULL) {
         return;
     }
-    lock_allocator();
-    allocator_fixed = true;
-    void (*deallocate)(void*) = configured_free;
-    unlock_allocator();
-    if (deallocate != NULL) {
-        deallocate(ptr);
-    } else {
-        novella_platform_free(ptr);
+    void (*deallocate)(void*) =
+        atomic_load_explicit(&resolved_free, memory_order_acquire);
+    if (deallocate == NULL) {
+        resolve_allocator();
+        deallocate = atomic_load_explicit(&resolved_free, memory_order_acquire);
     }
+    deallocate(ptr);
 }
 
 void novella_rt_set_allocator(void* (*allocate)(size_t size),
