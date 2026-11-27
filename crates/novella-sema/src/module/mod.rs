@@ -213,6 +213,8 @@ impl FileLoader for OverlayLoader {
 
 mod loader;
 mod resolve_path;
+mod std_manifest;
 
 pub(crate) use loader::load_modules;
 pub(crate) use resolve_path::{NsResolution, ResolvedImport, resolve_import, resolve_import_path};
+pub(crate) use std_manifest::{StdManifest, Tier};

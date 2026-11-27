@@ -44,7 +44,13 @@ sourceElement:
 
 // ====================== 模块系统 ======================
 // 对应 `ImportItem`：`ImportKind::Named`（from 形态）与 `ImportKind::Namespace`（import 形态）
-moduleImport: fromImport | directImport;
+//
+// `pub` / `pkg` 前缀写入 `ImportItem::visibility`：`pub` 表示重导出（等价 Rust 的
+// `pub use`），下游模块可作为导入目标；`pkg` 合法但不改变可导入性；`pri` 在
+// parser 处直接报错（导入符号默认不可见）。
+moduleImport: visibilityPrefix? (fromImport | directImport);
+
+visibilityPrefix: Pub | Pkg;
 
 // 具名导入：`from "mod" import a, b as c;`
 fromImport: From StringLiteral Import importSpecifier (',' importSpecifier)* SemiColon;

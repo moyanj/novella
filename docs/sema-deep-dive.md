@@ -1326,7 +1326,7 @@ pub(crate) struct BodyCtx {
 8. **`float_literal_fits` 注释与常量出入**：`f16` 溢出阈值为 65520，`float_range_text` 给出最大有限值 65504——以代码常量为准。
 9. **`build_function_sig` 重名**：重名时先定义者接收后定义者签名（Phase 1 已报重复定义，属恢复行为）。
 10. **`lookup_member_chain` 的 `static_only` 参数当前未用**（`_static_only`），静态过滤实际在各调用点（check_static_member / check_static_access）完成。
-11. **`register_reference` 对具名导入不支持再导出链**：`NamedImport{target: Some}` 只追一层目标模块符号，不递归追导入。
+11. **~~`register_reference` 对具名导入不支持再导出链~~（已修复）**：`record_reference` 现经 `resolve_exported` 追整条再导出链；链在命名空间 / Exception 根 / 成环处终止时不再回退到导入绑定本身，避免跳转落到 `import` 语句。
 
 ### 11.4 扩展阅读路径
 

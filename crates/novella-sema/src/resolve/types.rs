@@ -1,5 +1,6 @@
 //! 类型解析、别名展开与 trait bounds。
 use super::*;
+use crate::resolve::{ExportTarget, resolve_exported};
 // ---------- 类型解析（TypeExpr -> Ty） ----------
 
 impl Sema {
@@ -223,6 +224,7 @@ impl Sema {
                     return Ty::Error;
                 };
                 self.record_reference(module, span, &target_symbol);
+                // 单跳可见性；链上后续每一层由 type_from_symbol 内的再导出解析检查
                 if !target_symbol.is_importable() {
                     self.error(module, span, format!("类型 `{name}` 不是 `pub`"));
                     return Ty::Error;
@@ -242,7 +244,7 @@ impl Sema {
         args: Vec<Ty>,
         type_env: &HashMap<String, Ty>,
     ) -> Ty {
-        // 具名导入：跟到目标模块的符号再判定
+        // 具名导入：沿再导出链跟到终极定义符号再判定
         if let SymbolKind::NamedImport {
             target: Some(target_module),
             imported,
@@ -251,9 +253,22 @@ impl Sema {
             if self.modules[*target_module].load_failed {
                 return Ty::Error;
             }
-            let key = (*target_module, imported.clone());
+            let key = match resolve_exported(self, *target_module, imported) {
+                Ok(ExportTarget::Symbol(symbol)) if matches!(symbol.kind, SymbolKind::Type) => {
+                    (symbol.module, symbol.name.clone())
+                }
+                Ok(ExportTarget::ExceptionRoot) => return crate::ty::exception_type(),
+                Ok(_) => {
+                    self.error(use_module, span, format!("`{imported}` 不是类型"));
+                    return Ty::Error;
+                }
+                Err(error) => {
+                    self.error(use_module, span, error.message());
+                    return Ty::Error;
+                }
+            };
             let Some(def) = self.type_defs.get(&key).cloned() else {
-                self.error(use_module, span, format!("`{imported}` 不是类型"));
+                self.error(use_module, span, format!("`{imported}` 的类型定义缺失"));
                 return Ty::Error;
             };
             return self.type_from_def(use_module, span, key, def, args, type_env);

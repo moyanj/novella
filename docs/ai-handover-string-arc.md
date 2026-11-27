@@ -7,7 +7,7 @@
 ## 目标与边界
 
 - `std:String` 是标准库中的动态 class，拥有 UTF-16 缓冲区；字符串算法尽量由 Novella 标准库实现，runtime 只提供通用对象与引用计数机制。
-- 默认加载 `std:site`；入口 `@no_std;` 禁用标准库加载及 site 注入，不禁用通用 runtime 或显式 extern ABI。
+- 默认加载 `std:site`；入口 `@no_std;` 关闭 site 注入，并按 `std/modules.toml` 只允许 core / alloc 层标准库模块，不禁用通用 runtime 或显式 extern ABI。
 - 标准库 String 通过 `SemaResult.string_type` 的模块与名义类型身份识别，不以 `string.nov` basename 判断。用户同名 class 不触发特殊降级。
 - 本轮未实现异常展开、异步状态机、动态派发、捕获闭包、泛型单态化或完整标准库容器；相关路径明确报错。
 
@@ -37,8 +37,8 @@ weak 字段不可取裸地址，避免把控制块 handle 当成载荷指针。�
 - 普通/raw 字符串物化为 UTF-16 String；`+`、`+=`、内容比较和索引调用标准库方法。
 - `length()` 与索引按 UTF-16 码元，索引结果为只读 `u16`；`charCount()` 统计代理对形成的码点；`slice()` 按码元切片，允许孤立代理码元。
 - f-string 使用 sema 保存的已检查插值 AST，HIR 不重新解析插值。支持整数、boolean、f32/f64、String 和 class `__str`；不增加格式说明符。
-- 浮点格式化由标准库调用 C11 `strfromd` 固定 ABI，f32 使用 9 位、f64 使用 17 位有效数字；当前原生目标是 Linux x86-64，依赖 libc 对该符号的支持。
-- `b"..."` 为独立 `u8[]`，支持 no_std；普通字符串字面量在 no_std 下是只读 UTF-16 静态指针，不分配、不触发 ARC。数组载荷包含长度与连续元素，尺寸/对齐由 LLVM TargetData 计算，索引越界 trap；裸指针索引仍遵循 unsafe 契约。
+- 浮点格式化由标准库调用 C11 `strfromd` 固定 ABI，f32 使用 9 位、f64 使用 17 位有效数字；当前原生目标是 Linux x86-64，依赖 libc 对该符号的支持。无浮点目标通过 `@cfg(target_has_float)` 整体裁掉该方法与 extern 声明。
+- `b"..."` 为独立 `u8[]`，支持 no_std；未导入 `std:string` 时，no_std 的普通字符串字面量是只读 UTF-16 静态指针，不分配、不触发 ARC；导入后与常规模式一致。数组载荷包含长度与连续元素，尺寸/对齐由 LLVM TargetData 计算，索引越界 trap；裸指针索引仍遵循 unsafe 契约。
 - class new 展开字段默认初值及构造默认实参，求值使用定义模块环境。
 
 ## 实现入口

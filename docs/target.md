@@ -24,7 +24,7 @@ novella 的目标体系对齐 rustc 的形状：目标由一份 JSON 描述文�
 | `opt-level` | 默认优化级别（`0`/`1`/`2`/`3`/`s`） | 缺省（等同 `0`） | 缺省（等同 `0`） |
 | `runtime` | `managed` / `none` | `managed` | `none` |
 | `has-float` | 是否允许浮点 | `true` | `false` |
-| `requires-no-std` | 是否强制 `@no_std;` + `@no_main;` | `false` | `true` |
+| `requires-no-std` | 是否强制 `@no_std;`（或更强的 `@no_alloc;`）+ `@no_main;` | `false` | `true` |
 | `emit` | 发射后端；缺省表示只作描述、不能生成代码 | `x86_64-linux` | `x86_64-bare` |
 | `linker` / `linker-flavor` / `linker-args` | 链接器命令、风格与固定参数 | 缺省 / `clang` / `[]` | `ld.lld` / `lld` / `-m elf_x86_64 --static …` |
 | `is-like-linux` / `is-like-bare` / `is-like-msvc` | 链接行为类比 | linux | bare |

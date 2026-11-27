@@ -91,6 +91,7 @@ pub enum ImportKind {
     },
 }
 
+/// 导入声明（对应文法 `moduleImport`，可选 `(Pub | Pkg)?` 可见性前缀）。
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Spanned)]
 pub struct ImportItem {
     /// 原始路径字面量
@@ -101,6 +102,9 @@ pub struct ImportItem {
     pub path: String,
     /// 导入变体
     pub kind: ImportKind,
+    /// 声明处可见性：`Some(Public)` 表示重导入（对其他模块可再导入，
+    /// 等价 Rust 的 `pub use`）；`None` 为模块私有（不重导出）
+    pub visibility: Option<Scope>,
     /// 整条导入语句覆盖的源码区间
     pub span: Span,
 }

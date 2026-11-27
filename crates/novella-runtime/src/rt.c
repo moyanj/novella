@@ -39,6 +39,11 @@ static _Noreturn void fail(unsigned code) {
     __builtin_trap();
 }
 
+/* 标准库的致命错误出口；与 runtime 内部错误共用平台 panic hook。 */
+_Noreturn void novella_rt_abort(void) {
+    fail(NOVELLA_RT_STD_ABORT);
+}
+
 static void lock_allocator(void) {
     while (atomic_flag_test_and_set_explicit(&allocator_lock, memory_order_acquire)) {
         /* 仅保护短暂配置，不在持锁期间调用平台或用户代码。 */

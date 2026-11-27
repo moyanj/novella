@@ -496,6 +496,45 @@ fn d_08_import_prefix() {
     assert_eq!(import.path, "novella.std");
 }
 
+/// 重导入：`pub` / `pkg` 可用于修饰导入（`pub` 表示重导出），`pri` 被拒绝。
+#[test]
+fn import_visibility_prefix() {
+    use novella_ast::program::Scope;
+
+    // 无前缀：不重导出
+    let result = parse_clean("from \"a\" import b;");
+    let Some(Item::Import(import)) = result.program.items.first() else {
+        panic!("期望 import，实际：{:?}", result.program.items);
+    };
+    assert_eq!(import.visibility, None);
+
+    // `pub from ... import ...`：重导出
+    let result = parse_clean("pub from \"a\" import b;");
+    let Some(Item::Import(import)) = result.program.items.first() else {
+        panic!("期望 import，实际：{:?}", result.program.items);
+    };
+    assert_eq!(import.visibility, Some(Scope::Public));
+    // span 从 `pub` 起算
+    assert_eq!(import.span.start, 0);
+
+    // `pkg import "m";`：保留可见性但不改变可导入性
+    let result = parse_clean("pkg import \"m\";");
+    let Some(Item::Import(import)) = result.program.items.first() else {
+        panic!("期望 import，实际：{:?}", result.program.items);
+    };
+    assert_eq!(import.visibility, Some(Scope::Package));
+
+    // `pri` 导入明确报错
+    let result = parse("pri from \"a\" import b;");
+    assert!(
+        messages(&result)
+            .iter()
+            .any(|message| message.contains("导入语句不能声明为 `pri`")),
+        "期望 pri 导入被拒绝，实际：{:?}",
+        messages(&result)
+    );
+}
+
 // ---------- E 类：规范拍板 ----------
 
 /// E-03：类型位唯一箭头是 `->`，`=>` 在类型位报诊断；

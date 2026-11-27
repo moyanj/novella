@@ -11,7 +11,8 @@
 - `build_hir(&SemaResult)` 遇到词法、语法、语义或加载错误即返回 `BuildError`，不跳过坏模块、不返回残缺程序。
 - `AnalyzedModule.required_for_codegen` 标记入口经显式导入、名字及类型依赖可达的模块。
   默认 `std:site` 环境中未使用的模块仍执行完整 sema 检查，但不降级、不链接；
-  显式导入即保留其模块，不因符号未使用而跳过。入口 `@no_std;` 则直接关闭标准库加载。
+  显式导入即保留其模块，不因符号未使用而跳过。入口 `@no_std;` 只允许 core / alloc 层
+  标准库模块参与加载，`@no_alloc;`（隐含 `@no_std;`）只允许 core 层。
 - 字符串名义身份来自 `SemaResult.string_type`，不以文件 basename 推断；`HirInstr::StringLiteral`
   保存解码后的 UTF-16 码元。构造、内容运算、索引、格式化及原生发射已接通。
 - 类型读取 sema 的 `expression_types`、`annotation_types`、`declaration_types`，键均为 `(ModuleId, Span)`。分别提供表达式、已解析注解、变量最终绑定类型与顶层函数签名。HIR 不重新解析类型名或用初始化表达式冒充声明类型。

@@ -1,0 +1,30 @@
+# 标准库分层清单：编译器据此判断 @no_std / @no_alloc 环境可导入哪些模块。
+#
+# tier = "core"  无堆、无 OS/libc 调用；@no_std 与 @no_alloc 始终可用
+# tier = "alloc" 需要托管运行时的分配器；@no_std 下要求 --runtime managed，
+#                @no_alloc（隐含 @no_std）下禁止
+# tier = "std"   需要宿主 libc / OS；@no_std / @no_alloc 下禁止导入
+#
+# requires-float 表示模块声明了浮点类型或运算，裸机等无浮点目标不能导入。
+
+[module.math]
+tier = "core"
+requires-float = true
+
+[module.mem]
+tier = "core"
+
+[module.bits]
+tier = "core"
+
+[module.ffi]
+tier = "alloc"
+
+[module.string]
+tier = "alloc"
+
+[module.io]
+tier = "std"
+
+[module.site]
+tier = "std"

@@ -1,0 +1,37 @@
+// 字节级内存操作。core 层：不分配、不依赖 OS 服务。
+// 符号在 hosted 目标由 libc 提供，裸机目标由始终链接的 libnovella_support 归档提供。
+extern func memcpy(dst: void*, src: void*, len: usize) -> void*;
+extern func memmove(dst: void*, src: void*, len: usize) -> void*;
+extern func memset(dst: void*, value: i32, len: usize) -> void*;
+extern func memcmp(left: void*, right: void*, len: usize) -> i32;
+
+// 复制不重叠的区间。
+pub func copy(dst: u8*, src: u8*, len: usize) {
+    unsafe {
+        memcpy(dst as void*, src as void*, len);
+    }
+}
+
+// 复制允许重叠的区间（源区间会被先读到临时位置再写出）。
+pub func move(dst: u8*, src: u8*, len: usize) {
+    unsafe {
+        memmove(dst as void*, src as void*, len);
+    }
+}
+
+// 用同一个字节填充区间。
+pub func fill(dst: u8*, value: u8, len: usize) {
+    unsafe {
+        memset(dst as void*, value as i32, len);
+    }
+}
+
+// 比较两段等长字节，返回 -1 / 0 / 1。
+pub func compare(left: u8*, right: u8*, len: usize) -> i32 {
+    unsafe {
+        let order = memcmp(left as void*, right as void*, len);
+        if (order < 0) { return -1; }
+        if (order > 0) { return 1; }
+        return 0;
+    }
+}

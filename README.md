@@ -198,7 +198,7 @@ if (p == null) { }             // 判空与指针比较是安全操作
 | 表达式 | 链式访问、lambda（含异步）、`is` 类型测试、`as` 转换、`??`、三元、全部复合赋值 |
 | 内存 | class 自动 ARC（原子引用计数、弱引用、归零析构）、struct 值语义与递归释放、运行时对象头 |
 | 执行模型 | `async func` + `await`（单线程协作式调度）、`throw` / `catch` / `finally` 异常模型 |
-| 编译器指令 | `@cfg(...)` 条件编译、`@no_std`、`@no_main`、`@export("symbol")` |
+| 编译器指令 | `@cfg(...)` 条件编译、`@no_std`、`@no_alloc`、`@no_main`、`@export("symbol")` |
 | 工具链 | CLI（`new` / `build` / `check` / `compile`）、LSP、VS Code 扩展、增量编译缓存 |
 
 ## 快速上手
@@ -319,7 +319,7 @@ Novella 仍处于**开发预览之前**的阶段。`check` 通过、能降级到
 - ✅ 标量与指针、struct 值语义、class 自动 ARC 与弱引用、字符串的标准库实现、外部 FFI 与 C 回调；
 - ✅ 裸机 x86-64 目标与 `@export` 入口；
 - 🚧 浮点的完整代码生成，元组、泛型单态化、容器、闭包、异常展开（unwind）、async 状态机；
-- 🚧 标准库仍在建设中，目前提供 `std:string`、`std:math`、`std:io`（`print` / `println`）与默认环境 `std:site`。
+- 🚧 标准库仍在建设中，目前提供 `std:string`、`std:math`、`std:mem`、`std:bits`、`std:io`（`print` / `println`）与默认环境 `std:site`；`@no_std` 下可导入 core / alloc 层模块，`@no_alloc` 下只保留 core 层。
 
 请不要把本文的语言设计草案当作已实现能力的承诺——两者以代码为唯一事实源。
 

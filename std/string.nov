@@ -1,8 +1,10 @@
 // UTF-16 字符串。系统边界为分配、释放、终止与 C11 固定 ABI 浮点格式化。
+// 浮点格式化依赖 libc 的 strfromd；无浮点目标（裸机）整体裁掉这三个成员。
+@cfg(target_has_float)
 extern func strfromd(buffer: u8*, size: usize, format: u8*, value: f64) -> i32;
 extern func novella_rt_malloc(size: usize) -> void*;
 extern func novella_rt_free(data: void*);
-extern func abort();
+extern func novella_rt_abort();
 
 pub class String {
     pri data: u16*;
@@ -31,7 +33,7 @@ pub class String {
         result.len = digits;
         unsafe {
             result.data = novella_rt_malloc(digits * 2) as u16*;
-            if (result.data == null) { abort(); return null; }
+            if (result.data == null) { novella_rt_abort(); return null; }
             remaining = value;
             let index = digits;
             while (index > 0) {
@@ -56,14 +58,17 @@ pub class String {
     }
 
     // g 格式有效数字：f32 用 9 位、f64 用 17 位；包含负零、inf 和 nan。
+    @cfg(target_has_float)
     pub static func fromFloat32(value: f32) -> String {
         return String.formatFloat(value as f64, true);
     }
 
+    @cfg(target_has_float)
     pub static func fromFloat64(value: f64) -> String {
         return String.formatFloat(value, false);
     }
 
+    @cfg(target_has_float)
     pri static func formatFloat(value: f64, single: boolean) -> String {
         unsafe {
             let format = novella_rt_malloc(6) as u8*;
@@ -71,7 +76,7 @@ pub class String {
             if (format == null or buffer == null) {
                 novella_rt_free(format);
                 novella_rt_free(buffer);
-                abort();
+                novella_rt_abort();
                 return null;
             }
             format[0] = 37;
@@ -90,7 +95,7 @@ pub class String {
             novella_rt_free(format);
             if (count < 0 or count >= 64) {
                 novella_rt_free(buffer);
-                abort();
+                novella_rt_abort();
                 return null;
             }
             let result = new String();
@@ -98,7 +103,7 @@ pub class String {
             result.data = novella_rt_malloc(result.len * 2) as u16*;
             if (result.data == null) {
                 novella_rt_free(buffer);
-                abort();
+                novella_rt_abort();
                 return null;
             }
             let index: usize = 0;
@@ -122,7 +127,7 @@ pub class String {
 
     pub func codeUnitAt(self, index: usize) -> u16 {
         if (index >= this.len) {
-            unsafe { abort(); }
+            unsafe { novella_rt_abort(); }
             return 0;
         }
         unsafe { return this.data[index]; }
@@ -174,12 +179,12 @@ pub class String {
 
     pub func concat(self, other: String) -> String {
         if (other == null) {
-            unsafe { abort(); }
+            unsafe { novella_rt_abort(); }
             return null;
         }
         let limit: usize = ((-1 as isize) as usize) / 2;
         if (this.len > limit or other.len > limit - this.len) {
-            unsafe { abort(); }
+            unsafe { novella_rt_abort(); }
             return null;
         }
         let result = new String();
@@ -188,7 +193,7 @@ pub class String {
         unsafe {
             result.data = novella_rt_malloc(result.len * 2) as u16*;
             if (result.data == null) {
-                abort();
+                novella_rt_abort();
                 return null;
             }
             let index: usize = 0;
@@ -207,7 +212,7 @@ pub class String {
 
     pub func slice(self, start: usize, length: usize) -> String {
         if (start > this.len or length > this.len - start) {
-            unsafe { abort(); }
+            unsafe { novella_rt_abort(); }
             return null;
         }
         let result = new String();
@@ -216,7 +221,7 @@ pub class String {
         unsafe {
             result.data = novella_rt_malloc(length * 2) as u16*;
             if (result.data == null) {
-                abort();
+                novella_rt_abort();
                 return null;
             }
             let index: usize = 0;

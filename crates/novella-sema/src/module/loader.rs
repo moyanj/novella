@@ -6,10 +6,11 @@ use std::path::{Path, PathBuf};
 use novella_ast::program::{ImportItem, Item, Program};
 use novella_core::Span;
 use novella_core::diagnostic::Diagnostic;
+use novella_core::target::RuntimeMode;
 use novella_parser::ParserInput;
 
 use super::resolve_path::find_crate_root;
-use super::{FileLoader, Module, ModuleId, ResolvedImport, resolve_import};
+use super::{FileLoader, Module, ModuleId, ResolvedImport, StdManifest, Tier, resolve_import};
 
 /// Phase 0：从入口文件起按 worklist 加载全部可达模块。
 ///
@@ -30,6 +31,20 @@ pub(crate) fn load_modules(
     let mut worklist = vec![(entry.to_path_buf(), loader.module_key(entry))];
     // 独立检查裸机依赖模块时继承工程环境，不能因文件未写入口指令而装载宿主标准库。
     let mut no_std = options.module_only && options.build_spec.requires_no_std;
+    // `@no_alloc` 只能由入口指令开启；裸机 runtime=none 已在分层判定中拒绝 alloc 层。
+    let mut no_alloc = false;
+    // 标准库分层清单：决定 @no_std 环境可导入哪些 std: 模块。经 loader 读取，
+    // 使清单自动成为构建缓存的输入。
+    let (std_manifest, manifest_errors) = match options.std_root.as_deref() {
+        Some(root) => {
+            let (manifest, errors) = StdManifest::load(loader, root);
+            (Some(manifest), errors)
+        }
+        None => (None, Vec::new()),
+    };
+    for message in manifest_errors {
+        global_diagnostics.push(Diagnostic::error(message));
+    }
 
     while let Some((path, key)) = worklist.pop() {
         if loader.is_cancelled() {
@@ -115,24 +130,38 @@ pub(crate) fn load_modules(
         // cfg 在声明收集和导入扫描之前生效，关闭的声明不参与名称解析。
         let cfg_errors = crate::cfg::configure(&mut program, &options.cfg);
         // 在入口第一次解析后决定默认环境，避免 @no_std 仍读取标准库文件。
+        // `@no_alloc` 比 `@no_std` 更强：隐含 `no_std`，并额外禁止 alloc 层模块。
         let mut directive_errors = Vec::new();
         let mut seen_no_std = false;
+        let mut seen_no_alloc = false;
         program.items.retain(|item| {
             let Item::Directive(directive) = item else {
                 return true;
             };
-            if directive.name != "no_std" {
-                return true;
-            }
+            // 只处理入口环境指令；其余指令留给语义检查给出诊断。
+            let seen = match directive.name.as_str() {
+                "no_std" => &mut seen_no_std,
+                "no_alloc" => &mut seen_no_alloc,
+                _ => return true,
+            };
+            let directive_text = format!("@{}", directive.name);
             let error = if id != 0 {
-                Some("@no_std 只能在入口模块中作为独立指令使用")
+                Some(format!("{directive_text} 只能在入口模块中作为独立指令使用"))
             } else if !directive.tokens.is_empty() {
-                Some("@no_std 不接受参数，请使用 @no_std;")
-            } else if seen_no_std {
-                Some("入口模块不能重复声明 @no_std")
+                Some(format!(
+                    "{directive_text} 不接受参数，请使用 {directive_text};"
+                ))
+            } else if *seen {
+                Some(format!("入口模块不能重复声明 {directive_text}"))
             } else {
-                seen_no_std = true;
-                no_std = true;
+                *seen = true;
+                match directive.name.as_str() {
+                    "no_std" => no_std = true,
+                    _ => {
+                        no_alloc = true;
+                        no_std = true;
+                    }
+                }
                 None
             };
             if let Some(message) = error {
@@ -141,14 +170,13 @@ pub(crate) fn load_modules(
             // 保留入口标记，供语义产物与 HIR 传递入口模式。
             true
         });
-        if id == 0 {
-            if no_std {
-                options.std_root = None;
-            } else if let Some(std_root) = &options.std_root {
-                // 预导入 site.nov 模块
-                let site = std_root.join("site.nov");
-                worklist.push((site.clone(), loader.module_key(&site)));
-            }
+        if id == 0
+            && !no_std
+            && let Some(std_root) = &options.std_root
+        {
+            // 预导入 site.nov 模块
+            let site = std_root.join("site.nov");
+            worklist.push((site.clone(), loader.module_key(&site)));
         }
         let mut module = Module {
             source,
@@ -181,8 +209,12 @@ pub(crate) fn load_modules(
             })
             .collect();
         for import in &imports {
-            if no_std && import.prefix.as_deref() == Some("std") {
-                module.error(import.span, "@no_std 环境不能导入标准库模块");
+            if no_std
+                && import.prefix.as_deref() == Some("std")
+                && let Some(message) =
+                    std_import_denial(std_manifest.as_ref(), import, options, no_alloc)
+            {
+                module.error(import.span, message);
                 continue;
             }
             // crate 根懒查找（仅 `@:` 需要）；以规范化键为基准，避免相对路径
@@ -216,4 +248,69 @@ pub(crate) fn load_modules(
     // 恢复 id 顺序（worklist 为栈，加载顺序与 id 无关，但入口保持 0：
     // 入口先入队，且 by_path 在弹出时登记，故入口必为 id 0）
     (modules, global_diagnostics, by_path)
+}
+
+/// `@no_std` / `@no_alloc` 下 `std:` 导入的分层判定；返回 `Some(诊断)` 表示不允许导入。
+fn std_import_denial(
+    manifest: Option<&StdManifest>,
+    import: &ImportItem,
+    options: &crate::AnalysisOptions,
+    no_alloc: bool,
+) -> Option<String> {
+    // 诊断文本指出实际生效的那条指令：`@no_alloc` 隐含 `@no_std`，但更严格。
+    let env = if no_alloc { "@no_alloc" } else { "@no_std" };
+    let allowed = if no_alloc { "core" } else { "core / alloc" };
+    // 编译器内建的 Exception 根不属于标准库分层体系，维持既有拒绝语义。
+    if import.path == "exception" {
+        return Some(format!("{env} 环境不能导入标准库模块 `std:exception`"));
+    }
+    let Some(manifest) = manifest else {
+        return Some(format!(
+            "{env} 环境需要标准库清单判断 `std:{}` 的层级，但 std_root 下缺少 modules.toml",
+            import.path
+        ));
+    };
+    if !manifest.present() {
+        return Some(format!(
+            "{env} 环境需要标准库清单判断 `std:{}` 的层级，但 std_root 下缺少 modules.toml",
+            import.path
+        ));
+    }
+    let Some(info) = manifest.module(&import.path) else {
+        return Some(format!(
+            "标准库清单未声明模块 `std:{}`，{env} 环境不能导入未分层的模块",
+            import.path
+        ));
+    };
+    match info.tier() {
+        Tier::Core => {}
+        // `@no_alloc` 不接受任何分配器依赖，运行时是否托管都不放行。
+        Tier::Alloc if no_alloc => {
+            return Some(format!(
+                "`std:{}` 属于 alloc 层，{env} 环境只能导入 {allowed} 层模块",
+                import.path
+            ));
+        }
+        Tier::Alloc if options.build_target.runtime != RuntimeMode::None => {}
+        Tier::Alloc => {
+            return Some(format!(
+                "`std:{}` 属于 alloc 层，{env} 环境需要托管运行时（--runtime managed）",
+                import.path
+            ));
+        }
+        Tier::Std => {
+            return Some(format!(
+                "`std:{}` 属于 {} 层，{env} 环境只能导入 {allowed} 层模块",
+                import.path,
+                Tier::Std.name()
+            ));
+        }
+    }
+    if info.requires_float() && !options.build_spec.has_float {
+        return Some(format!(
+            "`std:{}` 需要支持浮点的目标，当前目标不支持浮点",
+            import.path
+        ));
+    }
+    None
 }

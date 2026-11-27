@@ -19,6 +19,8 @@ use crate::ty::{
 
 mod collect;
 mod imports;
+mod reexport;
 mod types;
 pub(crate) use collect::*;
 pub(crate) use imports::*;
+pub(crate) use reexport::*;

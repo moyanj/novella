@@ -68,15 +68,15 @@ pub(crate) fn check_module(sema: &mut Sema, module: ModuleId) {
             Item::DirectiveBlock {
                 directive, span, ..
             } => {
-                let message = if directive.name == "no_std" {
-                    "@no_std 不能用于指令块，请在入口模块中使用 @no_std;"
-                } else {
-                    "该编译器指令尚未实现，不能完成语义检查"
+                let message = match directive.name.as_str() {
+                    "no_std" => "@no_std 不能用于指令块，请在入口模块中使用 @no_std;",
+                    "no_alloc" => "@no_alloc 不能用于指令块，请在入口模块中使用 @no_alloc;",
+                    _ => "该编译器指令尚未实现，不能完成语义检查",
                 };
                 sema.type_error(module, *span, message);
             }
             Item::Directive(directive)
-                if matches!(directive.name.as_str(), "no_main" | "no_std") => {}
+                if matches!(directive.name.as_str(), "no_main" | "no_std" | "no_alloc") => {}
             Item::Directive(directive) => {
                 sema.type_error(module, directive.span, "该编译器指令尚未实现")
             }

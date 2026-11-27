@@ -1,0 +1,66 @@
+// 无堆、无 OS 依赖的整数位运算工具（core 层，纯 Novella 实现）。
+
+// 1 的个数。
+pub func popcount(value: u64) -> u32 {
+    let remaining: u64 = value;
+    let count: u32 = 0;
+    while (remaining != 0) {
+        count += (remaining & 1) as u32;
+        remaining >>= 1;
+    }
+    return count;
+}
+
+// 高位连续 0 的个数；0 返回 64。
+pub func leadingZeros(value: u64) -> u32 {
+    let remaining: u64 = value;
+    let count: u32 = 0;
+    while (count < 64) {
+        let shift: u64 = (63 - count) as u64;
+        if (((remaining >> shift) & 1) == 1) {
+            return count;
+        }
+        count += 1;
+    }
+    return 64;
+}
+
+// 低位连续 0 的个数；0 返回 64。
+pub func trailingZeros(value: u64) -> u32 {
+    if (value == 0) {
+        return 64;
+    }
+    let remaining: u64 = value;
+    let count: u32 = 0;
+    while ((remaining & 1) == 0) {
+        remaining >>= 1;
+        count += 1;
+    }
+    return count;
+}
+
+// 是否为 2 的幂（0 不是）。
+pub func isPowerOfTwo(value: u64) -> boolean {
+    if (value == 0) {
+        return false;
+    }
+    return (value & (value - 1)) == 0;
+}
+
+// 循环左移；位移量按 64 取模。
+pub func rotateLeft(value: u64, amount: u32) -> u64 {
+    let shift: u64 = (amount % 64) as u64;
+    if (shift == 0) {
+        return value;
+    }
+    return (value << shift) | (value >> (64 - shift));
+}
+
+// 循环右移；位移量按 64 取模。
+pub func rotateRight(value: u64, amount: u32) -> u64 {
+    let shift: u64 = (amount % 64) as u64;
+    if (shift == 0) {
+        return value;
+    }
+    return (value >> shift) | (value << (64 - shift));
+}

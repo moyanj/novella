@@ -105,10 +105,27 @@ pub fn analyze_with_options(
     // Phase 0：模块加载（含词法 / 语法分析）
     let (modules, global_diagnostics, module_by_path) =
         module::load_modules(loader, entry, &mut sema.scopes, &mut options);
+    // 入口模块声明的入口环境指令；带参数 / 位置不对的形态已在加载阶段报错，
+    // 这里只认合法的独立无参形态。
+    let entry = modules.first();
+    let entry_declares = |name: &str| {
+        entry.is_some_and(|module| {
+            module.program.items.iter().any(|item| {
+                matches!(
+                    item,
+                    novella_ast::program::Item::Directive(directive)
+                        if directive.name == name && directive.tokens.is_empty()
+                )
+            })
+        })
+    };
+    sema.no_alloc = entry_declares("no_alloc");
     // module_only 不拥有工程入口指令，但裸机模块仍继承禁止标准库的分析环境。
+    // `@no_alloc` 隐含 `@no_std`：同样不注入 site，且只允许 core 层标准库模块。
     sema.no_std = options.module_only && options.build_target.is_bare_metal()
-        || modules.first().is_some_and(|module| module.program.items.iter().any(|item| matches!(item, novella_ast::program::Item::Directive(d) if d.name == "no_std" && d.tokens.is_empty())));
-    sema.no_main = modules.first().is_some_and(|module| module.program.items.iter().any(|item| matches!(item, novella_ast::program::Item::Directive(d) if d.name == "no_main" && d.tokens.is_empty())));
+        || entry_declares("no_std")
+        || sema.no_alloc;
+    sema.no_main = entry_declares("no_main");
     sema.std_root = options.std_root;
     sema.modules = modules;
     sema.global_diagnostics = global_diagnostics;
@@ -122,14 +139,44 @@ pub fn analyze_with_options(
             }
             resolve::collect_module(&mut sema, id);
         }
-        // Phase 2a：绑定导入符号
-        for id in 0..sema.modules.len() {
+        // Phase 2a：绑定导入符号。
+        //
+        // `pub` 重导入让导入符号本身成为其他模块的导入目标，而模块下标顺序
+        // 不代表依赖顺序，因此单遍绑定看不到整条链：目标模块的全局作用域在
+        // Phase 1 已建立，但其中的具名导入要等它自己绑定后才可见。
+        //
+        // 故按「轮转至无进展」收敛，上限为模块数 + 1（每轮至少新增一条绑定
+        // 才继续）。中间轮次只跳过、不报诊断，收敛后统一复核（见下）。
+        let mut waited = false;
+        for _ in 0..=sema.modules.len() {
             if loader.is_cancelled() {
                 return false;
             }
-            resolve::bind_imports(&mut sema, id);
+            let mut progressed = false;
+            for id in 0..sema.modules.len() {
+                if loader.is_cancelled() {
+                    return false;
+                }
+                // 返回「本轮是否有导入因目标尚未就绪而跳过」。首轮不报错的关键在于：
+                // 目标模块的全局作用域在 Phase 1 已建好，但其中的具名导入要等该
+                // 模块自己执行 bind_imports 之后才可见，因此链头必须在后轮回填。
+                if resolve::bind_imports(&mut sema, id) {
+                    progressed = true;
+                }
+            }
+            waited |= progressed;
+            if !progressed {
+                break;
+            }
         }
-        resolve::bind_site_imports(&mut sema);
+        // 轮转收敛后仍未绑定的导入才是真的缺失（拼错 / 目标未导出）
+        if waited {
+            resolve::report_unresolved_imports(&mut sema);
+        }
+        // `@no_std` 不注入默认环境；即使标准库目录仍在，也不能把 site 绑定带进用户模块。
+        if !sema.no_std {
+            resolve::bind_site_imports(&mut sema);
+        }
         // Phase 2b：构建类型注册表（字段 / 方法签名）
         for id in 0..sema.modules.len() {
             if loader.is_cancelled() {
@@ -222,6 +269,7 @@ pub fn analyze_with_options(
         build_spec: sema.build_spec,
         no_main: sema.no_main,
         no_std: sema.no_std,
+        no_alloc: sema.no_alloc,
         exports: sema.exports,
         string_type,
         fstrings: sema.fstrings,

@@ -179,9 +179,15 @@ not 恰有一个参数；all/any 可为空（分别为 true/false）。所有参
 #### 禁用标准库指令（2026-11-21）
 
 入口模块可声明一次独立的 `@no_std;`，对本次编译的整个导入闭包生效。
-指令在入口解析后、默认环境加载前处理；不读取标准库文件，不注入 `std:site`，
-也不把标准库模块送入 HIR 或链接阶段。显式 `std:` 导入（包括 `std:exception`）报错。
+指令在入口解析后、默认环境加载前处理；不注入 `std:site`。标准库按 `std/modules.toml`
+分为 core / alloc / std 三层，此模式下只允许导入 core 与 alloc 层：alloc 要求托管运行时，
+std 层导入与 `std:exception` 报错。
 依赖模块不能声明此指令；指令不接受参数，不能修饰声明或指令块。
+
+`@no_alloc;` 是更强的一档：它隐含 `@no_std;` 的全部语义，并额外拒绝 alloc 层模块，
+导入范围只剩 core 层（`std:math`、`std:mem`、`std:bits`）。同样只能在入口模块声明一次、
+不接受参数、不能修饰声明或指令块；它与 `@no_std;` 同时出现合法，重复声明同一指令报错。
+该指令只约束标准库分层导入，不改变目标启动代码、`--runtime` 的托管对象能力或显式 `extern`。
 
 ```novella
 @no_std;
@@ -191,9 +197,11 @@ func main() -> int {
 }
 ```
 
-该模式下没有默认的 `String` / `string`；普通和 raw 字符串字面量降为只读 UTF-16 静态指针，f-string 仍需要标准库而报错；
-字节字面量 `b"..."` 仍按 `u8[N]` 做语义检查（`N` 为解码后字节数）。`@no_std` 仅禁用 Novella 标准库，
-不改变目标平台的启动代码、C 链接驱动或显式用户 `extern` 声明。
+未导入 `std:string` 时没有默认的 `String` / `string`（`@no_alloc;` 下必然如此）：普通和 raw
+字符串字面量降为只读 UTF-16 静态指针，f-string 报错。显式导入 `std:string`（alloc 层，需托管运行时）后，字面量与 f-string
+的行为和常规模式一致。字节字面量 `b"..."` 仍按 `u8[N]` 做语义检查（`N` 为解码后字节数）。
+`@no_std` 只关闭默认环境与 std 层模块，不改变目标平台的启动代码、C 链接驱动或显式用户
+`extern` 声明；分层列表见 [std/README.md](../std/README.md)。
 
 #### 裸机入口与导出
 
@@ -206,12 +214,14 @@ void 边界，拒绝泛型、async、extern、聚合和托管值。链接名字�
 ### 4.3 导入
 
 ```
+moduleImport: visibilityPrefix? (fromImport | directImport);
+visibilityPrefix: Pub | Pkg;
 fromImport: From StringLiteral Import importSpecifier (',' importSpecifier)* SemiColon;
 directImport: Import StringLiteral SemiColon;
 importSpecifier: identifier (As identifier)?;      // `as` 写本地名
 ```
 
-AST：`ImportItem { raw_path, prefix, path, kind }`；
+AST：`ImportItem { raw_path, prefix, path, kind, visibility }`；
 `ImportKind::Named { specifiers }`（`from ... import a, b as c`）与
 `ImportKind::Namespace { local_alias }`（`import "mod"`）。
 
@@ -240,6 +250,28 @@ from "std:exception" import ValueError, ZeroDivisionError;
 - 与 `importSpecifier` 的 `as`（本地重命名）互不冲突：`xxx:` 作用于**路径**，
   `as` 作用于**符号**。
 
+#### 4.3.1.1 重导入（`pub` 重导出）
+
+导入语句可带可见性前缀，**`pub` 表示重导出**（等价 Rust 的 `pub use`）：
+
+```
+pub from "base" import make;   // base 的 make 也成为本模块的导出符号
+pub import "mod";              // 命名空间导入同样可重导出
+```
+
+- `ImportItem.visibility = Some(Scope::Public)` 即重导出，`None`（无前缀）为私有不重导出；
+- `pkg` 允许书写并原样保存，但**不改变**跨模块可导入性（`is_importable()` 仍只认 `Public`）；
+  `pri` 无意义，parser 直接报「导入语句不能声明为 `pri`：导入符号默认不可见，重导出请用 `pub`」；
+- 重导出可**多层**：`a` 重导出 `b` 的名字、`b` 又重导出 `c` 的名字，下游经 `a` 仍可导入。
+  解析链条统一由 `novella-sema` 的 `resolve_exported` 完成（`resolve/reexport.rs`），
+  除第一层外每一跳都要求 `pub`；成环时报「导入的再导出链存在循环」；
+- 具名导入经 `as` 改名后，下游只能看到**别名**（不隐式透传原名）；
+- 类型别名暂不支持 `pub`（文法未提供可见性修饰），也不随导入被重导出。
+
+由于导入符号本身可能成为其他模块的导入目标，导入绑定按**轮转至收敛**的方式执行
+（`analysis.rs` Phase 2a）：模块下标顺序不代表依赖顺序，中间轮次跳过「目标尚未就绪」
+的导入，收敛后由 `report_unresolved_imports` 统一报真正的缺失与非 `pub` 错误。
+
 #### 4.3.2 模块语义（已确认，sema 第一期落地）
 
 - **模块 = 文件**：路径段按 `/` 映射目录，末段自动补 `.nov` 扩展名；
@@ -247,7 +279,8 @@ from "std:exception" import ValueError, ZeroDivisionError;
 - **装载模型**：从入口文件出发按导入闭包装载（worklist），**允许循环
   导入**——先全量装载并收集顶层声明，再统一绑定导入与检查模块体；
 - **可见性**：仅显式 `pub` 的顶层符号可被其他模块导入（无 `pub` 默认
-  模块私有）；导入到本地的符号**只读**（不可赋值）；
+  模块私有），`pub` 重导入的符号同样可导入（见 §4.3.1.1）；导入到本地的符号
+  **只读**（不可赋值）；
 - **同名冲突**：导入绑定名与本地顶层符号重名、或两条导入引入同名绑定时
   报错（不允许隐式覆盖）；
 - **`std`**：标准库符号登记为**外部符号**（类型未知、调用不查实参），

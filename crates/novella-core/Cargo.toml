@@ -6,4 +6,4 @@ license.workspace = true
 
 [dependencies]
 serde.workspace = true
-toml = "1.1.8"
+toml.workspace = true

@@ -1,6 +1,8 @@
 //! 值与类型符号查询。
 use super::*;
 
+use crate::resolve::{ExportTarget, resolve_exported};
+
 /// 标识符：查作用域链，取符号的值类型。
 pub(crate) fn check_identifier(sema: &mut Sema, ctx: &mut BodyCtx, name: &str, span: Span) -> Ty {
     let Some(symbol) = sema.scopes.lookup(ctx.scope, name).cloned() else {
@@ -61,12 +63,17 @@ pub(crate) fn value_type_of_symbol(
         }
         SymbolKind::NamedImport { target, imported } => match target {
             Some(target_module) => {
-                // 沿导入链取目标符号（不支持再导出链，直接取目标模块全局符号）
-                match sema.global_scope_symbol(target_module, &imported) {
-                    Some(target_symbol) => {
-                        value_type_of_symbol(sema, ctx, target_symbol, name, span)
+                // 沿再导出链取终极定义（`pub` 重导入可多层，禁止只读一跳）
+                match resolve_exported(sema, target_module, &imported) {
+                    Ok(ExportTarget::Symbol(target_symbol)) => {
+                        value_type_of_symbol(sema, ctx, *target_symbol, name, span)
                     }
-                    None => Ty::Error, // 加载失败已在读取阶段诊断
+                    // 链末端才暴露成环 / 非 pub / 缺失，诊断落在使用点
+                    Err(error) => {
+                        sema.type_error(ctx.module, span, error.message());
+                        Ty::Error
+                    }
+                    Ok(_) => Ty::Error, // 命名空间 / Exception 根在绑定阶段已拒绝作值使用
                 }
             }
             None => {
@@ -92,26 +99,31 @@ pub(crate) fn value_type_of_symbol(
         }
     }
 }
-/// 将「类型位置的标识符」解析为注册表键（具名导入转发到目标模块的原始名）。
+/// 将「类型位置的标识符」解析为注册表键（具名导入沿再导出链转发到原始定义）。
 pub(crate) fn type_key_of_name(
     sema: &Sema,
     scope: ScopeId,
     name: &str,
 ) -> Option<(ModuleId, String)> {
-    match sema.scopes.lookup(scope, name) {
-        Some(Symbol {
+    match sema.scopes.lookup(scope, name)? {
+        Symbol {
             kind: SymbolKind::Type,
             module,
             ..
-        }) => Some((*module, name.to_string())),
-        Some(Symbol {
+        } => Some((*module, name.to_string())),
+        Symbol {
             kind:
                 SymbolKind::NamedImport {
                     target: Some(target),
                     imported,
                 },
             ..
-        }) => Some((*target, imported.clone())),
+        } => match resolve_exported(sema, *target, imported) {
+            Ok(ExportTarget::Symbol(symbol)) if matches!(symbol.kind, SymbolKind::Type) => {
+                Some((symbol.module, symbol.name.clone()))
+            }
+            _ => None,
+        },
         _ => None,
     }
 }
@@ -127,23 +139,19 @@ pub(crate) fn classify_identifier(sema: &Sema, ctx: &BodyCtx, name: &str) -> Opt
         SymbolKind::Type => IdentTarget::Type,
         SymbolKind::NamespaceImport { target } => IdentTarget::Namespace(target),
         SymbolKind::NamedImport {
-            target,
+            target: Some(target_module),
             ref imported,
         } => {
-            // 具名导入的类型也可用于静态成员路径
-            if let Some(target_module) = target
-                && matches!(
-                    sema.global_scope_symbol(target_module, imported),
-                    Some(Symbol {
-                        kind: SymbolKind::Type,
-                        ..
-                    })
-                )
-            {
-                return Some(IdentTarget::Type);
+            // 具名导入的类型也可用于静态成员路径（沿再导出链判定终极种类）
+            match resolve_exported(sema, target_module, imported) {
+                Ok(ExportTarget::Symbol(symbol)) if matches!(symbol.kind, SymbolKind::Type) => {
+                    IdentTarget::Type
+                }
+                Ok(ExportTarget::Namespace(target)) => IdentTarget::Namespace(target),
+                _ => IdentTarget::Value,
             }
-            IdentTarget::Value
         }
+        SymbolKind::NamedImport { target: None, .. } => IdentTarget::Value,
         _ => IdentTarget::Value,
     })
 }

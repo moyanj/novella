@@ -114,6 +114,102 @@ fn expression_types_are_exported_as_type_views() {
     );
 }
 
+/// 重导入（`pub` 重导出）支持多层链，且以 `pub` 控制可见性。
+#[test]
+fn reexport_chain_resolves_through_public_imports() {
+    let dir = PathBuf::from("/novella-mem-reexport");
+    let main = dir.join("main.nov");
+    let mid = dir.join("mid.nov");
+    let base = dir.join("base.nov");
+    let mut overlay = HashMap::new();
+    overlay.insert(
+        base.clone(),
+        "pub func make() -> int {\n    return 1;\n}\n".to_owned(),
+    );
+    // mid 用 `pub` 重导出 base 的符号
+    overlay.insert(mid.clone(), "pub from \"base\" import make;\n".to_owned());
+    overlay.insert(
+        main.clone(),
+        "from \"mid\" import make;\n\nfunc main() {\n    let x = make();\n}\n".to_owned(),
+    );
+    let mut loader = OverlayLoader::new(overlay);
+    let result = analyze_with(&mut loader, &main);
+    let errors: Vec<&str> = result
+        .diagnostics
+        .modules
+        .iter()
+        .flat_map(|m| m.diagnostics.iter().map(|d| d.message.as_str()))
+        .collect();
+    assert!(errors.is_empty(), "多层 pub 重导出应通过，实际：{errors:?}");
+}
+
+/// 未标 `pub` 的导入不能被下游再导入（非重导出）。
+#[test]
+fn private_import_is_not_reexported() {
+    let dir = PathBuf::from("/novella-mem-noreexport");
+    let main = dir.join("main.nov");
+    let mid = dir.join("mid.nov");
+    let base = dir.join("base.nov");
+    let mut overlay = HashMap::new();
+    overlay.insert(
+        base.clone(),
+        "pub func make() -> int {\n    return 1;\n}\n".to_owned(),
+    );
+    overlay.insert(mid.clone(), "from \"base\" import make;\n".to_owned());
+    overlay.insert(
+        main.clone(),
+        "from \"mid\" import make;\n\nfunc main() {\n    let x = make();\n}\n".to_owned(),
+    );
+    let mut loader = OverlayLoader::new(overlay);
+    let result = analyze_with(&mut loader, &main);
+    let messages: Vec<String> = result
+        .diagnostics
+        .modules
+        .iter()
+        .flat_map(|m| m.diagnostics.iter().map(|d| d.message.clone()))
+        .collect();
+    // 私有导入在中间模块的全局作用域里以不可导入形态存在，最终复核报「不是 pub」
+    assert!(
+        messages
+            .iter()
+            .any(|message| message.contains("不是 `pub`")),
+        "未重导出的导入应被拒绝，实际：{messages:?}"
+    );
+}
+
+/// 重导出链成环时报错而不是挂起。
+///
+/// 两个模块互相 `pub from` 导入了对方并不存在的名字：绑定轮转收敛后，
+/// 复核阶段必须报告缺失，且分析整体能结束（不能死循环）。
+#[test]
+fn reexport_cycle_is_reported() {
+    let dir = PathBuf::from("/novella-mem-cycle");
+    let main = dir.join("main.nov");
+    let a = dir.join("a.nov");
+    let b = dir.join("b.nov");
+    let mut overlay = HashMap::new();
+    overlay.insert(a.clone(), "pub from \"b\" import x;\n".to_owned());
+    overlay.insert(b.clone(), "pub from \"a\" import x;\n".to_owned());
+    overlay.insert(
+        main.clone(),
+        "from \"a\" import x;\n\nfunc main() {\n    let y = x;\n}\n".to_owned(),
+    );
+    let mut loader = OverlayLoader::new(overlay);
+    let result = analyze_with(&mut loader, &main);
+    let messages: Vec<&str> = result
+        .diagnostics
+        .modules
+        .iter()
+        .flat_map(|m| m.diagnostics.iter().map(|d| d.message.as_str()))
+        .collect();
+    assert!(
+        messages
+            .iter()
+            .any(|message| message.contains("中不存在符号 `x`")),
+        "成环链应报缺失，实际：{messages:?}"
+    );
+}
+
 /// 递归收集 AST 中全部表达式 span（含嵌套在语句里的）。
 ///
 /// 与 `typecheck` 的遍历保持同一套递归字段（AST 新增递归字段时本函数

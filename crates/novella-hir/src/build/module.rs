@@ -109,7 +109,7 @@ pub(super) fn build_module(
             Item::Struct(_) | Item::Class(_) | Item::Trait(_) => {}
             // 指令语句 / 指令块：作用关系已在 sema 侧处理
             Item::Directive(directive)
-                if matches!(directive.name.as_str(), "no_main" | "no_std") => {}
+                if matches!(directive.name.as_str(), "no_main" | "no_std" | "no_alloc") => {}
             Item::Directive(directive) => {
                 return Err(BuildError::at(BuildErrorKind::Unimplemented {
                     node: "compiler directive",

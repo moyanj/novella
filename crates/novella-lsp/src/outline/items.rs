@@ -1,7 +1,8 @@
 //! 顶层遍历：import / trait / class / struct / 函数 / 指令块。
 
 use novella_ast::program::{
-    ClassItem, CompilerDirective, FunctionItem, ImportItem, ImportKind, StructItem, TraitItem,
+    ClassItem, CompilerDirective, FunctionItem, ImportItem, ImportKind, Scope, StructItem,
+    TraitItem,
 };
 
 use super::name::signature_text;
@@ -52,20 +53,27 @@ impl Walker<'_> {
     }
 
     /// 导入：命名空间导入出一个符号，具名导入每个说明符各出一个符号。
+    ///
+    /// `pub` 导入是重导出，详情里额外标注 `pub`，与普通导入区分。
     pub(crate) fn import(&mut self, import: &ImportItem, parent: Option<usize>) {
+        let modifier = match import.visibility {
+            Some(Scope::Public) => "pub ",
+            Some(Scope::Package) => "pkg ",
+            Some(Scope::Private) | None => "",
+        };
         match &import.kind {
             ImportKind::Named { specifiers, .. } => {
                 for specifier in specifiers {
                     // 别名的名字区间落在 specifier 内：优先定位本地别名，找不到再定位原名
                     let local = specifier.local.as_deref().unwrap_or(&specifier.imported);
-                    let detail = Some(format!("from \"{}\"", import.path));
+                    let detail = Some(format!("{modifier}from \"{}\"", import.path));
                     self.push(local, OutlineKind::Import, specifier.span, parent, detail);
                 }
             }
             ImportKind::Namespace {
                 local_alias, span, ..
             } => {
-                let detail = Some(format!("module \"{}\"", import.path));
+                let detail = Some(format!("{modifier}module \"{}\"", import.path));
                 self.push(local_alias, OutlineKind::Import, *span, parent, detail);
             }
         }

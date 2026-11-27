@@ -3,11 +3,25 @@ use super::*;
 use crate::symbol::ScopeKind;
 // ---------- Phase 2a：导入绑定 ----------
 
-/// 绑定一个模块的全部导入符号到其全局作用域。
-pub(crate) fn bind_imports(sema: &mut Sema, module: ModuleId) {
+/// 绑定一个模块的全部导入符号到其全局作用域（单次尝试，可重复执行）。
+///
+/// 返回 `true` 表示该模块本轮有导入因「目标尚未就绪」而跳过：目标模块的全局
+/// 作用域在 Phase 1 已建立，但其中的具名导入要等它自己的 [`bind_imports`] 执行
+/// 后才可见，而模块下标顺序不代表依赖顺序（`pub` 重导出可任意成链）。调用方
+/// 据此进入下一轮（见 `analysis.rs` Phase 2a 的轮转），直到没有模块再等待。
+///
+/// 中间轮的失败一律只登记为待定，不产生诊断：真正的缺失（拼错、目标模块没有
+/// 该符号）与非 `pub` 目标由收敛后的 [`report_unresolved_imports`] 统一报告，
+/// 避免「还没轮到」被误判成「不存在」。
+///
+/// 已绑定的名字直接跳过，因此重复执行是幂等的。
+pub(crate) fn bind_imports(sema: &mut Sema, module: ModuleId) -> bool {
     if sema.modules[module].syntax_failed {
-        return;
+        return false;
     }
+    // 本轮跳过、留给后续轮次的具名导入。只用于判断「是否还需继续轮转」，
+    // 具体诊断在收敛后由 `report_unresolved_imports` 依最终状态给出。
+    let mut deferred = false;
     let scope = sema.modules[module].global_scope;
     let imports: Vec<novella_ast::program::ImportItem> = sema.modules[module]
         .program
@@ -46,10 +60,14 @@ pub(crate) fn bind_imports(sema: &mut Sema, module: ModuleId) {
                 if import.prefix.as_deref() == Some("std") && import.path == "exception" {
                     sema.exception_imports.insert((module, local_alias.clone()));
                 }
+                if sema.scopes.lookup_local(scope, local_alias).is_some() {
+                    continue;
+                }
                 let symbol = Symbol {
                     name: local_alias.clone(),
                     kind: SymbolKind::NamespaceImport { target },
-                    visibility: None,
+                    // 可见性来自导入声明的 `pub` / `pkg` 前缀（None = 不重导出）
+                    visibility: import.visibility,
                     span: import.span,
                     name_span: import.span,
                     module,
@@ -89,18 +107,19 @@ pub(crate) fn bind_imports(sema: &mut Sema, module: ModuleId) {
                             .global_scope_symbol(&sema.scopes, &specifier.imported)
                         {
                             None => {
-                                sema.error(
-                                    module,
-                                    specifier.span,
-                                    format!(
-                                        "模块 '{}' 中不存在符号 `{}`",
-                                        sema.modules[target_module].path.display(),
-                                        specifier.imported
-                                    ),
-                                );
+                                // 目标模块可能尚未执行自己的导入绑定（模块下标顺序
+                                // 不代表依赖顺序）：留到下一轮，只有轮转收敛后仍
+                                // 查不到才算真的缺失
+                                deferred = true;
                                 continue;
                             }
                             Some(symbol) if !symbol.is_importable() => {
+                                // 目标非 `pub`：若它本身是尚未绑定的具名导入
+                                // （仍在等待自己那一跳），下一轮可能变可见，先跳过
+                                if matches!(symbol.kind, SymbolKind::NamedImport { .. }) {
+                                    deferred = true;
+                                    continue;
+                                }
                                 sema.error(
                                     module,
                                     specifier.span,
@@ -108,6 +127,7 @@ pub(crate) fn bind_imports(sema: &mut Sema, module: ModuleId) {
                                 );
                                 continue;
                             }
+                            // 目标可见：正常绑定，本轮不再等待
                             Some(_) => {}
                         }
                     }
@@ -115,18 +135,95 @@ pub(crate) fn bind_imports(sema: &mut Sema, module: ModuleId) {
                         NsTarget::Module(m) => Some(m),
                         NsTarget::ExceptionBuiltin => None,
                     };
+                    // 已绑定过（前几轮已成功绑定）：跳过而不是重复定义
+                    {
+                        let local_name = specifier
+                            .local
+                            .clone()
+                            .unwrap_or_else(|| specifier.imported.clone());
+                        if sema.scopes.lookup_local(scope, &local_name).is_some() {
+                            continue;
+                        }
+                    }
                     let symbol = Symbol {
                         name: local,
                         kind: SymbolKind::NamedImport {
                             target: target_module,
                             imported: specifier.imported.clone(),
                         },
-                        visibility: None,
+                        // 可见性来自导入声明的 `pub` / `pkg` 前缀（None = 不重导出）
+                        visibility: import.visibility,
                         span: specifier.span,
                         name_span: specifier.span,
                         module,
                     };
                     define_import(sema, module, scope, symbol);
+                }
+            }
+        }
+    }
+    deferred
+}
+
+/// 轮转收敛后复核仍有导入未绑定成功的模块：仍缺失的符号在此报错。
+///
+/// 这样「目标模块还没轮到绑定」与「目标模块根本没有该符号」不会互相污染，
+/// 中间轮次静默跳过，只有最终状态才决定诊断。
+pub(crate) fn report_unresolved_imports(sema: &mut Sema) {
+    for module in 0..sema.modules.len() {
+        if sema.modules[module].syntax_failed {
+            continue;
+        }
+        let scope = sema.modules[module].global_scope;
+        let imports: Vec<novella_ast::program::ImportItem> = sema.modules[module]
+            .program
+            .items
+            .iter()
+            .filter_map(|item| match item {
+                Item::Import(import) => Some(import.clone()),
+                _ => None,
+            })
+            .collect();
+        for import in &imports {
+            let Ok(resolution) = resolve_import_path(sema, module, import) else {
+                continue;
+            };
+            let NsResolution::Module(target_module) = resolution else {
+                continue;
+            };
+            if sema.modules[target_module].load_failed {
+                continue;
+            }
+            let ImportKind::Named { specifiers, .. } = &import.kind else {
+                continue;
+            };
+            for specifier in specifiers {
+                let local = specifier
+                    .local
+                    .clone()
+                    .unwrap_or_else(|| specifier.imported.clone());
+                // 已绑定则无事可报
+                if sema.scopes.lookup_local(scope, &local).is_some() {
+                    continue;
+                }
+                match sema.modules[target_module]
+                    .global_scope_symbol(&sema.scopes, &specifier.imported)
+                {
+                    None => sema.error(
+                        module,
+                        specifier.span,
+                        format!(
+                            "模块 '{}' 中不存在符号 `{}`",
+                            sema.modules[target_module].path.display(),
+                            specifier.imported
+                        ),
+                    ),
+                    Some(symbol) if !symbol.is_importable() => sema.error(
+                        module,
+                        specifier.span,
+                        format!("符号 `{}` 不是 `pub`，无法导入", specifier.imported),
+                    ),
+                    Some(_) => {}
                 }
             }
         }

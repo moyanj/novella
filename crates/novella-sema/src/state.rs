@@ -32,6 +32,8 @@ pub(crate) struct Sema {
     pub build_spec: novella_target::TargetSpec,
     pub no_main: bool,
     pub no_std: bool,
+    /// 入口模块关闭整层标准库导入（`@no_alloc`，隐含 `no_std`）。
+    pub no_alloc: bool,
     pub exports: HashMap<(ModuleId, Span), String>,
     pub exhaustive_matches: HashSet<(ModuleId, Span)>,
     pub return_tasks: HashMap<(ModuleId, String), check::returns::ReturnTask>,
@@ -132,6 +134,7 @@ impl Sema {
             .expect("内置目标描述必须有效"),
             no_main: false,
             no_std: false,
+            no_alloc: false,
             exports: HashMap::new(),
             exhaustive_matches: HashSet::new(),
             return_tasks: HashMap::new(),
@@ -160,11 +163,17 @@ impl Sema {
         if span.start >= span.end {
             return;
         }
+        // 沿再导出链追到终极定义（可多层 `pub` 重导入）；断裂时退回本地绑定
         let chased = match &symbol.kind {
             SymbolKind::NamedImport {
                 target: Some(target),
                 imported,
-            } => self.global_scope_symbol(*target, imported),
+            } => match crate::resolve::resolve_exported(self, *target, imported) {
+                Ok(crate::resolve::ExportTarget::Symbol(symbol)) => Some(*symbol),
+                // 链在命名空间 / Exception 根 / 成环处终止：引用仍指向原始定义位置，
+                // 不要退回到导入绑定本身（否则跳转落到 import 语句）
+                Ok(_) | Err(_) => None,
+            },
             _ => None,
         };
         let symbol = chased.as_ref().unwrap_or(symbol);

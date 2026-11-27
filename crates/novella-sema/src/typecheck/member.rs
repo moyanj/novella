@@ -8,6 +8,7 @@ use novella_core::Span;
 
 use crate::Sema;
 use crate::module::ModuleId;
+use crate::resolve::{ExportTarget, ReexportError, resolve_exported};
 use crate::symbol::NsTarget;
 use crate::ty::{Ty, TypeDef};
 
@@ -45,23 +46,9 @@ pub(crate) fn check_member_access(
                 if sema.modules[target_module].load_failed {
                     return Ty::Error;
                 }
-                return match sema.global_scope_symbol(target_module, name) {
-                    None => {
-                        sema.type_error(
-                            ctx.module,
-                            span,
-                            format!("模块 `{target_name}` 中没有 `{name}`"),
-                        );
-                        Ty::Error
-                    }
-                    Some(symbol) => {
-                        if !symbol.is_importable() {
-                            sema.type_error(
-                                ctx.module,
-                                span,
-                                format!("`{name}` 在模块 `{target_name}` 中不是 pub"),
-                            );
-                        }
+                // 跨模块成员访问同样走再导出链（`pub` 重导入可多层）
+                return match resolve_exported(sema, target_module, name) {
+                    Ok(ExportTarget::Symbol(symbol)) => {
                         sema.record_reference(
                             ctx.module,
                             Span {
@@ -70,7 +57,36 @@ pub(crate) fn check_member_access(
                             },
                             &symbol,
                         );
-                        value_type_of_symbol(sema, ctx, symbol, name, span)
+                        value_type_of_symbol(sema, ctx, *symbol, name, span)
+                    }
+                    Ok(ExportTarget::Namespace(ns_target)) => {
+                        let _ = ns_target;
+                        sema.type_error(
+                            ctx.module,
+                            span,
+                            format!("`{name}` 是模块 `{target_name}` 的命名空间，不能作为值使用"),
+                        );
+                        Ty::Error
+                    }
+                    Ok(ExportTarget::ExceptionRoot) => {
+                        sema.type_error(
+                            ctx.module,
+                            span,
+                            format!("`{name}` 是标准库内建类型，不能作为普通值使用"),
+                        );
+                        Ty::Error
+                    }
+                    Err(ReexportError::Missing { .. }) => {
+                        sema.type_error(
+                            ctx.module,
+                            span,
+                            format!("模块 `{target_name}` 中没有 `{name}`"),
+                        );
+                        Ty::Error
+                    }
+                    Err(error) => {
+                        sema.type_error(ctx.module, span, error.message());
+                        Ty::Error
                     }
                 };
             }

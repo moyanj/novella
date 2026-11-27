@@ -46,7 +46,7 @@
 | M05 | 具名导入别名冲突检测 | design §4.3 | `resolve.rs::bind_imports` | 已实现 | 反：两个同名导入 | S07 |
 | M06 | 私有符号不可被导入 | design §4.2/§4.3 | `resolve.rs::bind_imports` | 已实现 | 反：`pri` 符号具名导入报错 | S07 |
 | M07 | 命名空间导入 `ns.T` 类型解析 | design §4.3/§5.1 | `resolve.rs`（qualifier） | 已实现 | 反：多级限定 `a.b.T` 报错（本期不支持） | S07 |
-| M08 | 导入不自动重导出 | design §4.3 | `resolve/imports.rs` / `Symbol::is_importable` | 已实现 | 具名导入不成为 pub 导出；当前文法无 pub import，非公开导入继续拒绝 | S07 |
+| M08 | 导入默认不重导出，`pub` 前缀重导出 | design §4.3 / §4.3.1.1 | `parser`（`ImportItem.visibility`）/ `resolve/imports.rs` / `resolve/reexport.rs` | 已实现 | 正：`pub from "m" import a` 可被下游多层导入（`resolve_exported` 逐跳校验 `pub`）；反：无前缀导入继续拒绝、`pri` 导入语法报错、链成环报错；`pkg` 仅保存不改变可导入性 | S07 + 重导入 |
 | M09 | `std:` 必须加载真实声明并强制检查 | 用户后续纠偏 TD01 | `module/resolve_path.rs` / `resolve/imports.rs` | 已实现，原 External 策略废止 | 缺模块/符号/错误签名均拒绝，Exception 根除外 | 设计纠偏 |
 | M10 | 模块读取失败后保留导入身份，抑制依赖该模块的符号与可见性级联错误 | ROADMAP M-1 | `module/loader.rs` / `resolve/imports.rs` / `resolve/types.rs` / `typecheck/member.rs` / `typecheck/unsafe_rules/aggregate.rs` | 已实现 | 具名、命名空间及类型访问只保留读取根因；可读模块的缺失符号和独立未定义名称仍报错 | M-1 |
 
@@ -106,7 +106,8 @@
 | D14R | 字段、顶层变量按依赖定型后检查函数体 | plan S05 | `check/fields.rs` / `check/globals.rs` | 已实现 | method-first/field-first、type-first/type-last 均拒绝 i32 返回给 string；前向调用通过 | S05 |
 | D15R | 无注解字段与顶层变量的推导环诊断 | plan S05 | `resolve_field` / `globals::resolve` | 已实现 | 静态字段环、跨类型实例字段环、顶层变量环拒绝；显式注解可打断类型依赖 | S05 |
 | D16R | 条件编译指令及未知指令拒绝 | 用户补充 TD04 | `cfg.rs` / `check/decl.rs` | 已实现 | @cfg 在声明收集前筛选；其他无定义指令报 error；支持函数/类型/成员及指令块 | 设计纠偏 |
-| D16S | 禁用标准库指令 | 用户补充（2026-11-21） | `module/loader.rs` / `check/decl.rs` | 已实现 | 入口独立 @no_std; 关闭整个导入闭包的标准库加载和 site 注入；普通字符串字面量降为只读 UTF-16 指针，f-string 仍需标准库 String；拒绝 std: 导入、重复/带参/依赖模块/修饰声明或块的用法 | 无参数指令 | |
+| D16S | 禁用标准库指令 | 用户补充（2026-11-21） | `module/loader.rs` / `module/std_manifest.rs` | 已实现 | 入口独立 @no_std; 关闭 site 注入，按 modules.toml 只允许 core / alloc 层 std: 导入（alloc 需托管运行时）；未导入 std:string 时普通字符串字面量降为只读 UTF-16 指针、f-string 报错，导入后行为与常规模式一致；拒绝 std 层导入、std:exception、重复/带参/依赖模块/修饰声明或块的用法 | 无参数指令 | |
+| D16W | 禁用分配器标准库指令 | 用户补充（2026-11-27） | `module/loader.rs` / `module/std_manifest.rs` | 已实现 | 入口独立 @no_alloc; 隐含 @no_std（不注入 site、禁止 std 层），只允许 core 层 std: 导入；拒绝 alloc 层（std:string / std:ffi，即使 `--runtime managed`）、重复/带参/依赖模块/修饰声明或块；与 @no_std 同写合法 | 无参数指令 | |
 | D16T | 禁用自动入口 | 裸机计划 / design §4.2 | `module/loader.rs` / `freestanding.rs` | 已实现 | @no_main 仅入口独立一次且无参；依赖、重复、带参、修饰声明或块均拒绝 | 无参数指令 |
 | D16U | C ABI 函数导出 | 裸机计划 / design §4.2 | `freestanding.rs` / `check/decl.rs` | 已实现 | @export 唯一合法符号；拒绝泛型/async/extern/无体/非顶层函数、聚合与托管 ABI、重复及 extern 碰撞 | 标量、裸指针与函数指针 |
 | D16V | 裸机目标与无托管模式 | 裸机计划 | `core::target` / `freestanding.rs` | 已实现 | 裸机强制 no_std+no_main，拒绝浮点含嵌套及 extern；runtime=none 接受无托管元素的定长数组，拒绝实际托管值/ARC/weak | 真实 file/span 定位 |

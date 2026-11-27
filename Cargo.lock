@@ -510,7 +510,9 @@ dependencies = [
  "novella-lexer",
  "novella-parser",
  "novella-target",
+ "serde",
  "stacker",
+ "toml",
 ]
 
 [[package]]

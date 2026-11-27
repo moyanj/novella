@@ -2,9 +2,11 @@
 
 ## 三个独立开关
 
-`@no_std;` 只控制 Novella 标准库与 site 注入，不承诺没有运行时、没有堆、没有 CRT 或 libc。
-裸机目标为 `x86_64-unknown-none-elf`，必须在入口模块同时声明 `@no_std;` 和
-`@no_main;`。`@no_main;` 禁止查找 Novella `main` 和生成 C `main` 包装，进程或机器的
+`@no_std;` 只控制 Novella 标准库与 site 注入，不承诺没有运行时、没有堆、没有 CRT 或 libc；
+在此基础上还可以写 `@no_alloc;`，它隐含 `@no_std;` 并进一步禁止 alloc 层标准库模块
+（`std:string`、`std:ffi`），可导入的只剩 core 层。
+裸机目标为 `x86_64-unknown-none-elf`，必须在入口模块同时声明 `@no_std;`（写更强的
+`@no_alloc;` 同样满足）和 `@no_main;`。`@no_main;` 禁止查找 Novella `main` 和生成 C `main` 包装，进程或机器的
 启动环境由调用方提供。Linux 上原来的 `@no_std; func main() -> int` 仍是 hosted 程序。
 
 运行时配置与入口配置独立：
@@ -14,6 +16,15 @@
 | target | 显式选择 | `x86_64-unknown-linux-gnu` | 实际 LLVM 发射平台与条件编译环境 |
 | runtime | `none` | `managed` | 是否允许托管对象与 ARC |
 | code-model | `kernel` | `small` | 最高 2 GiB 内核地址或低地址静态模型 |
+
+裸机目标同样可以导入 core 层标准库（`std:mem`、`std:bits` 以及无浮点目标上的其余纯计算模块）；
+alloc 层（如 `std:string`）需要 `--runtime managed`，并由平台提供
+`novella_platform_alloc` / `novella_platform_free` / `novella_platform_panic`。
+`std:io`、`std:site` 等 std 层模块在裸机不可用；`std:math` 需要支持浮点的目标。
+
+`@no_alloc;` 只收紧标准库导入层级，不覆盖 `--runtime` 的托管对象能力：`runtime=managed`
+时仍可 `new` 用户自定义 class 并由 runtime 分配器托管。要让整个程序零分配，应同时使用
+`--runtime none`（裸机默认值）或自行保证不创建托管对象。
 
 `runtime=none` 允许标量、裸指针、函数指针和不含托管成员的值类型（包括定长数组和字节字符串）；
 class 分配、托管成员的所有权操作和 weak 操作需要 `managed`。纯类型声明不应该引入堆依赖。

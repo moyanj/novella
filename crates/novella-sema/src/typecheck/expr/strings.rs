@@ -23,12 +23,17 @@ pub(crate) fn check_literal(sema: &mut Sema, ctx: &mut BodyCtx, value: &Literal,
             }
             if raw.starts_with('f') {
                 check_fstring(sema, ctx, raw, span);
-                if sema.no_std {
-                    sema.type_error(
-                        ctx.module,
-                        span,
-                        "no_std 环境不支持 f-string；请使用普通静态字符串字面量",
-                    );
+                // 只有导入了 std:string 才有可用的 String；@no_std 不再一律禁用 f-string。
+                if sema.string_type().is_none() {
+                    let message = if sema.no_alloc {
+                        // @no_alloc 连 alloc 层都不允许导入，不能再建议导入 std:string。
+                        "no_alloc 环境不支持 f-string；请改用普通静态字符串字面量"
+                    } else if sema.no_std {
+                        "no_std 环境不支持 f-string；请导入 std:string 或改用普通静态字符串字面量"
+                    } else {
+                        "f-string 需要标准库 std:String"
+                    };
+                    sema.type_error(ctx.module, span, message);
                     return Ty::Error;
                 }
                 return require_string_type(sema, ctx, span);
@@ -50,18 +55,20 @@ pub(crate) fn check_literal(sema: &mut Sema, ctx: &mut BodyCtx, value: &Literal,
 }
 
 fn require_string_type(sema: &mut Sema, ctx: &BodyCtx, span: Span) -> Ty {
+    let string = sema.string_type();
+    if let Some(string) = string {
+        return string;
+    }
     if sema.no_std {
-        // no_std 没有 std:String；普通字面量只读地指向编译期 UTF-16 数据。
+        // no_std 且未导入 std:string：普通字面量只读地指向编译期 UTF-16 数据。
         return Ty::Pointer(Box::new(Ty::Int(crate::ty::IntKind::U16)));
     }
-    sema.string_type().unwrap_or_else(|| {
-        sema.type_error(
-            ctx.module,
-            span,
-            "字符串字面量需要标准库 std:String；@no_std 环境请使用字节字面量 b\"...\"",
-        );
-        Ty::Error
-    })
+    sema.type_error(
+        ctx.module,
+        span,
+        "字符串字面量需要标准库 std:String；@no_std 环境请使用字节字面量 b\"...\"",
+    );
+    Ty::Error
 }
 /// f-string（`f"..."` / `f'...'`）：校验插值表达式的语法与类型。
 ///

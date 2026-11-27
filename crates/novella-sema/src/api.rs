@@ -261,6 +261,8 @@ pub struct SemaResult {
     pub no_main: bool,
     /// 入口模块显式关闭默认标准库环境。
     pub no_std: bool,
+    /// 入口模块显式关闭 alloc 层标准库（隐含 `no_std`，只保留 core 层）。
+    pub no_alloc: bool,
     /// 顶层函数声明位置对应的已验证 C 导出符号。
     pub exports: HashMap<(ModuleId, Span), String>,
     /// 由实际 std 根目录解析出的字符串名义身份；下游不得按文件名猜测。

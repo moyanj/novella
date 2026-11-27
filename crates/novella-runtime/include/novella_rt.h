@@ -21,7 +21,8 @@ typedef enum {
     NOVELLA_RT_DOUBLE_WEAK_RELEASE = 7,
     NOVELLA_RT_DOUBLE_STRONG_RELEASE = 8,
     NOVELLA_RT_INVALID_ALLOCATOR = 9,
-    NOVELLA_RT_ALLOCATOR_FIXED = 10
+    NOVELLA_RT_ALLOCATOR_FIXED = 10,
+    NOVELLA_RT_STD_ABORT = 11
 } novella_rt_error;
 
 /* 析构回调只清理对象拥有的资源；对象本体由 runtime 在回调返回后释放。 */
@@ -66,4 +67,8 @@ void* novella_rt_malloc(size_t size);
 void novella_rt_free(void* ptr);
 void novella_rt_set_allocator(void* (*malloc)(size_t size),
                               void (*free)(void* ptr));
+
+/* 标准库致命错误（分配失败、长度溢出、越界等）的统一出口。
+ * 经平台 panic hook 以 NOVELLA_RT_STD_ABORT 终止；hook 不返回。 */
+_Noreturn void novella_rt_abort(void);
 #endif

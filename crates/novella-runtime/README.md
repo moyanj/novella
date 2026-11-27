@@ -55,8 +55,10 @@ panic 错误码在公开头文件的 `novella_rt_error` 中固定如下，核心
 | 8 | 释放正在析构的对象 |
 | 9 | setter 回调为空 |
 | 10 | 分配器已固定后再次调用 setter |
+| 11 | 标准库致命错误（`novella_rt_abort`） |
 
 panic hook 必须不返回；核心经 volatile 函数指针调用后仍执行 trap，避免错误实现意外返回。
+`novella_rt_abort` 是标准库的统一终止出口（分配失败、长度溢出、越界等），经同一 hook 以错误码 11 终止。
 无效裸指针或已经物理释放的对象不在运行时可诊断的范围内。
 
 独立 `memory.c` 只导出 `memcpy`、`memmove`、`memset`、`memcmp`，不依赖平台 hooks 或

@@ -5,6 +5,24 @@
 标准库身份由配置的 std 根目录及类型声明确定；同名用户 class 不触发字符串特殊降级。
 `docs/stdlib-design.md` 中其他模块和 runtime 静态库仍是早期设计草案。
 
+## 分层
+
+`modules.toml` 声明每个模块的层级，编译器据此判断 `@no_std`（以及更强、只允许 core 层的
+`@no_alloc`）环境可导入哪些模块：
+
+| 模块 | 层级 | 说明 |
+| --- | --- | --- |
+| `std:math` | core | 纯 f64 函数与常量；需要支持浮点的目标 |
+| `std:mem` | core | `memcpy`/`memmove`/`memset`/`memcmp` 的安全包装 |
+| `std:bits` | core | 整数位运算工具（纯 Novella） |
+| `std:ffi` | alloc | runtime 分配器 `novella_rt_malloc/free` 的声明 |
+| `std:string` | alloc | UTF-16 `String`；裸机目标需要 `--runtime managed` |
+| `std:io` | std | 标准输出，依赖宿主 libc 的 `write` / `abort` |
+| `std:site` | std | 默认环境（`String`、`string` 别名、`print`/`println`） |
+
+core 不使用堆，也不调用 OS 服务（`std:mem` 的 `mem*` 由 libc 或裸机 support 归档提供）；
+alloc 需要托管运行时的分配器；std 需要宿主 libc / OS。未在清单中声明的模块按 std 处理。
+
 ## `std:io`
 
 ```novella
@@ -58,8 +76,19 @@ f16 和其他无转换契约的值明确报错。文本里的 `{{` / `}}` 表示
 仅允许直接访问自身字段，字段对象的方法仍可调用。自身实例方法的调用或提取会报错，
 因为当前没有借用效果分析来证明这些方法不会通过返回、传参或赋值间接复活自身。
 
-入口写 `@no_std;` 可关闭整个导入闭包的标准库加载、默认环境及标准库链接。
-此时普通/raw/f-string 字面量和 `std:` 导入会报错，字节串仍可原生编译。
+入口写 `@no_std;` 可关闭默认环境（`std:site`）注入，并只允许导入 core / alloc 层模块：
+core 始终可用；alloc 需要托管运行时（`--runtime managed`，裸机还需平台提供
+`novella_platform_alloc` / `novella_platform_free` / `novella_platform_panic`）；
+`std:io` / `std:site` 等 std 层模块在 `@no_std` 下报错。
 该指令不改变平台启动代码和 C 链接环境，也不限制用户自行声明 `extern`。
+
+未导入 `std:string` 时，普通 / raw 字符串字面量降为只读 UTF-16 指针（`u16*`），f-string 报错，
+字节串仍可原生编译；导入 `std:string` 后字面量与 f-string 的行为和常规模式一致。
+
+入口写 `@no_alloc;` 要求完全不依赖分配器：它隐含 `@no_std;` 的全部语义（不注入
+`std:site`、禁止 std 层），并进一步拒绝 alloc 层模块——`from "std:string" import String;`
+或 `from "std:ffi" import ...;` 会报「属于 alloc 层，@no_alloc 环境只能导入 core 层模块」。
+此时可用的是 `std:math`、`std:mem`、`std:bits` 等 core 层模块，普通 / raw 字面量仍是只读
+UTF-16 指针，f-string 一律报错。指令同样只能在入口模块作为独立无参语句声明一次。
 
 可增长的 ARC 容器 `Vector<T>` 仍在规划中，当前标准库没有提供它；内建 `T[N]` 不管理数组本体的引用计数。

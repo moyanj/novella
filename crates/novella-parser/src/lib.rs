@@ -343,7 +343,7 @@ impl Parser {
             self.error_here("编译器指令后应为 `;`、块 `{...}` 或声明（func / class / trait）");
             return None;
         }
-        if scope.is_some() {
+        if let Some(scope) = scope {
             match kind {
                 TokenKind::Class
                 | TokenKind::Struct
@@ -352,8 +352,17 @@ impl Parser {
                 | TokenKind::Let
                 | TokenKind::Const
                 | TokenKind::Extern => {}
+                // 导入可带可见性前缀：`pub` 导入即重导出（类似 Rust 的 `pub use`），
+                // `pkg` 保留但不改变可导入性；`pri` 导入无意义，明确拒绝
+                TokenKind::From | TokenKind::Import if scope != Scope::Private => {}
+                TokenKind::From | TokenKind::Import => {
+                    self.error_here(
+                        "导入语句不能声明为 `pri`：导入符号默认不可见，重导出请用 `pub`",
+                    );
+                    return None;
+                }
                 _ => {
-                    self.error_here("`pub` / `pri` / `pkg` 后应为 class / struct / trait / func / extern / let / const 声明");
+                    self.error_here("`pub` / `pri` / `pkg` 后应为 class / struct / trait / func / extern / let / const 声明或导入");
                     return None;
                 }
             }
@@ -372,7 +381,7 @@ impl Parser {
             }
             TokenKind::From | TokenKind::Import => {
                 self.advance();
-                self.parse_import(item_start)
+                self.parse_import(item_start, scope)
             }
             TokenKind::Type => {
                 self.advance();
@@ -425,14 +434,15 @@ impl Parser {
     /// 解析导入语句（对应文法 `moduleImport`）。
     ///
     /// 前置：`from` / `import` 起始关键字已被 [`Parser::parse_item`] 消费；
-    /// `start` 为整条 item 的 span 起点（含编译器指令 / 可见性，见 [`Parser::parse_item`]）。
+    /// `start` 为整条 item 的 span 起点（含编译器指令 / 可见性，见 [`Parser::parse_item`]）；
+    /// `visibility` 为其前的可见性前缀（`pub` / `pkg`），写入 [`ImportItem::visibility`]。
     ///
     /// - `fromImport`: `From StringLiteral Import importSpecifier (',' importSpecifier)* SemiColon`
     /// - `directImport`: `Import StringLiteral SemiColon`
     ///
     /// 路径字面量支持 `别名:路径` 前缀（design.md §4.3.1）：`:` 前的别名写入
     /// [`ImportItem::prefix`]，`:` 后的逻辑路径写入 [`ImportItem::path`]（D-08）。
-    fn parse_import(&mut self, start: usize) -> Option<Item> {
+    fn parse_import(&mut self, start: usize, visibility: Option<Scope>) -> Option<Item> {
         // 起始关键字（`from` / `import`）已被 parse_item 消费，据此区分两种形态
         let from_form = self.tokens[self.pos.saturating_sub(1)].kind == TokenKind::From;
         // 两种形态的路径都是字符串字面量
@@ -513,6 +523,7 @@ impl Parser {
             prefix,
             path,
             kind,
+            visibility,
             span: Span {
                 start,
                 end: self.last_end(),
