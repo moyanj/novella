@@ -52,7 +52,7 @@ pub(crate) fn check_match(
             Some(MatchPattern::Expr { expr, .. }) => {
                 let ty = check_expr(sema, ctx, expr);
                 remaining &= super::flow::expr_falls_through(sema, ctx.module, expr);
-                if !comparable(&subject, &ty) {
+                if !comparable(&subject, &ty, sema.target.pointer_width) {
                     sema.type_error(
                         ctx.module,
                         expr.span(),
@@ -141,20 +141,21 @@ pub(crate) fn check_match(
         }
         result = Some(match result {
             None => ty,
-            Some(previous) => unify_types(&previous, &ty).unwrap_or_else(|| {
-                if hint
-                    .is_some_and(|h| sema.is_assignable(h, &previous) && sema.is_assignable(h, &ty))
-                {
-                    hint.expect("已有期望类型").clone()
-                } else {
-                    sema.type_error(
-                        ctx.module,
-                        body.span(),
-                        format!("match 分支类型 `{ty}` 与 `{previous}` 不一致"),
-                    );
-                    Ty::Error
-                }
-            }),
+            Some(previous) => unify_types(&previous, &ty, sema.target.pointer_width)
+                .unwrap_or_else(|| {
+                    if hint.is_some_and(|h| {
+                        sema.is_assignable(h, &previous) && sema.is_assignable(h, &ty)
+                    }) {
+                        hint.expect("已有期望类型").clone()
+                    } else {
+                        sema.type_error(
+                            ctx.module,
+                            body.span(),
+                            format!("match 分支类型 `{ty}` 与 `{previous}` 不一致"),
+                        );
+                        Ty::Error
+                    }
+                }),
         });
     }
     let exhaustive = node.default.is_some()

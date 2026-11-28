@@ -313,6 +313,13 @@ pub fn analyze_with_options(
                 .map(|(key, ty)| (key, ty.view()))
                 .collect(),
         },
+        binary_numeric: ExpressionTypes {
+            types: sema
+                .binary_numeric
+                .into_iter()
+                .map(|(key, ty)| (key, ty.view()))
+                .collect(),
+        },
         annotation_types: ExpressionTypes {
             types: sema
                 .annotation_types

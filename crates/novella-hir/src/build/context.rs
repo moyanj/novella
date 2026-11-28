@@ -152,4 +152,22 @@ impl<'a> BodyBuilder<'a> {
     ) -> Result<HirType, BuildError> {
         mono::concrete_type(self.sema, &self.instances, view, &self.subst, preferred)
     }
+
+    /// 二元数值运算的公共类型（sema 已在检查阶段算出并登记）。
+    ///
+    /// 命中时 HIR 必须把两侧操作数统一提升到该类型再运算：比较尤其如此，
+    /// 否则会把右操作数截成左操作数的类型，产生运行期错误结果。
+    pub(super) fn binary_numeric(&self, span: Span) -> Result<Option<HirType>, BuildError> {
+        let Some(view) = self.sema.binary_numeric.get(self.module, span) else {
+            return Ok(None);
+        };
+        match self
+            .concrete_type(view, None)
+            .map_err(|error| error.with_site(self.module, span))?
+        {
+            ty @ (HirType::Int(_) | HirType::Float(_)) => Ok(Some(ty)),
+            // 登记表只收具体数值；区间外的值说明 sema 与 HIR 的类型集合不一致，直接失败
+            _ => Err(BuildError::at(BuildErrorKind::InvalidInput).with_site(self.module, span)),
+        }
+    }
 }

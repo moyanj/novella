@@ -137,17 +137,14 @@ impl BodyBuilder<'_> {
                 block,
             ));
         }
-        let left_type = self.expr_type(left.span()).ok();
-        let right_type = self.expr_type(right.span()).ok();
-        let common = [left_type.as_ref(), right_type.as_ref()]
-            .into_iter()
-            .flatten()
-            .find(|ty| matches!(ty, HirType::Float(_)))
-            .cloned()
-            .or_else(|| {
-                (is_float_literal_expression(left) && is_float_literal_expression(right))
-                    .then_some(HirType::Float(crate::FloatTy::F32))
-            });
+        // 数值比较的结果是 boolean，不能用它反推操作数位宽。
+        let common = self.binary_numeric(span)?.or_else(|| {
+            // 两个未定型浮点字面量用于比较时没有外层数值上下文。
+            (binary_op_of(op).is_some_and(is_comparison)
+                && is_float_literal_expression(left)
+                && is_float_literal_expression(right))
+            .then_some(HirType::Float(crate::FloatTy::F32))
+        });
         if let Some(common) = common {
             let lhs = self.build_typed_expression(left, &common, block)?;
             let rhs = self.build_typed_expression(right, &common, block)?;

@@ -20,7 +20,7 @@ pub(crate) fn check_array_literal(
     for element in &elements[1..] {
         let ty = check_expr(sema, ctx, element);
         actuals.push((element.span(), ty.clone()));
-        element_ty = match unify_types(&element_ty, &ty) {
+        element_ty = match unify_types(&element_ty, &ty, sema.target.pointer_width) {
             Some(unified) => unified,
             None => {
                 sema.type_error(

@@ -1,5 +1,6 @@
 //! 二元运算、类型合一、显式转换与 unsafe。
 use super::*;
+use crate::module::ModuleId;
 use crate::typecheck::magic;
 
 /// S10：指针类操作需要 `unsafe {}`。
@@ -217,8 +218,18 @@ pub(super) fn check_binary_operands(
                     );
                 }
             }
-            if !comparable(&lhs, &rhs) {
-                sema.type_error(ctx.module, span, format!("`{lhs}` 与 `{rhs}` 不可比较"));
+            let width = sema.target.pointer_width;
+            if let Some(common) = unify_numeric(&lhs, &rhs, width) {
+                if check_numeric_operands(
+                    sema,
+                    ctx.module,
+                    &common,
+                    [(&lhs, left.span()), (&rhs, right.span())],
+                ) {
+                    sema.record_binary_numeric(ctx.module, span, common);
+                }
+            } else if !comparable(&lhs, &rhs, width) {
+                sema.type_error(ctx.module, span, numeric_mismatch_text(&lhs, &rhs, "比较"));
             }
             Ty::Boolean
         }
@@ -226,64 +237,32 @@ pub(super) fn check_binary_operands(
         | BinaryOp::LessThanEquals
         | BinaryOp::GreaterThan
         | BinaryOp::GreaterThanEquals => {
-            let ok = lhs.is_numeric() && rhs.is_numeric() && unify_numeric(&lhs, &rhs).is_some();
-            if !ok {
-                sema.type_error(
-                    ctx.module,
-                    span,
-                    format!(
-                        "`{}` 的操作数类型不兼容（`{lhs}` 与 `{rhs}`）",
-                        binary_op_text(op)
-                    ),
-                );
-            }
+            check_numeric_binary(
+                sema,
+                ctx.module,
+                op,
+                span,
+                [(&lhs, left.span()), (&rhs, right.span())],
+            );
             Ty::Boolean
         }
         BinaryOp::Plus | BinaryOp::Minus | BinaryOp::Multiply | BinaryOp::Divide => {
-            check_arithmetic(sema, ctx, op, &lhs, &rhs, span)
+            check_arithmetic(
+                sema,
+                ctx,
+                op,
+                [(&lhs, left.span()), (&rhs, right.span())],
+                span,
+            )
         }
-        BinaryOp::Modulus => match unify_numeric(&lhs, &rhs) {
-            Some(ty) if ty.is_numeric() => ty,
-            Some(_) => {
-                sema.type_error(ctx.module, span, "`%` 只能用于整数或浮点类型");
-                Ty::Unknown
-            }
-            None => {
-                sema.type_error(
-                    ctx.module,
-                    span,
-                    format!("`%` 的操作数类型不兼容（`{lhs}` 与 `{rhs}`）"),
-                );
-                Ty::Unknown
-            }
-        },
-        BinaryOp::BitAnd | BinaryOp::BitXor | BinaryOp::BitOr => {
-            if lhs.is_integer() && rhs.is_integer() {
-                match unify_numeric(&lhs, &rhs) {
-                    Some(ty) if ty.is_integer() => ty,
-                    _ => {
-                        sema.type_error(
-                            ctx.module,
-                            span,
-                            format!(
-                                "`{}` 的整数操作数位宽不一致（`{lhs}` 与 `{rhs}`）",
-                                binary_op_text(op)
-                            ),
-                        );
-                        Ty::Unknown
-                    }
-                }
-            } else {
-                sema.type_error(
-                    ctx.module,
-                    span,
-                    format!(
-                        "`{}` 只能用于整数类型（实为 `{lhs}` 与 `{rhs}`）",
-                        binary_op_text(op)
-                    ),
-                );
-                Ty::Unknown
-            }
+        BinaryOp::Modulus | BinaryOp::BitAnd | BinaryOp::BitXor | BinaryOp::BitOr => {
+            check_numeric_binary(
+                sema,
+                ctx.module,
+                op,
+                span,
+                [(&lhs, left.span()), (&rhs, right.span())],
+            )
         }
         BinaryOp::LeftShift | BinaryOp::RightShift => {
             if !lhs.is_integer() || !rhs.is_integer() {
@@ -302,15 +281,17 @@ pub(super) fn check_binary_operands(
         }
     }
 }
-/// 加减乘除：数值同型运算 + S7 指针算术。
-pub(crate) fn check_arithmetic(
+type NumericOperands<'a> = [(&'a Ty, Span); 2];
+
+/// 加减乘除：数值提升 + S7 指针算术。
+pub(super) fn check_arithmetic(
     sema: &mut Sema,
     ctx: &BodyCtx,
     op: BinaryOp,
-    lhs: &Ty,
-    rhs: &Ty,
+    operands: NumericOperands<'_>,
     span: Span,
 ) -> Ty {
+    let [(lhs, _), (rhs, _)] = operands;
     // S7：指针 ± 整数 → 同型指针（unsafe）
     if [lhs, rhs]
         .iter()
@@ -323,6 +304,7 @@ pub(crate) fn check_arithmetic(
         );
         return Ty::Error;
     }
+    // 数值路径才有公共类型可记录；指针分支单独返回，不进入下文。
     if matches!(op, BinaryOp::Plus | BinaryOp::Minus) {
         if let (Ty::Pointer(_), b) = (lhs, rhs)
             && b.is_integer()
@@ -346,35 +328,93 @@ pub(crate) fn check_arithmetic(
             return Ty::Int(crate::ty::IntKind::Isize);
         }
     }
-    match unify_numeric(lhs, rhs) {
-        Some(ty) => {
-            let target = concrete(&ty);
-            for operand in [lhs, rhs] {
-                if !sema.is_assignable(&target, operand) {
-                    sema.type_error(
-                        ctx.module,
-                        span,
-                        format!("操作数 `{operand}` 超出运算类型 `{target}` 的范围"),
-                    );
-                }
+    if matches!(op, BinaryOp::LeftShift | BinaryOp::RightShift) {
+        if lhs.is_integer() && rhs.is_integer() {
+            if !sema.is_assignable(lhs, rhs) {
+                sema.type_error(
+                    ctx.module,
+                    span,
+                    format!("移位量 `{rhs}` 超出 `{lhs}` 的范围"),
+                );
+                return Ty::Error;
             }
-            ty
+            return concrete(lhs);
         }
-        None => {
+        sema.type_error(
+            ctx.module,
+            span,
+            format!("移位运算需要整数（实为 `{lhs}` 与 `{rhs}`）"),
+        );
+        return Ty::Error;
+    }
+    check_numeric_binary(sema, ctx.module, op, span, operands)
+}
+
+pub(super) fn check_numeric_binary(
+    sema: &mut Sema,
+    module: ModuleId,
+    op: BinaryOp,
+    span: Span,
+    operands: NumericOperands<'_>,
+) -> Ty {
+    let [(lhs, _), (rhs, _)] = operands;
+    if matches!(op, BinaryOp::BitAnd | BinaryOp::BitXor | BinaryOp::BitOr)
+        && (!lhs.is_integer() || !rhs.is_integer())
+    {
+        sema.type_error(
+            module,
+            span,
+            format!(
+                "`{}` 只能用于整数类型（实为 `{lhs}` 与 `{rhs}`）",
+                binary_op_text(op)
+            ),
+        );
+        return Ty::Error;
+    }
+    let Some(common) = unify_numeric(lhs, rhs, sema.target.pointer_width) else {
+        sema.type_error(
+            module,
+            span,
+            numeric_mismatch_text(lhs, rhs, &format!("`{}`", binary_op_text(op))),
+        );
+        return Ty::Error;
+    };
+    if !check_numeric_operands(sema, module, &common, operands) {
+        return Ty::Error;
+    }
+    sema.record_binary_numeric(module, span, common.clone());
+    common
+}
+
+fn check_numeric_operands(
+    sema: &mut Sema,
+    module: ModuleId,
+    common: &Ty,
+    operands: NumericOperands<'_>,
+) -> bool {
+    // 两侧都是字面量时留给外层上下文定型，不在此套用默认位宽。
+    if !matches!(common, Ty::Int(_) | Ty::Float(_)) {
+        return true;
+    }
+    let mut valid = true;
+    for (operand, span) in operands {
+        if !sema.is_assignable(common, operand) {
             sema.type_error(
-                ctx.module,
+                module,
                 span,
-                format!(
-                    "`{}` 的操作数类型不兼容（`{lhs}` 与 `{rhs}`）",
-                    binary_op_text(op)
-                ),
+                format!("操作数 `{operand}` 超出运算类型 `{common}` 的范围；请显式 `as`"),
             );
-            Ty::Unknown
+            valid = false;
         }
     }
+    valid
 }
-/// 数值统一：字面量折叠 + 同 kind 检查。不做隐式数值转换。
-pub(crate) fn unify_numeric(a: &Ty, b: &Ty) -> Option<Ty> {
+
+/// 数值统一：字面量折叠 + 已定型数值求最小无损公共类型。
+///
+/// 字面量优先落到另一侧的具体类型，再由调用方按目标范围检查；两个字面量
+/// 保持字面量态，交给上下文定型。int/float 两族不互相提升。
+pub(crate) fn unify_numeric(a: &Ty, b: &Ty, width: crate::PointerWidth) -> Option<Ty> {
     match (a, b) {
         (Ty::IntLiteral(..), Ty::Int(k)) | (Ty::Int(k), Ty::IntLiteral(..)) => Some(Ty::Int(*k)),
         (Ty::IntLiteral(an, a), Ty::IntLiteral(bn, b)) => {
@@ -384,23 +424,35 @@ pub(crate) fn unify_numeric(a: &Ty, b: &Ty) -> Option<Ty> {
             Some(Ty::Float(*k))
         }
         (Ty::FloatLiteral(a), Ty::FloatLiteral(b)) => Some(Ty::FloatLiteral(a.max(*b))),
-        (Ty::Int(k1), Ty::Int(k2)) if k1 == k2 => Some(Ty::Int(*k1)),
-        (Ty::Float(k1), Ty::Float(k2)) if k1 == k2 => Some(Ty::Float(*k1)),
-        _ => None,
+        _ => crate::ty::numeric_common(a, b, width),
     }
 }
+/// 二元数值运算无公共类型时的可操作文案。
+fn numeric_mismatch_text(lhs: &Ty, rhs: &Ty, what: &str) -> String {
+    if lhs.is_numeric() && rhs.is_numeric() {
+        if (lhs.is_integer() && rhs.is_float()) || (lhs.is_float() && rhs.is_integer()) {
+            return format!(
+                "{what} 的整数与浮点操作数不能隐式混合（`{lhs}` 与 `{rhs}`）；请显式 `as`"
+            );
+        }
+        return format!(
+            "{what} 的操作数 `{lhs}` 与 `{rhs}` 没有能同时无损容纳二者的公共类型；请显式 `as`"
+        );
+    }
+    format!("{what} 的操作数类型不兼容（`{lhs}` 与 `{rhs}`）")
+}
 /// 相等比较的可比性：同型 / 字面量折叠 / null 与可空。
-pub(crate) fn comparable(a: &Ty, b: &Ty) -> bool {
+pub(crate) fn comparable(a: &Ty, b: &Ty, width: crate::PointerWidth) -> bool {
     if a.is_opaque() || b.is_opaque() {
         return true;
     }
-    if ty_eq(a, b) || unify_numeric(a, b).is_some() {
+    if ty_eq(a, b) || unify_numeric(a, b, width).is_some() {
         return true;
     }
     (matches!(a, Ty::Null) && b.is_nullable()) || (matches!(b, Ty::Null) && a.is_nullable())
 }
 /// 通用类型合一（三元/数组元素用）：等价 / 数值统一 / 单向可赋值。
-pub(crate) fn unify_types(a: &Ty, b: &Ty) -> Option<Ty> {
+pub(crate) fn unify_types(a: &Ty, b: &Ty, width: crate::PointerWidth) -> Option<Ty> {
     if a.is_opaque() {
         return Some(b.clone());
     }
@@ -410,7 +462,7 @@ pub(crate) fn unify_types(a: &Ty, b: &Ty) -> Option<Ty> {
     if ty_eq(a, b) {
         return Some(a.clone());
     }
-    if let Some(ty) = unify_numeric(a, b) {
+    if let Some(ty) = unify_numeric(a, b, width) {
         return Some(ty);
     }
     if matches!(a, Ty::Null) && b.is_nullable() {

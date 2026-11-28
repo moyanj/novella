@@ -55,7 +55,7 @@
 | ID | 规则 | 依据 | 实现 | 状态 | 正/反例 | D/S |
 | --- | --- | --- | --- | --- | --- | --- |
 | T01 | `int` ≡ `i32`、`float` ≡ `f32` 归一化 | design §5.2 | `ty.rs::IntKind::from_name` / `FloatKind` | 已实现 | 正：`int` 与 `i32` 互相可赋 | — |
-| T02 | 数值隐式转换只允许同符号无损扩宽：`i32→i64`/`u8→u16` 可隐式；窄化 `i64→i32` 与跨符号 `i32→u64` 需 `as` | design §5.2.1 | `ty.rs::assignable` + `IntKind::widens_to` | 已实现 | 正：`let x: i64 = i32_val;`；反：`let y: i32 = i64_val;` 报错 | — |
+| T02 | 数值隐式转换只允许值域安全扩宽：同符号源宽 ≤ 目标（`i32→i64`/`u8→u16`）、无符号→有符号源宽 < 目标（`u8→i16`/`u32→i64`）、浮点 `f16→f32→f64` 可隐式；窄化、有符号→无符号与不安全跨符号需 `as`；二元算术/比较按公共类型提升 | design §5.2.1 | `ty/relations.rs::assignable` + `IntKind::value_preserving_to`/`common` + `FloatKind::widens_to` + `Sema.binary_numeric` | 已实现 | 正：`let x: i64 = i32_val;`、`let y: i16 = u8_val;`、`i32 == i64`；反：`let y: i32 = i64_val;`、`u64 + i64` 报 `NVL3002` | — |
 | T03 | 未定型数值字面量按目标类型归化 | design §5.2.1 | `ty.rs::assignable` + `body.rs::concrete` | **已实现**（整数部分） | 按目标位宽判定；浮点范围见 S04b | **S04a 完成** |
 | T04 | `null` → 任意 `T*` / class 引用；`void*` ↔ `T*` | design §6.5 S5/S6 | `ty.rs::assignable` | 已实现 | 正/反见 unsafe 表 | — |
 | T05 | 子类 → 父类隐式；父类 → 子类需 `as` | design §5.2.1 | `lib.rs::is_subclass` + `assignable` | 已实现 | 正：`let a: Base = new Derived();` | — |

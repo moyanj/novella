@@ -104,7 +104,13 @@ pub(crate) fn check_assignment(
                 };
                 method.finish(sema, ctx, span, Some(argument))
             } else {
-                check_arithmetic_compound(sema, ctx, op, &target_ty, &value_ty, span)
+                check_arithmetic_compound(
+                    sema,
+                    ctx,
+                    op,
+                    [(&target_ty, target.span()), (&value_ty, value.span())],
+                    span,
+                )
             };
             magic::check_writeback(sema, ctx, span, &target_ty, &result_ty);
             if let Some(receiver) = &protocol_receiver {
@@ -204,34 +210,51 @@ pub(super) fn assignment_symbol(sema: &Sema, ctx: &BodyCtx, expr: &Expression) -
     }
 }
 /// 复合赋值的运算检查（复用二元运算符矩阵）。
-pub(crate) fn check_arithmetic_compound(
+fn check_arithmetic_compound(
     sema: &mut Sema,
-    ctx: &mut BodyCtx,
+    ctx: &BodyCtx,
     op: AssignOp,
-    lhs: &Ty,
-    rhs: &Ty,
+    operands: [(&Ty, Span); 2],
     span: Span,
 ) -> Ty {
+    let [(lhs, _), (rhs, _)] = operands;
     if lhs.is_opaque() || rhs.is_opaque() {
         return Ty::Unknown;
     }
-    match op {
-        AssignOp::PlusAssign => check_arithmetic(sema, ctx, BinaryOp::Plus, lhs, rhs, span),
-        AssignOp::MinusAssign => check_arithmetic(sema, ctx, BinaryOp::Minus, lhs, rhs, span),
-        AssignOp::MultiplyAssign => check_arithmetic(sema, ctx, BinaryOp::Multiply, lhs, rhs, span),
-        AssignOp::DivideAssign => check_arithmetic(sema, ctx, BinaryOp::Divide, lhs, rhs, span),
-        AssignOp::ModulusAssign => check_arithmetic(sema, ctx, BinaryOp::Modulus, lhs, rhs, span),
-        AssignOp::BitAndAssign => check_arithmetic(sema, ctx, BinaryOp::BitAnd, lhs, rhs, span),
-        AssignOp::BitXorAssign => check_arithmetic(sema, ctx, BinaryOp::BitXor, lhs, rhs, span),
-        AssignOp::BitOrAssign => check_arithmetic(sema, ctx, BinaryOp::BitOr, lhs, rhs, span),
-        AssignOp::LeftShiftAssign => {
-            check_arithmetic(sema, ctx, BinaryOp::LeftShift, lhs, rhs, span)
-        }
-        AssignOp::RightShiftAssign => {
-            check_arithmetic(sema, ctx, BinaryOp::RightShift, lhs, rhs, span)
+    let binary = match op {
+        AssignOp::PlusAssign => BinaryOp::Plus,
+        AssignOp::MinusAssign => BinaryOp::Minus,
+        AssignOp::MultiplyAssign => BinaryOp::Multiply,
+        AssignOp::DivideAssign => BinaryOp::Divide,
+        AssignOp::ModulusAssign => BinaryOp::Modulus,
+        AssignOp::BitAndAssign => BinaryOp::BitAnd,
+        AssignOp::BitXorAssign => BinaryOp::BitXor,
+        AssignOp::BitOrAssign => BinaryOp::BitOr,
+        AssignOp::LeftShiftAssign | AssignOp::RightShiftAssign => {
+            // 保留复合移位的同型整数规则，不让公共类型改变写回语义。
+            if matches!(lhs, Ty::Int(_))
+                && (crate::ty::ty_eq(lhs, rhs) || matches!(rhs, Ty::IntLiteral(..)))
+            {
+                if !sema.is_assignable(lhs, rhs) {
+                    sema.type_error(
+                        ctx.module,
+                        operands[1].1,
+                        format!("移位量 `{rhs}` 超出 `{lhs}` 的范围"),
+                    );
+                    return Ty::Error;
+                }
+                return lhs.clone();
+            }
+            sema.type_error(
+                ctx.module,
+                span,
+                format!("复合移位需要同型整数（实为 `{lhs}` 与 `{rhs}`）"),
+            );
+            return Ty::Error;
         }
         AssignOp::Assign => unreachable!("Assign 已在调用点处理"),
-    }
+    };
+    check_arithmetic(sema, ctx, binary, operands, span)
 }
 /// 左值校验：标识符 / 成员访问 / 索引访问 / 解引用为合法目标。
 /// 追加项 B：const 变量、具名导入、函数、命名空间不可写。

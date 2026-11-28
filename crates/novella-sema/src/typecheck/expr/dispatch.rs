@@ -128,7 +128,7 @@ pub(super) fn check_expr_inner(sema: &mut Sema, ctx: &mut BodyCtx, expr: &Expres
                 Some(false) => {}
                 None => ctx.uninitialized.extend(after_then),
             }
-            unify_types(&then_ty, &else_ty).unwrap_or_else(|| {
+            unify_types(&then_ty, &else_ty, sema.target.pointer_width).unwrap_or_else(|| {
                 sema.type_error(
                     ctx.module,
                     *span,

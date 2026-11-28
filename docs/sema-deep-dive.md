@@ -578,7 +578,7 @@ pub(crate) use relations::*;
 
 整个 `ty` 模块对 crate 外不可见（无 `pub mod`）。对外公开面是 `api.rs` 的 `TypeView` / `FunctionView`：内部 `Ty` 因持有 `Rc<FunctionSig>` 与内部定义类型无法直接导出，故 `Ty::view()` / `FunctionSig::view()` 负责投影（api.rs:155 注释明确此设计）。
 
-**设计基调**（mod.rs 顶部 doc）：`int ≡ i32`、`float ≡ f32` 解析时即归一化；数值字面量先记为未定型 `IntLiteral` / `FloatLiteral`；**数值只隐式放行同符号无损扩宽**（`i32 → i64`、`u8 → u16`，窄化与跨符号须 `as`）；其余隐式转换三类——`null → 任意指针/class`、`void* ↔ 任意 T*`、子类 → 父类。
+**设计基调**（mod.rs 顶部 doc）：`int ≡ i32`、`float ≡ f32` 解析时即归一化；数值字面量先记为未定型 `IntLiteral` / `FloatLiteral`；**数值只隐式放行值域安全扩宽**（同符号源宽 ≤ 目标；无符号→有符号源宽 < 目标；浮点 `f16 → f32 → f64`；窄化、有符号→无符号与不安全跨符号须 `as`）；其余隐式转换三类——`null → 任意指针/class`、`void* ↔ 任意 T*`、子类 → 父类。
 
 ### 6.1 类型枚举 `Ty`（mod.rs:176-222）
 
@@ -678,11 +678,11 @@ pub(crate) fn assignable(
 
 1. **不透明放行**：`target.is_opaque() || source.is_opaque()` → true；
 2. **结构相等**：`ty_eq(target, source)` → true；
-3. **字面量归一化**（跨数值类型的唯一通道）：
+3. **字面量归一化与数值扩宽**：
    - `(Int(kind), IntLiteral(false, value))` → `int_literal_fits_non_negative(target_int_kind(*kind, width), *value)`；
    - `(Int(kind), IntLiteral(true, value))` → `int_negated_literal_fits(...)`；
    - `(Float(kind), FloatLiteral(value))` → `float_literal_fits(*kind, *value)`；
-   - **已定型值跨数值种类无隐式转换**（`i32 ← i8` 为 false），字面量之间也互不赋值；
+   - **已定型数值按值域安全扩宽**：`(Int(target), Int(source))` 先把两侧经 `target_int_kind` 折算，再走 `IntKind::value_preserving_to`（同符号 `<=`、无符号→有符号 `<`、有符号→无符号 false）；`(Float(target), Float(source))` 走 `FloatKind::widens_to`（`F16 → F32 → F64`）。`int` 与 `float` 仍不互转（含整数字面量→浮点），两个字面量之间也互不赋值；
 4. **null**：`(Pointer(_) | Class(..), Null)` → true；`Applied(base,_) ← Null` 且 base 为 Class → true；
 5. **void\***：`(Pointer(t), Pointer(s))` 且 t/s 任一为 Void → true（双向）；
 6. **子类→父类**：`(Class, Class)` / `(Trait, _)` / `(Applied, Applied|Class)` / `(Class, Applied)` → `is_subclass(...)`；
@@ -1009,10 +1009,11 @@ Lambda           → check_lambda
   - opaque 早期返回（比较/逻辑 → Boolean，算术 → Unknown）；
   - `&&/||` Boolean；`??` 左须 `is_nullable`，返回 lhs 不隐式解引用；
   - `==/!=` 等支持同型标量和引用比较；struct 没有内建相等或身份比较；
-  - 关系为数值比较；`+` 为算术；`%` 为同类型整数或浮点数；
-  - 位运算：同宽整数"整数操作数位宽不一致"；移位返回 `concrete(lhs)`；
-- `check_arithmetic`（:259-328）：`void*` → "void* 不支持指针算术" Error；指针 ± 整数需 unsafe、整数 + 指针、指针 - 指针 → isize；`unify_numeric`（:330-344）不隐式数值转换；
-- `comparable`（:346-354）/ `unify_types`（:356-376）；
+  - 关系为数值比较；`+` 为算术；`%` 与位运算按数值公共类型提升；
+  - 位运算：整数操作数先求公共类型（如 `u8` 与 `i16` 提升到 `i16`）；
+    移位不提升，返回 `concrete(lhs)`；
+- `check_arithmetic`：`void*` → "void* 不支持指针算术" Error；指针 ± 整数需 unsafe、整数 + 指针、指针 - 指针 → isize；`unify_numeric` 经 `numeric_common` 求公共类型，整数与浮点混合或无可无损容纳二者的公共类型时报错，成功后把公共类型写入 `Sema.binary_numeric`；
+- `comparable` / `unify_types` 与 `unify_numeric` 共用同一套公共类型规则（三元、数组、match、lambda 合一）；
 - `check_cast`（:378-422）：`ty_eq` / numeric 间（含 int→float 安全）/ Null → nullable 均 ok；指针 ↔ 整数或指针 `as` 需 unsafe（"指针显式转换"，S5）；引用类型向上转型 ok、向下转型需 unsafe（"向下转型"）；否则"无法把 `{}` 转换为 `{}`"；恒返回 target。
 
 **unsafe S1–S10 映射**（design.md:597-606）：

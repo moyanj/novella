@@ -309,6 +309,11 @@ pub struct SemaResult {
     pub call_instances: HashMap<(ModuleId, Span), crate::CallInstance>,
     /// 隐式或显式转换到拥有型动态 trait 的位置。
     pub dyn_conversions: HashMap<(ModuleId, Span), crate::DynConversion>,
+    /// 二元数值运算的公共类型（键为 `(模块, 二元表达式 span)`）。
+    ///
+    /// 两侧位宽/精度不一致时，HIR 据此把操作数无损提升后再运算；未命中
+    /// 表示两侧本就同型或该运算不参与提升（指针算术、移位）。
+    pub binary_numeric: ExpressionTypes,
     /// 已验证的显式实现，包括方法指派和关联类型。
     pub trait_implementations: Vec<crate::TraitImplementation>,
     /// 类型注解的解析结果（含别名展开与限定名；键为注解 span）。

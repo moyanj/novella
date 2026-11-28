@@ -116,7 +116,7 @@ pub(super) fn check_expr_with_hint_inner(
                 Some(false) => {}
                 None => ctx.uninitialized.extend(after_then),
             }
-            unify_types(&then_ty, &else_ty).unwrap_or_else(|| {
+            unify_types(&then_ty, &else_ty, sema.target.pointer_width).unwrap_or_else(|| {
                 if sema.is_assignable(hint, &then_ty) && sema.is_assignable(hint, &else_ty) {
                     // 两侧都能赋给期望类型：保留期望类型，不报错（如 u8 字面量与变量混用）
                     hint.clone()

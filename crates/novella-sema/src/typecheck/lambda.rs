@@ -170,7 +170,9 @@ pub(super) fn infer_block_return(sema: &mut Sema, ctx: &BodyCtx, block: &Block, 
     // 先合并未定型字面量，再选择默认数值类型；否则 i64 与裸整数会过早变成 i64/i32 冲突。
     let mut result = first.clone();
     for (span, actual) in &returns {
-        if let Some(joined) = super::unsafe_rules::unify_types(&result, actual) {
+        if let Some(joined) =
+            super::unsafe_rules::unify_types(&result, actual, sema.target.pointer_width)
+        {
             result = joined;
         } else {
             sema.type_error(

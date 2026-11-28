@@ -56,6 +56,11 @@ pub(crate) struct Sema {
     pub operator_calls: HashMap<(ModuleId, Span), crate::OperatorCall>,
     pub call_instances: HashMap<(ModuleId, Span), crate::CallInstance>,
     pub dyn_conversions: HashMap<(ModuleId, Span), crate::DynConversion>,
+    /// 二元数值运算的公共类型（键为 `(模块, 二元表达式 span)`）。
+    ///
+    /// 两侧位宽/浮点精度不一致时，HIR 需要按它把操作数统一提升后再运算；
+    /// 未记录时表示两侧本就同型或该运算不参与提升（指针算术、移位）。
+    pub binary_numeric: HashMap<(ModuleId, Span), ty::Ty>,
     pub annotation_types: HashMap<(ModuleId, Span), ty::Ty>,
     pub declaration_types: HashMap<(ModuleId, Span), ty::Ty>,
 }
@@ -155,6 +160,7 @@ impl Sema {
             operator_calls: HashMap::new(),
             call_instances: HashMap::new(),
             dyn_conversions: HashMap::new(),
+            binary_numeric: HashMap::new(),
             annotation_types: HashMap::new(),
             declaration_types: HashMap::new(),
         }
@@ -417,6 +423,31 @@ impl Sema {
                 ty::int_range_text(ty::target_int_kind(*kind, self.target.pointer_width))
             ));
         }
+        // 已定型整数：说明是窄化还是跨符号，两条路径都必须显式 `as`
+        if let (ty::Ty::Int(target_kind), ty::Ty::Int(source_kind)) = (target, source) {
+            let target_kind = ty::target_int_kind(*target_kind, self.target.pointer_width);
+            let source_kind = ty::target_int_kind(*source_kind, self.target.pointer_width);
+            let reason = if target_kind.is_signed() != source_kind.is_signed() {
+                "跨符号转换"
+            } else {
+                "窄化转换"
+            };
+            return Some(format!(
+                "{reason}从 `{}` 到 `{}` 会丢失或改变值域（{} 不能无损容纳 {}）；请显式 `as`",
+                source_kind.name(),
+                target_kind.name(),
+                target_kind.name(),
+                ty::int_range_text(source_kind)
+            ));
+        }
+        // 已定型浮点：`f64 → f32` 等窄化必须显式 `as`
+        if let (ty::Ty::Float(target_kind), ty::Ty::Float(source_kind)) = (target, source) {
+            return Some(format!(
+                "浮点窄化从 `{}` 到 `{}` 会丢失精度；请显式 `as`",
+                source_kind.name(),
+                target_kind.name()
+            ));
+        }
         None
     }
 
@@ -424,5 +455,17 @@ impl Sema {
     pub fn is_assignable(&self, target: &ty::Ty, source: &ty::Ty) -> bool {
         let mut is_subclass = |a: &ty::Ty, b: &ty::Ty| self.is_subclass(a, b);
         ty::assignable(target, source, &mut is_subclass, self.target.pointer_width)
+    }
+
+    /// 记录二元数值运算的公共类型（供 HIR 统一提升操作数）。
+    ///
+    /// 只记录已落地的具体数值（`Int` / `Float`）：字面量态、指针、`??` 与
+    /// 移位不参与提升，HIR 会按自身规则处理。重复记录以最后一次为准。
+    pub(crate) fn record_binary_numeric(&mut self, module: ModuleId, span: Span, common: ty::Ty) {
+        // 只收已定型的具体数值：两个字面量保持未定型态，由上下文各自落地；
+        // 指针算术、`??`、移位与指针比较不进入本表。
+        if matches!(common, ty::Ty::Int(_) | ty::Ty::Float(_)) && span.start < span.end {
+            self.binary_numeric.insert((module, span), common);
+        }
     }
 }

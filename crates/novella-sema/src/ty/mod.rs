@@ -4,7 +4,8 @@
 //! - `int` ≡ `i32`、`float` ≡ `f32`（design.md 既定等价），解析时直接归一化；
 //! - 数值字面量先记为未定型的 [`Ty::IntLiteral`] / [`Ty::FloatLiteral`]，
 //!   可赋给任意同族数值类型（按目标类型的溢出检查属后续期）；
-//! - 数值隐式转换只允许同符号无损扩宽（`i32 → i64`）；窄化与跨符号一律报错；
+//! - 数值隐式转换只允许无损值域包含（如 `u8 → i16`、`f32 → f64`）；窄化与有符号→无符号一律报错；
+//! - 已定型的同族数值表达式提升到可无损容纳操作数的公共类型；整数与浮点不混合；
 //! - 隐式转换仅 `null → 任意指针/class`、`void* ↔ 任意 T*`、子类 → 父类。
 
 use std::collections::HashMap;
@@ -73,7 +74,7 @@ impl IntKind {
         })
     }
 
-    /// 是否有符号（供无损扩宽判定 [`IntKind::widens_to`] 使用）。
+    /// 是否有符号。`usize` / `isize` 在值域判定前须通过 [`target_int_kind`] 折算。
     pub(crate) fn is_signed(self) -> bool {
         matches!(
             self,
@@ -81,10 +82,7 @@ impl IntKind {
         )
     }
 
-    /// 位宽（位）。
-    ///
-    /// `usize` / `isize` 的位宽取决于目标平台：sema 阶段按 64 位判定，与
-    /// [`int_literal_fits_non_negative`] 的范围判定口径一致。
+    /// 位宽（位）；`usize` / `isize` 应先用 [`target_int_kind`] 按目标折算。
     fn bit_width(self) -> u32 {
         match self {
             IntKind::U8 | IntKind::I8 => 8,
@@ -94,13 +92,36 @@ impl IntKind {
         }
     }
 
-    /// `self → target` 是否为同符号整数的**无损扩宽**（design.md §5.2.1）。
-    ///
-    /// 只有「同符号且目标位宽更大」才允许：`i32 → i64`、`u8 → u16` 可行，
-    /// `i64 → i32`（窄化）、`i32 → u64`（跨符号）、`u32 → u64` 之外的任意组合
-    /// 一律不可。窄化与跨符号必须显式 `as`。
-    pub(crate) fn widens_to(self, target: IntKind) -> bool {
-        self.is_signed() == target.is_signed() && self.bit_width() < target.bit_width()
+    /// 目标整数值域是否包含源值域；平台整数应先按目标折算。
+    pub(crate) fn value_preserving_to(self, target: Self) -> bool {
+        match (self.is_signed(), target.is_signed()) {
+            (true, false) => false,
+            (false, true) => self.bit_width() < target.bit_width(),
+            _ => self.bit_width() <= target.bit_width(),
+        }
+    }
+
+    /// 按目标位宽求公共类型，并保留被选类型的名义种类。
+    fn common(self, other: Self, width: crate::PointerWidth) -> Option<Self> {
+        let bits = |kind| target_int_kind(kind, width).bit_width();
+        if self.is_signed() == other.is_signed() {
+            return Some(if bits(self) >= bits(other) {
+                self
+            } else {
+                other
+            });
+        }
+        let (signed, unsigned) = if self.is_signed() {
+            (self, other)
+        } else {
+            (other, self)
+        };
+        if bits(signed) > bits(unsigned) {
+            return Some(signed);
+        }
+        [Self::I16, Self::I32, Self::I64]
+            .into_iter()
+            .find(|kind| bits(*kind) > bits(unsigned))
     }
 }
 
@@ -121,6 +142,13 @@ impl FloatKind {
         }
     }
 
+    pub(crate) fn widens_to(self, target: Self) -> bool {
+        matches!(
+            (self, target),
+            (Self::F16, Self::F32 | Self::F64) | (Self::F32, Self::F64)
+        )
+    }
+
     pub(crate) fn from_name(name: &str) -> Option<Self> {
         Some(match name {
             "f16" => FloatKind::F16,
@@ -129,6 +157,15 @@ impl FloatKind {
             "f64" => FloatKind::F64,
             _ => return None,
         })
+    }
+}
+
+/// 已定型数值的公共类型；整数与浮点不混合。
+pub(crate) fn numeric_common(a: &Ty, b: &Ty, width: crate::PointerWidth) -> Option<Ty> {
+    match (a, b) {
+        (Ty::Int(a), Ty::Int(b)) => a.common(*b, width).map(Ty::Int),
+        (Ty::Float(a), Ty::Float(b)) => Some(Ty::Float(if a.widens_to(*b) { *b } else { *a })),
+        _ => None,
     }
 }
 
@@ -301,6 +338,10 @@ impl Ty {
             Ty::Trait(module, name) => TypeView::Trait(*module, name.clone()),
             Ty::TypeParam(name) => TypeView::TypeParam(name.clone()),
         }
+    }
+
+    pub(crate) fn is_float(&self) -> bool {
+        matches!(self, Ty::Float(_) | Ty::FloatLiteral(_))
     }
 
     pub(crate) fn is_numeric(&self) -> bool {
@@ -523,5 +564,37 @@ impl fmt::Display for Ty {
             Ty::TypeParam(n) => write!(f, "{n}"),
             Ty::Error => write!(f, "<错误类型>"),
         }
+    }
+}
+
+#[cfg(test)]
+mod numeric_conversion_tests {
+    use super::{FloatKind, IntKind};
+    use crate::PointerWidth;
+
+    #[test]
+    fn integer_value_preserving_and_common_types() {
+        use IntKind::*;
+        assert!(U8.value_preserving_to(I16));
+        assert!(U32.value_preserving_to(I64));
+        assert!(I32.value_preserving_to(I64));
+        assert!(!U64.value_preserving_to(I64));
+        assert!(!I32.value_preserving_to(U32));
+        assert_eq!(I32.common(I64, PointerWidth::Bits64), Some(I64));
+        assert_eq!(U8.common(I16, PointerWidth::Bits64), Some(I16));
+        assert_eq!(U32.common(I32, PointerWidth::Bits64), Some(I64));
+        assert_eq!(U64.common(I64, PointerWidth::Bits64), None);
+        assert_eq!(Usize.common(I32, PointerWidth::Bits32), Some(I64));
+        assert_eq!(Usize.common(I32, PointerWidth::Bits64), None);
+        assert_eq!(Usize.common(U64, PointerWidth::Bits32), Some(U64));
+        assert_eq!(Usize.common(U64, PointerWidth::Bits64), Some(Usize));
+    }
+
+    #[test]
+    fn float_widening_and_common_types() {
+        use FloatKind::*;
+        assert!(F16.widens_to(F32));
+        assert!(F32.widens_to(F64));
+        assert!(!F64.widens_to(F32));
     }
 }
