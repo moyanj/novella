@@ -354,23 +354,6 @@ impl<'ctx> Body<'ctx, '_> {
                 let value = self.array_literal(elements, element_ty, length)?;
                 self.save(*dst, &ty, value.into())?;
             }
-            HirInstr::IndexStore {
-                target,
-                index,
-                element_ty,
-                value,
-            } => {
-                let slot = self.index_address(target, index, element_ty)?;
-                let value = self.operand(value, element_ty)?;
-                self.reference_value("novella_rt_retain", value, element_ty)?;
-                let previous = self.builder.build_load(
-                    value_type(self.context, self.types, element_ty)?,
-                    slot,
-                    "previous_element",
-                )?;
-                self.builder.build_store(slot, value)?;
-                self.reference_value("novella_rt_release", previous, element_ty)?;
-            }
             HirInstr::Tuple { elements, ty, dst } => {
                 let HirType::Tuple(element_types) = ty else {
                     return Err(CodegenError("Tuple 指令的类型不是元组".into()));

@@ -182,8 +182,7 @@ fn block(
                     HirInstr::LocalAddress { .. } => Vec::new(),
                     HirInstr::FieldAddress { target_ty, .. } => vec![target_ty],
                     HirInstr::IndexAddress { element_ty, .. }
-                    | HirInstr::IndexLoad { element_ty, .. }
-                    | HirInstr::IndexStore { element_ty, .. } => vec![element_ty],
+                    | HirInstr::IndexLoad { element_ty, .. } => vec![element_ty],
                     HirInstr::StoreIndirect { ty, .. }
                     | HirInstr::Tuple { ty, .. }
                     | HirInstr::TupleExtract { ty, .. }

@@ -73,9 +73,9 @@ impl<'a> ModuleBuilder<'a> {
         }
         for item in &self.trait_items {
             if let Item::Trait(item) = item {
-                let summary = self.type_summary(&item.name, item.span, "trait")?;
-                // Trait 方法模板只在 witness 或静态约束调用处实例化。
-                let _ = summary;
+                // Trait 方法模板只在 witness 或静态约束调用处实例化；
+                // 这里只借 `?` 传播类型摘要查询的错误。
+                self.type_summary(&item.name, item.span, "trait")?;
                 let methods = Vec::new();
                 types.push(HirTypeDef::Trait {
                     name: item.name.clone(),

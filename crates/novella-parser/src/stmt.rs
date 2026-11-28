@@ -14,7 +14,6 @@ use novella_ast::{
 };
 use novella_core::{
     Span,
-    diagnostic::{Diagnostic, DiagnosticCode, DiagnosticLocation},
     token::{Token, TokenKind},
 };
 
@@ -73,7 +72,8 @@ impl Parser {
             TokenKind::Let | TokenKind::Const => self.parse_variable_statement(None),
             // 块内也允许带可见性前缀的声明（文法 `variableStatement: Pub? ...`）
             TokenKind::Pub | TokenKind::Pri | TokenKind::Pkg => {
-                let scope = self.parse_visibility();
+                // 仅在确认是修饰符（peek 命中可见性分支）时调用，不会遇到 EOF
+                let scope = self.parse_visibility().ok().flatten();
                 self.parse_variable_statement(scope)
             }
             TokenKind::If => self.parse_if(),
@@ -395,7 +395,8 @@ impl Parser {
             TokenKind::Let | TokenKind::Const | TokenKind::Pub | TokenKind::Pri | TokenKind::Pkg
         ) || self.looks_like_bare_declaration();
         if declares {
-            let scope = self.parse_visibility();
+            // 声明位已确定不是 EOF（`declares` 来自 peek 命中），退化为「无修饰符」
+            let scope = self.parse_visibility().ok().flatten();
             let variable_type = match self.peek().map(|t| t.kind) {
                 Some(TokenKind::Const) => {
                     self.advance();
@@ -589,14 +590,13 @@ impl Parser {
     /// 解析 `return [expr];`（对应文法 `returnStatement`）。
     fn parse_return(&mut self) -> Option<Statement> {
         let keyword = self.expect(TokenKind::Return)?;
+        // 与普通表达式语句共用同一套收尾规则（`;` 必填，但块末 / EOF 前可省略）
         let value = if self.check(TokenKind::SemiColon) {
             None
         } else {
             Some(self.parse_expression()?)
         };
-        if self.eat(TokenKind::SemiColon).is_none() {
-            self.error_here("语句末尾应为 `;`");
-        }
+        self.expect_statement_end();
         Some(Statement::Return {
             value,
             span: Span {
@@ -609,9 +609,7 @@ impl Parser {
     /// 解析 `break;` / `continue;`（对应文法 `breakStatement` / `continueStatement`）。
     fn parse_jump(&mut self, make: impl FnOnce(Span) -> Statement) -> Option<Statement> {
         let keyword = self.advance()?;
-        if self.eat(TokenKind::SemiColon).is_none() {
-            self.error_here("语句末尾应为 `;`");
-        }
+        self.expect_statement_end();
         Some(make(Span {
             start: keyword.span.start,
             end: self.last_end(),
@@ -626,9 +624,7 @@ impl Parser {
         } else {
             Some(self.parse_expression()?)
         };
-        if self.eat(TokenKind::SemiColon).is_none() {
-            self.error_here("语句末尾应为 `;`");
-        }
+        self.expect_statement_end();
         Some(Statement::Throw {
             expr,
             span: Span {
@@ -646,9 +642,7 @@ impl Parser {
         } else {
             Some(self.parse_expression()?)
         };
-        if self.eat(TokenKind::SemiColon).is_none() {
-            self.error_here("语句末尾应为 `;`");
-        }
+        self.expect_statement_end();
         Some(Statement::Yield {
             value,
             span: Span {
@@ -673,39 +667,6 @@ impl Parser {
     }
 
     // ---------- 恢复 ----------
-
-    /// 按花括号配对跳过当前块剩余部分（吃到最后匹配的 `}`）。
-    ///
-    /// 用于恢复病理输入时的块剩余部分：只数括号、不再递归，保证过程线性且必然终止。
-    #[allow(dead_code)]
-    fn skip_balanced_block(&mut self, open: &novella_core::token::Token) {
-        let mut level = 1usize;
-        while let Some(token) = self.peek() {
-            match token.kind {
-                TokenKind::OpenBrace => level += 1,
-                TokenKind::CloseBrace => {
-                    level -= 1;
-                    if level == 0 {
-                        self.advance();
-                        return;
-                    }
-                }
-                TokenKind::Eof => return,
-                _ => {}
-            }
-            self.advance();
-        }
-        // 走到流末尾仍未闭合：以块的起始位置补一条诊断（外层守卫已报过深度问题）
-        let mut diag =
-            Diagnostic::error("此处缺少与之配对的 `}`").with_code(DiagnosticCode::SyntaxError);
-        diag = diag.with_location(DiagnosticLocation {
-            file: None,
-            line: open.line,
-            column: open.column,
-            span: Some(open.span),
-        });
-        self.diagnostics.push(diag);
-    }
 
     /// 语句级同步：跳过当前无法解析的 token，直到语句边界（`;` / `}` / 行首）。
     pub(crate) fn recover_to_statement_boundary(&mut self) {

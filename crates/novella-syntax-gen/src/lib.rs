@@ -341,62 +341,10 @@ fn is_keyword_variant(variant: &str) -> bool {
     // `BooleanLiteral` 与 `Null` 在词法上是字面量关键字，同样不进入运算符组
     novella_core::keywords::KEYWORDS
         .iter()
-        .any(|entry| variant_name(entry.kind) == variant)
+        // `TokenKind` 的 `Debug` 输出即变体名（本项目无自定义 Debug），
+        // 用它代替手抄的 45 行恒等映射：新增变体自动纳入，无需再改这段。
+        .any(|entry| format!("{:?}", entry.kind) == variant)
         || matches!(variant, "Null" | "BooleanLiteral")
-}
-
-/// 从 `TokenKind` 取变体名（用于与 logos 变体名对照；两者拼写一致）。
-fn variant_name(kind: novella_core::token::TokenKind) -> &'static str {
-    // `TokenKind` 未提供 `as_str`，但 Debug 输出即变体名，且本项目无自定义 Debug
-    use novella_core::token::TokenKind;
-    match kind {
-        TokenKind::From => "From",
-        TokenKind::Import => "Import",
-        TokenKind::Pub => "Pub",
-        TokenKind::Pri => "Pri",
-        TokenKind::Pkg => "Pkg",
-        TokenKind::Const => "Const",
-        TokenKind::Let => "Let",
-        TokenKind::Static => "Static",
-        TokenKind::Weak => "Weak",
-        TokenKind::Func => "Func",
-        TokenKind::Class => "Class",
-        TokenKind::Struct => "Struct",
-        TokenKind::Trait => "Trait",
-        TokenKind::New => "New",
-        TokenKind::This => "This",
-        TokenKind::If => "If",
-        TokenKind::Else => "Else",
-        TokenKind::Elif => "Elif",
-        TokenKind::While => "While",
-        TokenKind::For => "For",
-        TokenKind::In => "In",
-        TokenKind::Break => "Break",
-        TokenKind::Continue => "Continue",
-        TokenKind::Return => "Return",
-        TokenKind::Default => "Default",
-        TokenKind::Match => "Match",
-        TokenKind::Case => "Case",
-        TokenKind::KeyAnd => "KeyAnd",
-        TokenKind::KeyOr => "KeyOr",
-        TokenKind::KeyNot => "KeyNot",
-        TokenKind::Try => "Try",
-        TokenKind::Catch => "Catch",
-        TokenKind::Finally => "Finally",
-        TokenKind::Throw => "Throw",
-        TokenKind::With => "With",
-        TokenKind::As => "As",
-        TokenKind::Type => "Type",
-        TokenKind::Is => "Is",
-        TokenKind::Async => "Async",
-        TokenKind::Await => "Await",
-        TokenKind::Yield => "Yield",
-        TokenKind::Extern => "Extern",
-        TokenKind::Unsafe => "Unsafe",
-        TokenKind::Null => "Null",
-        TokenKind::BooleanLiteral => "BooleanLiteral",
-        _ => "",
-    }
 }
 
 /// 关键字字面量 → TextMate 作用域。

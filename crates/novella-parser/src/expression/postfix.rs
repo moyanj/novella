@@ -1,15 +1,12 @@
 //! 后缀与调用：成员 / 索引 / 调用 / `new` / 后缀自增、泛型实参扫描。
 
 use novella_ast::{
-    expr::{Expression, Literal, UnaryOp},
+    expr::{Expression, UnaryOp},
     types::TypeExpr,
 };
-use novella_core::{
-    Span,
-    token::{Token, TokenKind},
-};
+use novella_core::{Span, token::TokenKind};
 
-use crate::{Parser, split_token_pair};
+use crate::Parser;
 
 use super::helper::is_type_token;
 
@@ -55,23 +52,12 @@ impl Parser {
                     // 实参解析失败说明不是调用（如 `f(*p)` 等歧义）：放弃后缀，
                     // 让上层按二元/关系运算继续，未消费的 token 交给语句层同步。
                     let checkpoint = self.checkpoint();
-                    // 后缀是累积构造的，这里先把已构造好的部分暂存一份：
-                    // 若调用解析失败，就回滚游标并退回这份快照继续解析其它后缀。
-                    let saved_expr = expr.clone();
-                    let callee = std::mem::replace(
-                        &mut expr,
-                        Expression::Literal {
-                            value: Literal::Null,
-                            span: Span { start: 0, end: 0 },
-                        },
-                    );
-                    match self.parse_call_suffix(callee) {
+                    match self.parse_call_suffix(&expr) {
                         Some(call) => expr = call,
                         None => {
-                            // 实参无法解析：回滚游标与诊断，保留快照继续，
-                            // 避免整条表达式被丢弃导致后续语句连锁解析失败
+                            // 实参无法解析：回滚游标（含诊断），保留已构建的左半表达式
+                            // 继续交给上层，避免整条表达式被丢弃导致后续语句连锁失败
                             self.rollback(checkpoint);
-                            expr = saved_expr;
                             break;
                         }
                     }
@@ -109,9 +95,13 @@ impl Parser {
 
     /// 在 `callee` 之后解析 `[<type_args>] '(' args ')'`，产出调用表达式。
     ///
-    /// 泛型实参解析失败（如 `a < b > (c)` 这类比较链被误判）时，
-    /// 游标回退到尖括号之前并返回 `None`，交回关系运算符路径处理。
-    fn parse_call_suffix(&mut self, callee: Expression) -> Option<Expression> {
+    /// `callee` 以借用传入：本方法只读它的 span，只有成功时才 clone 进 `Expression::Call`。
+    /// 因此失败路径不会留下任何占位节点（旧实现需要用 `Literal::Null` 换手，失败时
+    /// 会把一个指向 0 字节的 `null` 字面量混进表达式树，让 sema 报出定位错误的类型诊断）。
+    ///
+    /// 泛型实参解析失败（如 `a < b > (c)` 这类比较链被误判）、或实参解析失败时，
+    /// 本方法负责把游标与诊断回滚到调用前的状态并返回 `None`，交回关系运算符路径处理。
+    fn parse_call_suffix(&mut self, callee: &Expression) -> Option<Expression> {
         let saved = self.pos;
         let saved_diagnostics = self.diagnostics.len();
         let type_args = if self.check(TokenKind::LessThan) {
@@ -131,13 +121,18 @@ impl Parser {
             self.diagnostics.truncate(saved_diagnostics);
             return None;
         }
-        let args = self.parse_arguments()?;
+        // 实参解析失败也必须回滚（旧实现里的 `?` 会带着已产生的诊断和半截游标直接返回）
+        let Some(args) = self.parse_arguments() else {
+            self.pos = saved;
+            self.diagnostics.truncate(saved_diagnostics);
+            return None;
+        };
         let span = Span {
             start: callee.span().start,
             end: self.last_end(),
         };
         Some(Expression::Call {
-            callee: Box::new(callee),
+            callee: Box::new(callee.clone()),
             type_args,
             args,
             span,
@@ -155,23 +150,17 @@ impl Parser {
         if !self.check(TokenKind::LessThan) {
             return false;
         }
-        let Some((inner, after)) = self.scan_call_angle() else {
-            return false;
-        };
-        if inner.is_empty() || !inner.iter().all(|token| is_type_token(token.kind)) {
-            return false;
-        }
-        // `>` 之后紧跟 `(` 才是泛型调用；`a < b > (c)` 这类比较链虽形似，
-        // 但会在类型解析失败时退回关系运算（见 `parse_postfix` 的兜底）。
-        after == Some(TokenKind::OpenParen)
+        self.is_call_angle().is_some()
     }
 
-    /// 扫描调用处的尖括号，返回括号内 token 与闭合 `>` 之后下一个 token 的种类。
+    /// 判断 `self.pos` 处的 `<` 是否开启泛型实参；是则返回闭合 `>` 的 token 下标。
     ///
-    /// 与 [`Parser::scan_angle`] 的区别：这里报告闭合之后的位置，用于判断
-    /// `f<T>(` 中的 `(`。`>>` 闭合时后半个 `>` 仍属于后续扫描，故直接指向它之后。
-    fn scan_call_angle(&self) -> Option<(Vec<Token>, Option<TokenKind>)> {
-        let mut inner = vec![];
+    /// 原实现先完整扫描尖括号再判类型，`a < b && c < d ...` 这类比较链上每个 `<`
+    /// 都会扫到表达式结尾，整体退化为 O(n²)（3KB 链即上百毫秒）。这里改为单趟：
+    /// 逐 token 判定「是否仍是合法的类型实参」，一旦首个非类型 token 出现就停止，
+    /// 比较链通常在第二个 token 即失败。仅当全部 token 都是类型 token 时才接受扫描结果，
+    /// 因此与旧实现的接受集合完全一致（旧实现的 `!is_type_token → false` 分支现在提前）。
+    fn is_call_angle(&self) -> Option<usize> {
         let mut depth = 0usize;
         let mut idx = self.pos;
         while let Some(token) = self.tokens.get(idx) {
@@ -179,51 +168,42 @@ impl Parser {
             match token.kind {
                 TokenKind::LessThan => {
                     depth += 1;
-                    if depth > 1 {
-                        inner.push(token.clone());
+                    if !is_type_token(token.kind) {
+                        return None;
                     }
                 }
                 TokenKind::LeftShiftArithmetic => {
+                    // 拆成两个 `<`；内层 `<` 是类型 token，外层仍属尖括号。
                     depth += 2;
-                    let (first, second) =
-                        split_token_pair(token, TokenKind::LessThan, TokenKind::LessThan);
-                    depth -= 2;
-                    inner.push(first);
-                    inner.push(second);
                 }
                 TokenKind::MoreThan => {
-                    depth -= 1;
+                    depth = depth.checked_sub(1)?;
                     if depth == 0 {
-                        return Some((inner, self.tokens.get(idx).map(|t| t.kind)));
+                        return (self.tokens.get(idx).map(|t| t.kind)
+                            == Some(TokenKind::OpenParen))
+                        .then_some(idx - 1);
                     }
-                    inner.push(token.clone());
                 }
                 TokenKind::RightShiftArithmetic => {
-                    let (first, second) =
-                        split_token_pair(token, TokenKind::MoreThan, TokenKind::MoreThan);
-                    depth -= 1;
-                    if depth == 0 {
-                        // 第一个 `>` 闭合当前尖括号；下一个「token」是它的后半段，
-                        // 不可能是 `(`，故直接返回 None 交回关系运算符路径。
-                        let _ = second;
-                        return Some((inner, None));
+                    // 第一个 `>` 闭合当前尖括号；其后是后半个 `>`，不可能是 `(`。
+                    if depth <= 1 {
+                        return None;
                     }
-                    depth -= 1;
-                    inner.push(first);
+                    depth -= 2;
                     if depth == 0 {
-                        return Some((inner, self.tokens.get(idx).map(|t| t.kind)));
+                        return (self.tokens.get(idx).map(|t| t.kind)
+                            == Some(TokenKind::OpenParen))
+                        .then_some(idx - 1);
                     }
-                    inner.push(second);
                 }
                 TokenKind::SemiColon
                 | TokenKind::OpenBrace
                 | TokenKind::CloseBrace
                 | TokenKind::Eof => return None,
-                _ => {
-                    if depth == 0 {
+                kind => {
+                    if depth == 0 || !is_type_token(kind) {
                         return None;
                     }
-                    inner.push(token.clone());
                 }
             }
         }

@@ -78,6 +78,8 @@ pub(crate) struct Module {
     pub(crate) path: PathBuf,
     /// 源码
     pub(crate) source: String,
+    /// 源码的行索引：诊断 span → 行列换算复用同一份，避免每条诊断重建（O(n) 一次）。
+    pub(crate) line_index: novella_core::line_index::LineIndex,
     /// 词法产物：未经注释过滤的完整 token 流（JSON 输出 / 高亮等下游消费）
     pub(crate) tokens: Vec<Token>,
     /// 抽象语法树
@@ -139,20 +141,15 @@ impl Module {
 
     /// 把「仅有 span」的诊断补齐成本模块的行列与文件路径。
     ///
-    /// 行列换算统一走 [`novella_core::decor::decorate`]，本模块只提供上下文
-    /// （路径 + 源码），避免各阶段重复实现 span → 行/列。
+    /// 行列换算走本模块构造时缓存的行索引，不再为每条诊断重建整份 `LineIndex`。
     fn decorated(&self, span: Span, diagnostic: Diagnostic) -> Diagnostic {
-        let located = diagnostic.with_location(DiagnosticLocation {
-            file: None,
-            line: 0,
-            column: 0,
+        let (line, column) = self.line_index.locate(span.start);
+        diagnostic.with_location(DiagnosticLocation {
+            file: Some(self.path.to_string_lossy().into_owned()),
+            line,
+            column,
             span: Some(span),
-        });
-        novella_core::decor::decorate_one(
-            located,
-            Some(self.path.to_string_lossy().as_ref()),
-            &self.source,
-        )
+        })
     }
 }
 

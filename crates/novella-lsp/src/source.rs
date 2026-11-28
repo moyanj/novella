@@ -93,6 +93,15 @@ impl SemanticIndex {
         base + self.inner[line].byte_of(column)
     }
 
+    /// 行内 UTF-16 列 → 行内字节偏移（列越过行尾时夹到行末）。
+    ///
+    /// 等价于 `offset(line, column)` 减去行首，但调用方手里只有「行文本切片 + 列」时
+    /// 直接可用，无需再求行首偏移。
+    pub fn byte_in_line(&self, line: usize, column: Column) -> usize {
+        let line = line.min(self.inner.len().saturating_sub(1));
+        self.inner[line].byte_of(column)
+    }
+
     /// LSP `Position` → 字节偏移。
     pub fn offset_of(&self, position: LspPosition) -> usize {
         self.offset(position.line, position.character)

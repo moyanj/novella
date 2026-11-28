@@ -1,6 +1,5 @@
 //! 目标描述查询：`--print target-list` 与 `--print target-spec-json`。
 
-use crate::builtin;
 use crate::spec::TargetSpec;
 
 /// 支持 `--print` 的查询种类。
@@ -39,16 +38,6 @@ impl std::fmt::Display for PrintKind {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.write_str(self.as_str())
     }
-}
-
-/// 每行一个内置 triple。
-pub fn target_list() -> String {
-    let mut output = String::new();
-    for triple in builtin::list() {
-        output.push_str(triple);
-        output.push('\n');
-    }
-    output
 }
 
 /// 目标描述的 JSON；输出可被 `--target <file.json>` 原样回读。

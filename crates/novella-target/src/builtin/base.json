@@ -23,6 +23,5 @@
   "linker-flavor": "clang",
   "linker-args": [],
   "is-like-linux": false,
-  "is-like-bare": false,
-  "is-like-msvc": false
+  "is-like-bare": false
 }

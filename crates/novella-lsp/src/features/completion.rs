@@ -126,7 +126,8 @@ fn symbol_items(outline: &Outline, kinds: &[OutlineKind]) -> Vec<CompletionItem>
 pub(crate) fn completion_context(doc: &SourceDoc, offset: usize) -> CompletionContext {
     let (line, column) = doc.index.position(offset);
     let line_text = doc.index.line_text(&doc.text, line as usize);
-    let prefix = &line_text[..byte_of_column(line_text, column)];
+    // 列→行内字节换算统一走 `SemanticIndex`，避免第二套 UTF-16 实现
+    let prefix = &line_text[..doc.index.byte_in_line(line as usize, column)];
     let trimmed = prefix.trim_end();
 
     if trimmed.ends_with('.') {
@@ -150,19 +151,4 @@ pub(crate) fn completion_context(doc: &SourceDoc, offset: usize) -> CompletionCo
 
 fn is_ident_char(ch: char) -> bool {
     ch.is_alphanumeric() || ch == '_' || ch == '$'
-}
-
-/// UTF-16 列 → 行内字节偏移。
-///
-/// 列落在某个字符的中间（代理对后半）时取该字符起点：补全前缀按字符边界切开即可，
-/// 切在代理对中间会产生非法 UTF-8。列越界时夹到行尾。
-pub(crate) fn byte_of_column(line: &str, column: u32) -> usize {
-    let mut utf16 = 0u32;
-    for (offset, ch) in line.char_indices() {
-        if utf16 + ch.len_utf16() as u32 > column {
-            return offset;
-        }
-        utf16 += ch.len_utf16() as u32;
-    }
-    line.len()
 }

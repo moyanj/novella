@@ -1151,15 +1151,9 @@ with 表头无需括号（文法为 `with expr as name { ... }`），括号会�
 
 `expect_statement_end`（`:662-673`）：语句必须以 `;` 结束，但**紧随 `}` 或 EOF 时容忍省略**。这是为了支持 `if (x) { ... }` 后不写分号的常见风格。
 
-`recover_to_statement_boundary`（`:711-726`）：跳到下一个 `;`、`}` 或行首（line 变化处）。这是块内语句解析失败时的同步点。
+`recover_to_statement_boundary`：跳到下一个 `;`、`}` 或行首（line 变化处）。这是块内语句解析失败时的同步点。
 
-`skip_balanced_block`（`:681-708`，标注 `#[allow(dead_code)]`）：跳过平衡的花括号块，找不到配对 `}` 时报：
-
-```
-此处缺少与之配对的 `}`
-```
-
-该方法当前未被调用（故 `allow(dead_code)`），是预留的恢复工具。
+`return` / `throw` / `yield` / `break` / `continue` 与普通表达式语句共用同一个 `expect_statement_end`：块末 `}` 或 EOF 之前可省略分号且不报错。
 
 ---
 ## 11. 表达式解析（expression/ 六个子模块）

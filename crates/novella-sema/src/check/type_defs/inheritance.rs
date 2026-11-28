@@ -187,7 +187,8 @@ fn check_overrides(sema: &mut Sema) {
         let methods: Vec<MethodSig> = def.methods.values().cloned().collect();
         let fields = def.fields.clone();
         for field in fields {
-            if lookup_member_chain(sema, &parent, &field.name, false).is_some() {
+            // 遮蔽判定按「同类静态性」：实例字段只与实例成员冲突，静态字段只与静态成员冲突。
+            if lookup_member_chain(sema, &parent, &field.name, field.is_static).is_some() {
                 sema.decl_error(
                     key.0,
                     sema.type_defs
@@ -216,14 +217,15 @@ fn check_overrides(sema: &mut Sema) {
                 );
                 continue;
             }
-            // 先按「同类静态性」签名查找；静态方法还需确认父类同名成员不是实例方法
+            // 先按「同类静态性」查找方法；未命中说明父类同名成员是另一侧的静态性。
             let Some(hit) = lookup_member_chain(sema, &parent, &method.name, method.is_static)
             else {
-                // 静态 / 实例不对应的情况：再用另一侧查一次
-                if let Some(other) =
+                // 静态 / 实例不对应：仅当父类存在同静态性的方法时才报不一致。
+                // （同静态性的字段已在上一段由遮蔽检查覆盖）
+                let mismatched =
                     lookup_member_chain(sema, &parent, &method.name, !method.is_static)
-                    && let MemberInfo::Method(base) = other.info
-                {
+                        .is_some_and(|other| matches!(other.info, MemberInfo::Method(_)));
+                if mismatched {
                     sema.decl_error(
                         module_of(&key),
                         method.span,
@@ -232,7 +234,6 @@ fn check_overrides(sema: &mut Sema) {
                             method.name, parent.1, method.name
                         ),
                     );
-                    let _ = base;
                 }
                 continue;
             };
@@ -254,7 +255,7 @@ fn check_overrides(sema: &mut Sema) {
             ) {
                 base.sig = (*sig).clone();
             }
-            check_override_sig(sema, key.0, &key.1, &method, &base, &parent);
+            check_override_sig(sema, key.0, &method, &base, &parent);
         }
     }
 }
@@ -263,7 +264,6 @@ fn check_overrides(sema: &mut Sema) {
 fn check_override_sig(
     sema: &mut Sema,
     module: ModuleId,
-    class_name: &str,
     method: &MethodSig,
     base: &MethodSig,
     parent_key: &(ModuleId, String),
@@ -321,10 +321,7 @@ fn check_override_sig(
             ),
         );
     }
-    if base.is_abstract {
-        // 已实现（有函数体）即为有效实现；此处仅在声明但父类也是抽象时保持抽象
-        let _ = class_name;
-    }
+    // 抽象性不在此判定：子类给出函数体即视为有效实现，不改变父类的抽象标记。
 }
 
 /// 方法的声明位置（覆写诊断定位）。

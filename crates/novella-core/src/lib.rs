@@ -15,9 +15,3 @@ pub struct Span {
     pub start: usize,
     pub end: usize,
 }
-
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-pub struct Spanned<T> {
-    pub node: T,
-    pub span: Span,
-}

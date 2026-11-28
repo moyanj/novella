@@ -233,7 +233,7 @@ impl Parser {
     /// `<<` / `>>` 层（对应文法 `ShiftExpr`）。
     ///
     /// `>>` 在此处是单个移位 token：泛型实参列表走的是自己的解析路径
-    /// （[`Parser::scan_angle`]），不会被这一层看到。
+    /// （[`Parser::looks_like_call`] 的 `is_call_angle` 扫描），不会被这一层看到。
     fn parse_shift(&mut self) -> Option<Expression> {
         let mut left = self.parse_cast()?;
         loop {

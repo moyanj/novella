@@ -64,7 +64,11 @@ impl Server {
         self.publish(&uri)
     }
 
-    /// `didClose`：丢弃文档缓存，并清空客户端侧的诊断。
+    /// `didClose`：丢弃文档缓存，清空该文档的诊断，并刷新其余仍打开的文档。
+    ///
+    /// 该 URI 已在本次通知里从 `self.documents` 移除，[`Server::publish`] 只推送仍打开
+    /// 的文档，因此它不会出现在返回消息里；清空客户端侧诊断由末尾那次显式空推送负责
+    /// （否则客户端会一直显示残留错误）。
     pub(crate) fn did_close(&mut self, params: Option<&Value>) -> Vec<Value> {
         let Some(uri) = params
             .and_then(|p| p.get("textDocument"))
@@ -73,12 +77,12 @@ impl Server {
         else {
             return Vec::new();
         };
-        self.documents.remove(uri);
-        self.versions.remove(uri);
-        eprintln!("[novella-lsp] 关闭文档：{uri}");
-        // 文档关闭后旧诊断必须显式清空，否则客户端会一直显示残留错误
-        let mut messages = self.publish(uri);
-        messages.push(publish_diagnostics(uri, Vec::new(), None));
+        let closed = uri.to_owned();
+        self.documents.remove(&closed);
+        self.versions.remove(&closed);
+        eprintln!("[novella-lsp] 关闭文档：{closed}");
+        let mut messages = self.publish(&closed);
+        messages.push(publish_diagnostics(&closed, Vec::new(), None));
         messages
     }
 
@@ -96,8 +100,12 @@ impl Server {
         self.publish("")
     }
 
-    /// 一次重建所有打开工程，依赖文件的诊断也随之刷新。
-    pub(crate) fn publish(&mut self, _uri: &str) -> Vec<Value> {
+    /// 重建分析并推送仍打开文档的诊断。
+    ///
+    /// `focus` 是触发本次发布的文档 URI（`""` 表示批量刷新，如 `didChangeWatchedFiles`），
+    /// 仅用于日志。分析是工程级的：依赖文件变化也会影响别的文档，因此推送范围始终覆盖
+    /// 全部仍打开的文档，而不是只推 `focus` 一个。
+    pub(crate) fn publish(&mut self, focus: &str) -> Vec<Value> {
         self.generation = self.generation.wrapping_add(1);
         self.analyses.clear();
         if self.background {
@@ -106,6 +114,9 @@ impl Server {
         }
         let job = self.analysis_job(Default::default());
         self.analyses = job.execute();
+        if !focus.is_empty() {
+            eprintln!("[novella-lsp] 发布诊断：focus={focus}");
+        }
         self.diagnostic_messages()
     }
 

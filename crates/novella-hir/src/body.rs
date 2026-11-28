@@ -86,11 +86,6 @@ impl HirBlock {
     pub fn push(&mut self, stmt: HirStmt) {
         self.stmts.push(stmt);
     }
-
-    /// 是否为空块（codegen 可据此省掉空 basic block）。
-    pub fn is_empty(&self) -> bool {
-        self.stmts.is_empty()
-    }
 }
 
 /// 语句：控制流结构 + 指令。
@@ -303,13 +298,6 @@ pub enum HirInstr {
         index: HirOperand,
         dst: LocalId,
     },
-    /// 写元素：`target[index] = value`
-    IndexStore {
-        target: HirOperand,
-        element_ty: HirType,
-        index: HirOperand,
-        value: HirOperand,
-    },
     /// 返回（`None` 表示 void 返回）
     Return(Option<HirOperand>),
 }
@@ -350,11 +338,6 @@ impl HirCond {
             prelude: HirBlock::new(),
             value,
         }
-    }
-
-    /// 是否带前置语句（codegen 可据此跳过空块的额外 basic block）。
-    pub fn has_prelude(&self) -> bool {
-        !self.prelude.is_empty()
     }
 }
 

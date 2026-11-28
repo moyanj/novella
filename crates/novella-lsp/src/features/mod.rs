@@ -34,7 +34,7 @@ pub(crate) use signature_help::signature_help;
 pub(crate) use symbols::document_symbols;
 
 #[cfg(test)]
-use completion::{CompletionContext, byte_of_column, completion_context};
+use completion::{CompletionContext, completion_context};
 
 #[cfg(test)]
 mod tests {
@@ -45,6 +45,9 @@ mod tests {
 
     use super::*;
     use crate::document::SourceDoc;
+    use crate::features::signature_help::{
+        count_top_level_commas, find_matching_paren, split_top_level,
+    };
 
     fn doc(text: &str) -> SourceDoc {
         SourceDoc::new(text.to_owned(), Some("demo.nov".to_owned()))
@@ -168,18 +171,6 @@ mod tests {
         );
     }
 
-    /// UTF-16 列到字节偏移的换算在行尾越界时夹到行末。
-    #[test]
-    fn column_conversion_clamps() {
-        assert_eq!(byte_of_column("abc", 1), 1);
-        assert_eq!(byte_of_column("中文", 0), 0, "列 0 是行首");
-        assert_eq!(
-            byte_of_column("中文", 1),
-            3,
-            "第二个字的 UTF-16 列从第 3 字节开始"
-        );
-        assert_eq!(byte_of_column("abc", 99), 3);
-    }
     /// 类型提示：`let` 无标注且初值是字面量时，名字末尾给 `: int`。
     #[test]
     fn inlay_hints_annotate_literal_variables() {
@@ -288,5 +279,37 @@ mod tests {
         );
 
         std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// A8：三套括号扫描器共用同一套规则——字符串内的括号与逗号不算语法符号。
+    ///
+    /// 修复前 `find_matching_paren` 只认圆括号且不跳字符串，遇到 `f("(", 1)` 会把
+    /// 字符串里的 `(` 当成嵌套深度，实参边界与 `count_top_level_commas` 分叉。
+    #[test]
+    fn a8_bracket_scanners_agree_on_strings() {
+        // `"("` 里的括号不参与深度：第一个 `)` 才是配对的右括号
+        assert_eq!(find_matching_paren("\"(\", 1)"), Some(6));
+        // 转义引号不结束字符串：`"a\")b"` 整体是一个字面量
+        // `text` = `"a\")b", 1)`：字面量整体跳过后第一个深度 0 的 `)` 在下标 10
+        assert_eq!(find_matching_paren("\"a\\\")b\", 1)"), Some(10));
+
+        // 逗号扫描同样跳过字符串
+        let document = doc("f(\"(\", 1)");
+        let text = document.text.clone();
+        let open = text.find('(').expect("有左括号");
+        let close = text.rfind(')').expect("有右括号");
+        assert_eq!(
+            count_top_level_commas(&document, open + 1, close),
+            1,
+            "字符串里的逗号不计入"
+        );
+
+        // 切分：字符串里的逗号不切
+        let parts = split_top_level("\"a,b\", c");
+        assert_eq!(parts, vec!["\"a,b\"".to_owned(), " c".to_owned()]);
+
+        // 空串与非空串的边界
+        assert_eq!(split_top_level(""), Vec::<String>::new());
+        assert_eq!(split_top_level("()"), vec!["()".to_owned()]);
     }
 }

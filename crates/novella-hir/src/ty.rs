@@ -233,14 +233,7 @@ impl HirType {
     /// 落地成具体类型（`TypeView::IntLiteral` / `FloatLiteral`）—— 这类表达式
     /// 的类型表里永远是字面量态，但它的实际类型由使用它的上下文决定。
     /// 没有上下文时仍然 fail-fast。
-    pub fn from_view(
-        view: &TypeView,
-        function_id: &mut dyn FnMut(&FunctionView) -> HirFunctionId,
-    ) -> Result<Self, BuildError> {
-        Self::from_view_with(view, function_id, None)
-    }
-
-    /// 带上下文期望类型的投影（见 [`HirType::from_view`]）。
+    /// 带上下文期望类型的投影。
     pub(crate) fn from_view_with(
         view: &TypeView,
         function_id: &mut dyn FnMut(&FunctionView) -> HirFunctionId,
@@ -309,11 +302,13 @@ impl HirType {
                 };
                 let args = args
                     .iter()
-                    .map(|ty| Self::from_view(ty, function_id))
+                    .map(|ty| Self::from_view_with(ty, function_id, None))
                     .collect::<Result<_, _>>()?;
                 let bindings = bindings
                     .iter()
-                    .map(|(name, ty)| Self::from_view(ty, function_id).map(|ty| (name.clone(), ty)))
+                    .map(|(name, ty)| {
+                        Self::from_view_with(ty, function_id, None).map(|ty| (name.clone(), ty))
+                    })
                     .collect::<Result<_, _>>()?;
                 Ok(Self::Dynamic(Box::new(DynamicType {
                     module: *module,
@@ -352,18 +347,11 @@ impl HirType {
 }
 
 impl FunctionSignature {
-    /// 从语义签名投影构造；形参 / 返回类型同样走 [`HirType::from_view`]。
+    /// 从语义签名投影构造；形参 / 返回类型同样走 [`HirType::from_view_with`]。
     ///
     /// 形参中出现 `TypeView::Unknown` 的情况（未标注类型的形参）会 fail-fast：
     /// 这类签名无法确定调用约定，不能进入后端。
-    pub fn from_view(
-        view: &FunctionView,
-        function_id: &mut dyn FnMut(&FunctionView) -> HirFunctionId,
-    ) -> Result<Self, BuildError> {
-        Self::from_view_with(view, function_id)
-    }
-
-    /// 同 [`FunctionSignature::from_view`]（返回值 / 形参不得为未定型字面量）。
+    /// 返回值 / 形参不得为未定型字面量。
     fn from_view_with(
         view: &FunctionView,
         function_id: &mut dyn FnMut(&FunctionView) -> HirFunctionId,

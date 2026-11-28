@@ -1081,7 +1081,7 @@ self.builder.build_store(*pointer, self.operand(value, ty)?)?;
 | `Return(value)` | 校验 → build_return | ✅，返回 `false` |
 | `FieldAddress / FieldLoad / FieldStore` | — | ❌ 报错 |
 | `Tuple / TupleExtract / Array / ArrayLength` | — | ❌ 报错 |
-| `IndexAddress / IndexLoad / IndexStore` | — | ❌ 报错 |
+| `IndexAddress / IndexLoad` | — | ❌ 报错 |
 | `TypeTest` | — | ❌ 报错 |
 
 ### 11.2 Alloc
@@ -1315,7 +1315,6 @@ HirInstr::FieldAddress { .. }
 | HirInstr::ArrayLength { .. }
 | HirInstr::IndexAddress { .. }
 | HirInstr::IndexLoad { .. }
-| HirInstr::IndexStore { .. }
 | HirInstr::TypeTest { .. } => {
     return Err(CodegenError(format!("暂不支持 HIR 指令 {instruction:?}")));
 }

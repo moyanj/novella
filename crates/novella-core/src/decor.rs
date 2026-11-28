@@ -7,7 +7,6 @@
 //!
 //! 分工原则：`core` 提供字符级的行列换算，各阶段只负责产出 span。
 
-use crate::Span;
 use crate::diagnostic::Diagnostic;
 use crate::line_index::LineIndex;
 
@@ -35,40 +34,6 @@ pub fn decorate(diagnostics: Vec<Diagnostic>, file: Option<&str>, source: &str) 
             diag
         })
         .collect()
-}
-
-/// 为单个诊断补齐位置（[`decorate`] 的单条版本）。
-pub fn decorate_one(diagnostic: Diagnostic, file: Option<&str>, source: &str) -> Diagnostic {
-    decorate(vec![diagnostic], file, source)
-        .into_iter()
-        .next()
-        .expect("decorate 保持入参条数，单条入参必有单条输出")
-}
-
-/// 平移诊断区间的起点并重算行列（f-string 等「内联源码」产生的诊断用）。
-///
-/// 内联片段被单独 lex/parse 时偏移从 0 起算；回到宿主文件时必须整体后移
-/// `offset`，否则 caret 会指到文件开头。平移后钳到 `source_len`，避免越界。
-pub fn shift_span_in_place(
-    diagnostic: &mut Diagnostic,
-    offset: usize,
-    source_len: usize,
-    index: &LineIndex,
-) {
-    let Some(location) = diagnostic.location.as_mut() else {
-        return;
-    };
-    let Some(old_span) = location.span else {
-        return;
-    };
-    let shifted = Span {
-        start: (old_span.start + offset).min(source_len),
-        end: (old_span.end + offset).min(source_len),
-    };
-    let (line, column) = index.locate(shifted.start);
-    location.span = Some(shifted);
-    location.line = line;
-    location.column = column;
 }
 
 #[cfg(test)]

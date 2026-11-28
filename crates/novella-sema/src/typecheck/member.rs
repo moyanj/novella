@@ -59,8 +59,7 @@ pub(crate) fn check_member_access(
                         );
                         value_type_of_symbol(sema, ctx, *symbol, name, span)
                     }
-                    Ok(ExportTarget::Namespace(ns_target)) => {
-                        let _ = ns_target;
+                    Ok(ExportTarget::Namespace(_)) => {
                         sema.type_error(
                             ctx.module,
                             span,
@@ -446,12 +445,15 @@ pub(crate) fn lookup_typed_member_chain(
     Some(hit)
 }
 
-/// 沿 class 继承链查找成员（struct 只看自身；static_only 时只看静态方法）。
+/// 沿 class 继承链查找成员（struct 只看自身）。
+///
+/// `static_only` 为真时只返回静态成员：用于「以类型名访问成员」的路径，
+/// 保证实例成员不会被误当静态成员解析；未命中时返回 `None`，由调用方继续判定。
 pub(crate) fn lookup_member_chain(
     sema: &Sema,
     key: &(ModuleId, String),
     name: &str,
-    _static_only: bool,
+    static_only: bool,
 ) -> Option<MemberHit> {
     let mut current = key.clone();
     let mut visited = HashSet::new();
@@ -461,19 +463,31 @@ pub(crate) fn lookup_member_chain(
         }
         match sema.type_defs.get(&current)? {
             TypeDef::Trait(def) => {
-                return def.methods.get(name).map(|method| MemberHit {
-                    info: MemberInfo::Method(method.clone()),
-                    owner: current,
-                });
+                return def
+                    .methods
+                    .get(name)
+                    .filter(|method| !static_only || method.is_static)
+                    .map(|method| MemberHit {
+                        info: MemberInfo::Method(method.clone()),
+                        owner: current,
+                    });
             }
             TypeDef::Struct(def) => {
-                if let Some(field) = def.fields.iter().find(|f| f.name == name) {
+                if let Some(field) = def
+                    .fields
+                    .iter()
+                    .find(|f| f.name == name && (!static_only || f.is_static))
+                {
                     return Some(MemberHit {
                         info: MemberInfo::Field(field.clone()),
                         owner: current,
                     });
                 }
-                if let Some(method) = def.methods.get(name) {
+                if let Some(method) = def
+                    .methods
+                    .get(name)
+                    .filter(|m| !static_only || m.is_static)
+                {
                     return Some(MemberHit {
                         info: MemberInfo::Method(method.clone()),
                         owner: current,
@@ -482,13 +496,21 @@ pub(crate) fn lookup_member_chain(
                 return None; // struct 无继承
             }
             TypeDef::Class(def) => {
-                if let Some(field) = def.fields.iter().find(|f| f.name == name) {
+                if let Some(field) = def
+                    .fields
+                    .iter()
+                    .find(|f| f.name == name && (!static_only || f.is_static))
+                {
                     return Some(MemberHit {
                         info: MemberInfo::Field(field.clone()),
                         owner: current.clone(),
                     });
                 }
-                if let Some(method) = def.methods.get(name) {
+                if let Some(method) = def
+                    .methods
+                    .get(name)
+                    .filter(|m| !static_only || m.is_static)
+                {
                     return Some(MemberHit {
                         info: MemberInfo::Method(method.clone()),
                         owner: current.clone(),

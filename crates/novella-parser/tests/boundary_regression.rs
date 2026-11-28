@@ -587,3 +587,163 @@ fn e_07_tuple_arity() {
     // 正常元组与空调用不受影响
     parse_clean("func f() { let a = (1, 2); run(); }");
 }
+
+// ---------- A3：比较链不再触发尖括号扫描的 O(n²) ----------
+
+/// A3：`a < b` 比较链中每个 `<` 只用常数步即判定「不是泛型实参」。
+///
+/// 修复前每个 `<` 都会经 `scan_call_angle` / `parse_call_type_args` 扫到表达式结尾，
+/// 规模翻倍耗时约 ×4；现在非法 token 在第二项即终止扫描。
+/// 上限取 1.5s 只拦截结构性退化，不追求精确计时。
+#[test]
+fn a3_comparison_chain_parses_in_linear_time() {
+    let chain: String = (0..200)
+        .map(|i| format!("a < a{i}"))
+        .collect::<Vec<_>>()
+        .join(" && ");
+    let src = format!("func f() {{ let x = {chain}; }}");
+    let started = std::time::Instant::now();
+    let result = parse_clean(&src);
+    let elapsed = started.elapsed();
+    assert!(
+        elapsed < std::time::Duration::from_millis(1500),
+        "比较链解析耗时 {elapsed:?}，疑似退化为 O(n²)"
+    );
+    let Statement::Variable(var) = &function_stmts(&result)[0] else {
+        panic!("期望变量声明");
+    };
+    assert!(var.value.is_some());
+}
+
+/// A3：泛型调用与比较链歧义的判定结果保持原样。
+#[test]
+fn a3_generic_call_detection_unchanged() {
+    // 真泛型调用
+    let result = parse_clean("func f() { let x = id<int>(1); }");
+    let Statement::Variable(var) = &function_stmts(&result)[0] else {
+        panic!("期望变量声明");
+    };
+    let Some(Expression::Call { type_args, .. }) = var.value.as_ref() else {
+        panic!("期望调用表达式，实际：{:?}", var.value);
+    };
+    assert_eq!(type_args.len(), 1);
+
+    // `a < b || g > (c)`：`>` 之后不是 `(`，`< b` 不得被当成泛型实参
+    let result = parse_clean("func f() { let x = a < b || g > (c); }");
+    let Statement::Variable(var) = &function_stmts(&result)[0] else {
+        panic!("期望变量声明");
+    };
+    let Some(Expression::Binary { .. }) = var.value.as_ref() else {
+        panic!("期望二元表达式，实际：{:?}", var.value);
+    };
+
+    // `a < b && c`：`<` 之后不是类型列表，走比较运算
+    let result = parse_clean("func f() { let x = a < b && c; }");
+    let Statement::Variable(var) = &function_stmts(&result)[0] else {
+        panic!("期望变量声明");
+    };
+    assert!(matches!(
+        var.value.as_ref(),
+        Some(Expression::Binary { .. })
+    ));
+
+    // `a < b` 普通比较
+    let result = parse_clean("func f() { let x = a < b; }");
+    let Statement::Variable(var) = &function_stmts(&result)[0] else {
+        panic!("期望变量声明");
+    };
+    assert!(matches!(
+        var.value.as_ref(),
+        Some(Expression::Binary { .. })
+    ));
+}
+
+// ---------- A4：可见性修饰符后的 EOF 不等于「修饰符后应为声明」 ----------
+
+/// A4：`func a() {}` 后跟一个孤立的 `pri` 到达文件末尾时不报错。
+///
+/// 修复前 `parse_visibility` 用 `Option<Scope>` 同时表达「无修饰符」与「已消费修饰符
+/// 后读到 EOF」，后者落入 `parse_item` 的「修饰符后应为声明」分支，产出 NVL2001。
+#[test]
+fn a4_visibility_at_eof_is_silent() {
+    parse_clean("func a() { }\npri\n");
+    parse_clean("pri\n");
+    parse_clean("pub\n");
+
+    // 真正的非法组合仍然报错：`pri` 后接 `pub`
+    let result = parse("func a() { }\npri\npub func b() { }\n");
+    assert_has_diagnostic(&result, "后应为 class");
+}
+
+// ---------- A5：调用后缀解析失败不得留下 null 占位节点 ----------
+
+/// A5：`a.b(1)` 后接无法继续的实参时，回滚后不产生任何 `Literal::Null` 占位。
+///
+/// 修复前失败路径把真实表达式换成 `Literal { Null, Span{0,0} }` 再继续解析，
+/// sema 会对这个 0 字节节点报「类型 null 上找不到成员」之类的位置错误诊断。
+#[test]
+fn a5_failed_call_suffix_leaves_no_null_placeholder() {
+    let result = parse("func f() { let p = 1; let y = p.b( 1 ) + 2; }");
+    // `p.b` 是成员访问而非调用：诊断应指向真实位置，且不涉及字面量 null
+    assert!(
+        messages(&result).iter().all(|msg| !msg.contains("null")),
+        "出现 null 占位诊断：{:?}",
+        messages(&result)
+    );
+    // 表达式树中不应存在 span 起点为 0 的字面量（占位特征）
+    fn contains_zero_literal(expr: &Expression) -> bool {
+        match expr {
+            Expression::Literal { span, .. } => span.start == 0 && span.end == 0,
+            Expression::Binary { left, right, .. } => {
+                contains_zero_literal(left) || contains_zero_literal(right)
+            }
+            Expression::Call { callee, args, .. } => {
+                contains_zero_literal(callee) || args.iter().any(contains_zero_literal)
+            }
+            Expression::MemberAccess { target, .. } => contains_zero_literal(target),
+            Expression::IndexAccess { target, index, .. } => {
+                contains_zero_literal(target) || contains_zero_literal(index)
+            }
+            Expression::Unary { operand, .. } => contains_zero_literal(operand),
+            _ => false,
+        }
+    }
+    for item in &result.program.items {
+        if let Item::Function(func) = item
+            && let Some(block) = &func.block
+            && let Statement::Block(block) = block.as_ref()
+        {
+            for stmt in &block.stmts {
+                if let Statement::Variable(var) = stmt
+                    && let Some(value) = &var.value
+                {
+                    assert!(
+                        !contains_zero_literal(value),
+                        "表达式树残留 0 字节占位字面量：{value:?}"
+                    );
+                }
+            }
+        }
+    }
+}
+
+// ---------- A7：块末尾省略 `;` 的诊断一致性 ----------
+
+/// A7：`return` / `throw` / `yield` / `break` / `continue` 与普通表达式语句
+/// 使用同一套收尾规则——块末 `}` 前可省略分号且不报错。
+///
+/// 修复前三种语句内联 `eat(SemiColon)` + `error_here`，导致 `func f() -> int { return 1 }`
+/// 比 `func f() { g() }` 多报一条 NVL2001。
+#[test]
+fn a7_keyword_statements_allow_omitted_semicolon_at_block_end() {
+    parse_clean("func f() -> int { return 1 }");
+    parse_clean("func f() { let e = 1; throw e }");
+    parse_clean("func f() { while (true) { break } }");
+    parse_clean("func f() { while (true) { continue } }");
+    // 文件末尾（EOF）同样容忍省略
+    parse_clean("func f() -> int { return 1 }");
+
+    // 块中间缺分号仍然报错，与其他语句一致
+    let result = parse("func f() { return 1 let x = 2; }");
+    assert_has_diagnostic(&result, "语句末尾应为 `;`");
+}

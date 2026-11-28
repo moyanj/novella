@@ -351,7 +351,7 @@ pub(crate) struct Sema {
   - `source` / `tokens`（未过滤注释的完整流）/ `program`；
   - `global_scope`：模块根作用域（`scopes.new_scope(None, ScopeKind::Module)`）；
   - `diagnostics` / `syntax_diagnostic_count` / `syntax_failed` / `load_failed` / `crate_root`。
-- `Module::error` / `error_with_code` / `warning`（:106-132）经 `decorated()`（:138-150）统一走 `novella_core::decor::decorate_one` 补行列与文件路径。
+- `Module::error` / `error_with_code` / `warning` 经 `decorated()` 直接用 `Module` 构造时缓存的 `LineIndex` 补行列与文件路径（`novella_core::decor::decorate_one` 已删除，避免每条诊断重建整份行索引）。
 
 **双路径设计**：`key` 与 `path` 分离是贯穿 sema 的约定——比较/去重一律用 `key`，展示一律用 `path`。
 

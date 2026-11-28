@@ -228,13 +228,10 @@ pub(crate) fn check_method_body(
     }
     method_sig.map(|sig| sig.ret).unwrap_or(Ty::Error)
 }
-pub(crate) fn this_ty_key(ty: &Ty) -> (ModuleId, String) {
-    match ty {
-        Ty::Applied(base, _) => this_ty_key(base),
-        Ty::Struct(m, n) | Ty::Class(m, n) | Ty::Trait(m, n) => (*m, n.clone()),
-        _ => unreachable!("this_ty 恒为 Struct/Class"),
-    }
-}
+/// `this` 或成员属主类型 → 类型键。
+///
+/// 与 [`member::type_key_of`] 完全同义，统一保留一个实现；别名只为不惊动既有调用点。
+pub(crate) use crate::typecheck::member::type_key_of as this_ty_key;
 pub(crate) fn lookup_method_def(
     sema: &Sema,
     this_ty: &Ty,

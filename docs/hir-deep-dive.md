@@ -564,8 +564,7 @@ pub enum HirStmt {
 ```rust
 pub struct HirCond { pub prelude: HirBlock, pub value: HirOperand }
 impl HirCond {
-    pub fn new(prelude: HirBlock, value: HirOperand) -> Self { ... }
-    pub fn has_prelude(&self) -> bool { ... }
+    pub fn new(value: HirOperand) -> Self { ... }   // 最常见形态：无前置语句
 }
 ```
 
@@ -609,7 +608,9 @@ TupleExtract { target: HirOperand, index: usize, ty: HirType, dst: LocalId }
 ArrayLength { target: HirOperand, dst: LocalId }
 ```
 
-元组/数组构造把一组已求值操作数拼成聚合值；提取和取长度是独立指令。**注意 `IndexLoad`/`IndexStore` 用于数组索引读写，`TupleExtract` 用于元组字段提取**——两者分开是因为元组元素类型异构、数组同构。
+元组/数组构造把一组已求值操作数拼成聚合值；提取和取长度是独立指令。**注意 `IndexLoad` 用于数组索引读，`TupleExtract` 用于元组字段提取**——两者分开是因为元组元素类型异构、数组同构。
+
+数组的**写**不经过专用指令：`UpdatePlace::Address` 生成地址后由 `StoreIndirect` 落值，自定义类型的下标写入走 `__setitem` 协议调用。规模上限由 `build/requirements.rs` 的 `IndexLoad` 分支统计。
 
 **调用与一元/二元运算**：
 
@@ -632,10 +633,9 @@ TypeTest { operand: HirOperand, operand_ty: HirType, target: HirType, dst: Local
 FieldLoad { target: HirOperand, target_ty: HirType, field: String, index: usize, ty: HirType, dst: LocalId }
 FieldStore { target: HirOperand, target_ty: HirType, field: String, index: usize, value: HirOperand }
 IndexLoad { target: HirOperand, element_ty: HirType, index: HirOperand, dst: LocalId }
-IndexStore { target: HirOperand, element_ty: HirType, index: HirOperand, value: HirOperand }
 ```
 
-`FieldLoad`/`FieldStore` 的 `index` 是布局索引（source field 名 `field` 保留用于调试），`ty` 是字段类型。`IndexLoad`/`IndexStore` 带 `element_ty` 供后端确定元素大小。
+`FieldLoad`/`FieldStore` 的 `index` 是布局索引（source field 名 `field` 保留用于调试），`ty` 是字段类型。`IndexLoad` 带 `element_ty` 供后端确定元素大小。
 
 **返回**：
 
@@ -649,7 +649,7 @@ Return(Option<HirOperand>)
 |----|------|
 | 局部槽 | Alloc, Store, Load |
 | 地址 | LocalAddress, FieldAddress, IndexAddress, StoreIndirect |
-| 聚合 | Tuple, Array, TupleExtract, ArrayLength, FieldLoad, FieldStore, IndexLoad, IndexStore |
+| 聚合 | Tuple, Array, TupleExtract, ArrayLength, FieldLoad, FieldStore, IndexLoad |
 | 运算 | Unary, Binary, Cast, TypeTest |
 | 调用 | Call |
 | 控制 | Return |
@@ -2207,7 +2207,7 @@ pub(crate) fn emit<'ctx>(context: &'ctx Context, module: &Module<'ctx>,
 | `Cast` | `self.cast(...)` → save(dst,to) |
 | `Call` | 见下 |
 | `Return(v)` | operand(v,self.ret)；校验 `value.is_none() != (*ret == Void)` → "返回值与函数签名不一致"；build_return；返回 false |
-| `FieldAddress`/`FieldLoad`/`FieldStore`/`Tuple`/`TupleExtract`/`Array`/`ArrayLength`/`IndexAddress`/`IndexLoad`/`IndexStore`/`TypeTest` | `Err("暂不支持 HIR 指令 {instruction:?}")` |
+| `FieldAddress`/`FieldLoad`/`FieldStore`/`Tuple`/`TupleExtract`/`Array`/`ArrayLength`/`IndexAddress`/`IndexLoad`/`TypeTest` | `Err("暂不支持 HIR 指令 {instruction:?}")` |
 
 **`Call`（227-259）** 逐字核心：
 
@@ -3013,7 +3013,7 @@ pub struct HirCond {
 
 **HIR 的解决**：`Load` 放进 `prelude`，`value` 只是 `Local(test)`。`codegen::loop_block` 每轮先发射 `cond.prelude`（body.rs:393-397），再判断 `value`。`if` 的 `branch` 也在入口发射 prelude（327-373）。
 
-**契约**：**所有条件求值的副作用都必须在 prelude 里**，HIR 构造方不能把条件求值的指令放在块外。codegen 必须每轮发射 prelude，不能优化成"只算一次"——除非条件是常量（`HirCond::has_prelude()` 可判断），此时 codegen 做常量折叠。
+**契约**：**所有条件求值的副作用都必须在 prelude 里**，HIR 构造方不能把条件求值的指令放在块外。codegen 必须每轮发射 prelude，不能优化成"只算一次"——除非条件是常量（`HirCond::prelude.is_empty()` 且 `value` 是常量时），此时 codegen 做常量折叠。
 
 ### 18.6 `Loop.step` 的深层含义：continue 必须执行 step
 

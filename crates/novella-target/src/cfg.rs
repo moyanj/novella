@@ -6,7 +6,6 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 
-use novella_core::Span;
 use novella_core::token::{Token, TokenKind};
 
 use crate::spec::TargetSpec;
@@ -497,12 +496,6 @@ fn unquote(value: &str) -> Result<String, String> {
         return Err("cfg 值不能为空".into());
     }
     Ok(value.to_owned())
-}
-
-/// 求值报告：谓词真值与检查错误；供 sema 在裁剪 AST 时使用。
-pub struct Evaluation {
-    pub enabled: bool,
-    pub errors: Vec<(Span, String)>,
 }
 
 #[cfg(test)]

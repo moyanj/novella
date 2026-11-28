@@ -73,8 +73,7 @@ impl IntKind {
         })
     }
 
-    /// 是否有符号（移位 / 取模诊断暂不使用，供 codegen 与后续期）
-    #[allow(dead_code)]
+    /// 是否有符号（供无损扩宽判定 [`IntKind::widens_to`] 使用）。
     pub(crate) fn is_signed(self) -> bool {
         matches!(
             self,

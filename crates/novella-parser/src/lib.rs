@@ -314,8 +314,12 @@ impl Parser {
         let item_start = self.peek().map(|token| token.span.start).unwrap_or(0);
         // ① 先看有没有编译器指令
         let directives = self.parse_directives();
-        // ② 再解析可见性
-        let scope = self.parse_visibility();
+        // ② 再解析可见性。文件在修饰符之后直接结束属于常见的手写/截断输入，
+        //    不算语法错误：安静结束本条 item，避免再报「修饰符后应为声明」。
+        let scope = match self.parse_visibility() {
+            Ok(scope) => scope,
+            Err(()) => return None,
+        };
 
         // 当前 token 决定了后面是什么 item；TokenKind: Copy，取出后不再借用 self。
         // `async` 是函数声明的修饰前缀（`async func f()`），在这里并入 `func` 分支。
@@ -423,10 +427,19 @@ impl Parser {
     /// 显式 `pub` / `pri` / `pkg` 分别返回 `Some(Scope::Public)` / `Private` / `Package`，
     /// 无修饰符返回 `None`（此时不消费任何 token）。是否允许修饰当前 item
     /// 由 [`Parser::parse_item`] 校验。
-    fn parse_visibility(&mut self) -> Option<Scope> {
-        let scope = Scope::from_token(&self.peek()?.kind)?;
+    ///
+    /// 外层 `Result` 的 `Err` 专指「已消费修饰符，但文件随即结束」（EOF token 常驻
+    /// token 流末尾）。调用方据此安静结束条目，而不是把它当成「修饰符后跟了非法 token」
+    /// 去报语法错误——`func a() {}` 后紧跟一个孤立的 `pri` 只是一次截断输入。
+    fn parse_visibility(&mut self) -> Result<Option<Scope>, ()> {
+        let Some(scope) = self.peek().and_then(|token| Scope::from_token(&token.kind)) else {
+            return Ok(None);
+        };
         self.advance();
-        Some(scope)
+        if self.at_eof() {
+            return Err(());
+        }
+        Ok(Some(scope))
     }
 
     // ---------- 各 item 解析 ----------
@@ -717,7 +730,8 @@ impl Parser {
     fn parse_member(&mut self) -> Option<ClassMember> {
         let member_start = self.peek().map(|token| token.span.start).unwrap_or(0);
         let directives = self.parse_directives();
-        let scope = self.parse_visibility();
+        // 类体内的 EOF 由外层的 `CloseBrace` 期待处理，这里退化为「无修饰符」
+        let scope = self.parse_visibility().unwrap_or(None);
         let mut is_static = false;
         let mut is_weak = false;
         // 可见性之后允许 `static` / `weak` 任意顺序出现各一次

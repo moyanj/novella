@@ -69,6 +69,7 @@ pub(crate) fn load_modules(
                     key: key.clone(),
                     path,
                     source: String::new(),
+                    line_index: novella_core::line_index::LineIndex::build(""),
                     tokens: vec![],
                     program: Program {
                         items: vec![],
@@ -178,8 +179,10 @@ pub(crate) fn load_modules(
             let site = std_root.join("site.nov");
             worklist.push((site.clone(), loader.module_key(&site)));
         }
+        let line_index = novella_core::line_index::LineIndex::build(&source);
         let mut module = Module {
             source,
+            line_index,
             tokens,
             program,
             key,

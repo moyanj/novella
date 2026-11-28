@@ -24,7 +24,7 @@ use crate::stmt::{
     Block, CatchClause, ForInit, ForKind, ForStmt, IfBranch, IfStmt, Statement, TryStmt,
     VariableStmt, WithStmt,
 };
-use crate::types::{FunctionType, Param, PredefinedType, TypeExpr};
+use crate::types::{FunctionType, PredefinedType, TypeExpr};
 use novella_core::Span;
 
 /// 红区：剩余栈低于该值时切到新分段。
@@ -223,8 +223,8 @@ impl Statement {
             Statement::Empty { .. } | Statement::Break { .. } | Statement::Continue { .. } => {}
             Statement::Variable(v) => take_variable_children(v, exprs),
             Statement::VariableList { declarations, .. } => {
-                for decl in std::mem::take(declarations) {
-                    drop_variable(decl, exprs);
+                for mut decl in std::mem::take(declarations) {
+                    take_variable_children(&mut decl, exprs);
                 }
             }
             Statement::Return { value, .. } | Statement::Yield { value, .. } => {
@@ -254,17 +254,13 @@ impl Statement {
     }
 }
 
-/// 变量声明中的值表达式与类型承载。
+/// 取走变量声明里的值表达式。
+///
+/// 两种调用形态都用它：`&mut VariableStmt`（保留声明本身，只搬走 value）与
+/// `VariableStmt`（整条声明随块一起释放）。二者行为一致——声明的 `ty` 由类型
+/// 自身的析构负责切段回收，value 交给分段栈释放。
 fn take_variable_children(v: &mut VariableStmt, exprs: &mut Vec<Expression>) {
     if let Some(value) = v.value.take() {
-        exprs.push(value);
-    }
-}
-
-/// 释放一条变量声明（`try` 的 `ty` 由类型析构自行切段）。
-fn drop_variable(decl: VariableStmt, exprs: &mut Vec<Expression>) {
-    let mut decl = decl;
-    if let Some(value) = decl.value.take() {
         exprs.push(value);
     }
 }
@@ -306,8 +302,8 @@ fn take_for_children(
             if let Some(init) = cond.init.take() {
                 match init {
                     ForInit::Declaration { declarations, .. } => {
-                        for decl in declarations {
-                            drop_variable(decl, exprs);
+                        for mut decl in declarations {
+                            take_variable_children(&mut decl, exprs);
                         }
                     }
                     ForInit::Expression { expr, .. } => exprs.push(expr),
@@ -417,7 +413,4 @@ fn drop_default_expr(expr: Expression) {
 // 未在此处显式处理的类型项：
 // `Param` 仅被 `FunctionType` 持有，`PredefinedType` 无子节点——
 // 若将来给 `Param` 增加新的递归字段，须同步 [`take_function_children`]。
-const _: () = {
-    // 静态断言：`Param` 仍是函数类型的唯一参数载体（若改名/改结构此处编译失败）
-    fn _assert_parts(_: &Param, _: &FunctionType) {}
-};
+// 这一约束无法用编译期断言表达（只断言类型存在并不约束结构），因此以注释记录。

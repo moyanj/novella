@@ -150,7 +150,7 @@ novella/
 │   │   ├── diagnostic.rs   # Diagnostic / Severity / DiagnosticLocation / DiagnosticCode
 │   │   ├── line_index.rs   # 字节偏移 ⇄ (1-based 行, 0-based 字节列)
 │   │   ├── path.rs         # normalize_path / module_key
-│   │   └── decor.rs        # decorate / shift_span_in_place（诊断位置填充）
+│   │   └── decor.rs        # decorate（诊断位置填充）
 │   ├── novella-derive/src/lib.rs        # #[derive(Spanned)]
 │   ├── novella-ast/src/
 │   │   ├── lib.rs / program.rs / stmt.rs / types.rs

@@ -325,19 +325,44 @@ pub(crate) fn collect_match_body_calls(body: &MatchCaseBody, out: &mut Vec<CallS
     }
 }
 
-/// 数 `start` 到 `end` 之间的顶层逗号（跳过字符串与嵌套括号）。
-pub(crate) fn count_top_level_commas(doc: &SourceDoc, start: usize, end: usize) -> u32 {
-    let start = start.min(doc.text.len());
-    let end = end.min(doc.text.len()).max(start);
-    let mut depth = 0i32;
-    let mut count = 0u32;
-    let mut characters = doc.text[start..end].char_indices().peekable();
-    while let Some((_, ch)) = characters.next() {
+/// 括号扫描的公共规则：跳过字符串字面量，按 `(`/`[`/`{` 计深度。
+///
+/// 本文件曾有三套各自为政的扫描器：`count_top_level_commas` 跳字符串且认三种括号、
+/// `find_matching_paren` 只认圆括号且不跳字符串、`split_top_level` 把 `<>` 当括号且
+/// 不跳字符串。随着 `f("(", 1)` 这类输入，三者对同一段文本给出不同的实参边界。
+/// 现在统一走 [`scan_balanced`]：括号集固定为 `([{` / `)]}`，字符串（含 `\` 转义）
+/// 整体跳过，深度语义只此一份。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ScanMode {
+    /// 数顶层 `,`
+    CountCommas,
+    /// 找到与开头的 `(` 配对的 `)`，返回其相对下标
+    MatchParen,
+}
+
+/// 单个字符的扫描结果：是否在深度 0 处触发了本次扫描关心的标记。
+fn scan_balanced(text: &str, mode: ScanMode) -> ScanOutcome {
+    let mut depth = match mode {
+        // `MatchParen` 的 `text` 是「左括号之后」的剩余部分，深度从 1 起算
+        ScanMode::MatchParen => 1i32,
+        ScanMode::CountCommas => 0i32,
+    };
+    let mut commas = 0u32;
+    let mut characters = text.char_indices().peekable();
+    while let Some((index, ch)) = characters.next() {
         match ch {
             '(' | '[' | '{' => depth += 1,
-            ')' | ']' | '}' => depth -= 1,
+            ')' | ']' | '}' => {
+                depth -= 1;
+                if mode == ScanMode::MatchParen && ch == ')' && depth == 0 {
+                    return ScanOutcome {
+                        commas,
+                        matched_at: Some(index),
+                    };
+                }
+            }
+            // 字符串字面量整体跳过：里面的括号和逗号都不是语法符号
             '"' | '`' | '\'' => {
-                // 跳过整个字符串字面量，避免把字面量里的逗号实数
                 let quote = ch;
                 while let Some((_, inner)) = characters.next() {
                     if inner == '\\' {
@@ -349,12 +374,30 @@ pub(crate) fn count_top_level_commas(doc: &SourceDoc, start: usize, end: usize) 
                     }
                 }
             }
-            // 切片不含 end 处的字符：光标恰在逗号上时该逗号尚未生效，天然不计入
-            ',' if depth == 0 => count += 1,
+            // 深度为 0 的逗号才是分隔符；游标恰在逗号上时该逗号尚未生效，天然不计入
+            ',' if depth == 0 => commas += 1,
             _ => {}
         }
     }
-    count
+    ScanOutcome {
+        commas,
+        matched_at: None,
+    }
+}
+
+/// [`scan_balanced`] 的扫描结果。
+struct ScanOutcome {
+    /// 深度 0 处的逗号个数
+    commas: u32,
+    /// `ScanMode::MatchParen` 下配对右括号的相对下标
+    matched_at: Option<usize>,
+}
+
+/// 数 `start` 到 `end` 之间的顶层逗号（跳过字符串与嵌套括号）。
+pub(crate) fn count_top_level_commas(doc: &SourceDoc, start: usize, end: usize) -> u32 {
+    let start = start.min(doc.text.len());
+    let end = end.min(doc.text.len()).max(start);
+    scan_balanced(&doc.text[start..end], ScanMode::CountCommas).commas
 }
 
 /// 从 `(a: int, b: string) -> int` 里拆出参数说明。
@@ -385,36 +428,45 @@ pub(crate) fn split_params(detail: &str) -> Vec<lsp_types::ParameterInformation>
 ///
 /// `text` 是「左括号之后」的剩余部分，因此深度从 1 开始计。
 pub(crate) fn find_matching_paren(text: &str) -> Option<usize> {
-    let mut depth = 1i32;
-    for (index, ch) in text.char_indices() {
-        match ch {
-            '(' => depth += 1,
-            ')' => {
-                depth -= 1;
-                if depth == 0 {
-                    return Some(index);
-                }
-            }
-            _ => {}
-        }
-    }
-    None
+    scan_balanced(text, ScanMode::MatchParen).matched_at
 }
 
-/// 按顶层逗号切分（忽略嵌套元组 / 泛型里的逗号）。
+/// 按顶层逗号切分（跳过字符串与嵌套的 `()` / `[]` / `{}`）。
+///
+/// 输入是类型 / 形参文本而非表达式，`<` `>` 在这里是类型实参分隔符，
+/// 但把它们计入深度会把 `a < b` 之类误当嵌套；因此不做 `<>` 处理，
+/// 与 [`find_matching_paren`] 的括号集保持一致。
 pub(crate) fn split_top_level(text: &str) -> Vec<String> {
     let mut parts = Vec::new();
-    let mut depth = 0i32;
     let mut current = String::new();
-    for ch in text.chars() {
+    let mut depth = 0i32;
+    let mut characters = text.char_indices().peekable();
+    while let Some((_, ch)) = characters.next() {
         match ch {
-            '(' | '[' | '<' => {
+            '(' | '[' | '{' => {
                 depth += 1;
                 current.push(ch);
             }
-            ')' | ']' | '>' => {
+            ')' | ']' | '}' => {
                 depth -= 1;
                 current.push(ch);
+            }
+            '"' | '`' | '\'' => {
+                // 字符串整体跳过语义与 scan_balanced 一致，但这里的输出需要保留原文
+                let quote = ch;
+                current.push(ch);
+                while let Some((_, inner)) = characters.next() {
+                    current.push(inner);
+                    if inner == '\\' {
+                        if let Some((_, escaped)) = characters.next() {
+                            current.push(escaped);
+                        }
+                        continue;
+                    }
+                    if inner == quote {
+                        break;
+                    }
+                }
             }
             ',' if depth == 0 => parts.push(std::mem::take(&mut current)),
             _ => current.push(ch),

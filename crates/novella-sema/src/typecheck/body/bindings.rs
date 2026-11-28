@@ -155,11 +155,8 @@ pub(crate) fn define_local(
 /// 字面量归一化：未定型字面量落到默认类型（`int` ≡ `i32`，`float` ≡ `f32`）。
 pub(crate) fn concrete(ty: &Ty) -> Ty {
     match ty {
-        Ty::IntLiteral(negative, value) => {
-            // 定型时取回符号：`-128` 的具体值才能落到 `i8` 上
-            let _ = (negative, value);
-            Ty::Int(crate::ty::IntKind::I32)
-        }
+        // 未定型整数字面量一律落到默认类型 `i32`（具体值与符号在别处定型）。
+        Ty::IntLiteral(..) => Ty::Int(crate::ty::IntKind::I32),
         Ty::FloatLiteral(_) => Ty::Float(crate::ty::FloatKind::F32),
         Ty::Tuple(elements) => Ty::Tuple(elements.iter().map(concrete).collect()),
         Ty::Array(element, length) => Ty::Array(Box::new(concrete(element)), *length),

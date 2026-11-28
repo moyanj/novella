@@ -8,21 +8,21 @@ use proc_macro2::TokenStream as TokenStream2;
 use quote::quote;
 use syn::{Data, DeriveInput, Fields};
 
+/// 具名字段中是否含名为 `span` 的字段（struct 定义与 enum 变体共用同一判定）。
+fn has_span_field(fields: &Fields) -> bool {
+    matches!(fields, Fields::Named(named)
+        if named.named.iter().any(|f| f.ident.as_ref().is_some_and(|id| id == "span")))
+}
+
 /// 生成 struct 的 span 访问体：要求存在名为 `span` 的字段。
 fn struct_span(fields: &Fields) -> syn::Result<TokenStream2> {
-    match fields {
-        Fields::Named(named)
-            if named
-                .named
-                .iter()
-                .any(|f| f.ident.as_ref().is_some_and(|id| id == "span")) =>
-        {
-            Ok(quote! { self.span })
-        }
-        _ => Err(syn::Error::new_spanned(
+    if has_span_field(fields) {
+        Ok(quote! { self.span })
+    } else {
+        Err(syn::Error::new_spanned(
             fields,
             "派生 `Spanned` 的 struct 必须包含名为 `span` 的字段",
-        )),
+        ))
     }
 }
 
@@ -37,25 +37,16 @@ fn enum_span(
     let mut arms = Vec::new();
     for variant in variants {
         let ident = &variant.ident;
-        match &variant.fields {
-            Fields::Named(named)
-                if named
-                    .named
-                    .iter()
-                    .any(|f| f.ident.as_ref().is_some_and(|id| id == "span")) =>
-            {
-                arms.push(quote! { Self::#ident { span, .. } => *span });
-            }
-            Fields::Unnamed(unnamed) if unnamed.unnamed.len() == 1 => {
-                // newtype 变体：委托给内部节点的 span()（内部节点也必须实现）。
-                arms.push(quote! { Self::#ident(inner) => inner.span() });
-            }
-            _ => {
-                return Err(syn::Error::new_spanned(
-                    variant,
-                    "变体需要包含名为 `span` 的字段，或为单字段 newtype 变体（内部实现 `span()`）",
-                ));
-            }
+        if has_span_field(&variant.fields) {
+            arms.push(quote! { Self::#ident { span, .. } => *span });
+        } else if matches!(&variant.fields, Fields::Unnamed(u) if u.unnamed.len() == 1) {
+            // newtype 变体：委托给内部节点的 span()（内部节点也必须实现）。
+            arms.push(quote! { Self::#ident(inner) => inner.span() });
+        } else {
+            return Err(syn::Error::new_spanned(
+                variant,
+                "变体需要包含名为 `span` 的字段，或为单字段 newtype 变体（内部实现 `span()`）",
+            ));
         }
     }
     Ok(quote! { match self { #(#arms),* } })

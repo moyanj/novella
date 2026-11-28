@@ -464,7 +464,7 @@ impl<'a> BodyBuilder<'a> {
             }
             this.finish_expression(init_start, block);
             // 省略条件视为恒真；条件求值语句每轮都要重跑，落进 `prelude`
-            let (mut prelude, value) = match &cond.condition {
+            let (prelude, value) = match &cond.condition {
                 Some(expr) => {
                     let mut prelude = HirBlock::new();
                     let value = this.build_expression(expr, &mut prelude)?;
@@ -484,7 +484,6 @@ impl<'a> BodyBuilder<'a> {
                 }
                 None => HirBlock::new(),
             };
-            prelude.stmts.shrink_to_fit();
             block.push(HirStmt::Loop {
                 cond: Some(HirCond { prelude, value }),
                 body: body_block?,

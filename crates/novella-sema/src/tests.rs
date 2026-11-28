@@ -398,3 +398,72 @@ fn collect_expression_spans(program: &novella_ast::program::Program) -> Vec<Span
     }
     out
 }
+
+/// A1：`static_only` 真正生效——静态 / 实例成员互不遮蔽，跨静态性覆写被拒。
+///
+/// 修复前 `lookup_member_chain` 忽略 `static_only`，导致：
+/// - 父类**实例**方法被当作静态同名方法命中，`子类静态方法覆写父类实例方法` 不再报错；
+/// - 子类实例字段与父类静态成员被判为「遮蔽继承成员」（误报）。
+#[test]
+fn static_only_filters_member_staticity() {
+    let dir = PathBuf::from("/novella-mem-static-only");
+    let main = dir.join("main.nov");
+    let source = "\
+class Base {
+    static func make() -> int { return 1; }
+    func run() -> int { return 2; }
+    static tag: int = 3;
+}
+class Child(Base) {
+    static func run() -> int { return 4; }
+}
+func main() { }
+";
+    let mut overlay = HashMap::new();
+    overlay.insert(main.clone(), source.to_owned());
+    let mut loader = OverlayLoader::new(overlay);
+    let result = analyze_with(&mut loader, &main);
+    let messages: Vec<&str> = result
+        .diagnostics
+        .modules
+        .iter()
+        .flat_map(|m| m.diagnostics.iter().map(|d| d.message.as_str()))
+        .collect();
+    // `Child::run` 是静态方法，`Base::run` 是实例方法 → 静态性不一致
+    assert!(
+        messages
+            .iter()
+            .any(|msg| msg.contains("静态 / 实例属性不一致")),
+        "应报静态性不一致：{messages:?}"
+    );
+}
+
+/// A1：子类**实例**字段不与父类**静态**成员冲突（不存在遮蔽）。
+#[test]
+fn instance_field_does_not_shadow_parent_static() {
+    let dir = PathBuf::from("/novella-mem-shadow");
+    let main = dir.join("main.nov");
+    let source = "\
+class Base {
+    static tag: int = 3;
+}
+class Child(Base) {
+    pub let tag: int = 4;
+}
+func main() { }
+";
+    let mut overlay = HashMap::new();
+    overlay.insert(main.clone(), source.to_owned());
+    let mut loader = OverlayLoader::new(overlay);
+    let result = analyze_with(&mut loader, &main);
+    let messages: Vec<&str> = result
+        .diagnostics
+        .modules
+        .iter()
+        .flat_map(|m| m.diagnostics.iter().map(|d| d.message.as_str()))
+        .collect();
+    assert!(
+        messages.iter().all(|msg| !msg.contains("不能遮蔽继承成员")),
+        "实例字段不应与父类静态成员冲突：{messages:?}"
+    );
+}

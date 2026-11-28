@@ -66,8 +66,6 @@ pub struct TargetSpec {
     pub is_like_linux: bool,
     #[serde(default)]
     pub is_like_bare: bool,
-    #[serde(default)]
-    pub is_like_msvc: bool,
 }
 
 impl TargetSpec {
